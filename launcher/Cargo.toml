@@ -1,8 +1,0 @@
-[package]
-name = "llm-chat-launcher"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "llm-chat-launcher"
-path = "src/main.rs"

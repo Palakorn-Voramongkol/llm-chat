@@ -1563,6 +1563,16 @@ pub fn run() {
                     .unwrap_or(7878);
                 start_ws_server(app.handle().clone(), port);
             }
+            // Stealth mode: hide the main window at startup. The Rust process
+            // and WS server keep running normally; just no visible UI / no
+            // taskbar entry. Useful for headless tests.
+            if std::env::var("LLM_CHAT_STEALTH").ok().as_deref() == Some("1") {
+                use tauri::Manager;
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                    let _ = win.set_skip_taskbar(true);
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

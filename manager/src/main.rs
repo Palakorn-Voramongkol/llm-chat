@@ -127,10 +127,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         token_path.display()
     );
 
+    let stealth: bool = matches!(
+        std::env::var("MANAGER_STEALTH").ok().as_deref(),
+        Some("1") | Some("true")
+    );
+
     let mut ports = Vec::new();
     for i in 0..n_instances {
         let port = start_port + i as u16;
-        spawn_instance(&exe_path, port, &auth_token)?;
+        spawn_instance(&exe_path, port, &auth_token, stealth)?;
         ports.push(port);
     }
 
@@ -160,15 +165,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn spawn_instance(exe: &str, port: u16, auth_token: &str) -> std::io::Result<()> {
+fn spawn_instance(exe: &str, port: u16, auth_token: &str, stealth: bool) -> std::io::Result<()> {
     use std::process::Command;
     let path = std::path::Path::new(exe);
     let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    eprintln!("[manager] spawning {} on port {}", canon.display(), port);
-    Command::new(&canon)
-        .env("LLM_CHAT_WS_PORT", port.to_string())
-        .env("LLM_CHAT_AUTH_TOKEN", auth_token)
-        .spawn()?;
+    eprintln!(
+        "[manager] spawning {} on port {} (stealth={})",
+        canon.display(),
+        port,
+        stealth
+    );
+    let mut cmd = Command::new(&canon);
+    cmd.env("LLM_CHAT_WS_PORT", port.to_string())
+        .env("LLM_CHAT_AUTH_TOKEN", auth_token);
+    if stealth {
+        cmd.env("LLM_CHAT_STEALTH", "1");
+    }
+    cmd.spawn()?;
     Ok(())
 }
 
