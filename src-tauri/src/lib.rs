@@ -282,6 +282,126 @@ fn find_git_bash_path() -> Option<String> {
     None
 }
 
+// ========== Window Capture ==========
+//
+// Captures the main webview window as a PNG so the manager (or any /control
+// client) can fetch the visual state of an instance — used both as a feature
+// and as a diagnostic for rendering bugs that only manifest in spawned mode.
+#[cfg(windows)]
+fn capture_main_window_to_png(
+    app_handle: &tauri::AppHandle,
+    out_path: &std::path::Path,
+) -> Result<(), String> {
+    use tauri::Manager as _;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+    };
+    use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+    use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+    let win = app_handle
+        .get_webview_window("main")
+        .ok_or_else(|| "no main window".to_string())?;
+    // tauri exposes HWND from a different `windows` crate version than ours;
+    // both are `struct HWND(*mut c_void)`, so convert via the raw pointer.
+    let raw_hwnd = win.hwnd().map_err(|e| format!("hwnd: {e}"))?;
+    let hwnd: HWND = HWND(raw_hwnd.0 as *mut _);
+
+    unsafe {
+        let mut rect = std::mem::zeroed();
+        GetClientRect(hwnd, &mut rect).map_err(|e| format!("GetClientRect: {e}"))?;
+        let width = (rect.right - rect.left).max(1);
+        let height = (rect.bottom - rect.top).max(1);
+
+        let hdc_screen = GetDC(hwnd);
+        if hdc_screen.0.is_null() {
+            return Err("GetDC returned null".into());
+        }
+        let hdc_mem = CreateCompatibleDC(hdc_screen);
+        let hbm = CreateCompatibleBitmap(hdc_screen, width, height);
+        let old = SelectObject(hdc_mem, HGDIOBJ(hbm.0));
+
+        // PW_RENDERFULLCONTENT (0x02) is required for hardware-accelerated
+        // WebView2 content; without it PrintWindow returns a black image.
+        const PW_RENDERFULLCONTENT: PRINT_WINDOW_FLAGS = PRINT_WINDOW_FLAGS(0x02);
+        let pw_ok = PrintWindow(hwnd, hdc_mem, PW_RENDERFULLCONTENT).as_bool();
+        if !pw_ok {
+            // Fallback: BitBlt from the window DC. Won't include fully
+            // hardware-composited frames but proves the pipeline works.
+            let _ = BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
+        }
+
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                // Negative → top-down DIB, so the buffer is in scanline order.
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
+        let scanlines = GetDIBits(
+            hdc_mem,
+            hbm,
+            0,
+            height as u32,
+            Some(buf.as_mut_ptr() as *mut _),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(hdc_mem, old);
+        let _ = DeleteObject(HGDIOBJ(hbm.0));
+        let _ = DeleteDC(hdc_mem);
+        ReleaseDC(hwnd, hdc_screen);
+
+        if scanlines == 0 {
+            return Err("GetDIBits returned 0 scanlines".into());
+        }
+
+        // GDI gives BGRA; PNG wants RGBA. Swap in place. Also force alpha to
+        // 0xFF since GDI leaves it zeroed for opaque pixels.
+        for chunk in buf.chunks_exact_mut(4) {
+            chunk.swap(0, 2);
+            chunk[3] = 0xFF;
+        }
+
+        if let Some(parent) = out_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let file = std::fs::File::create(out_path)
+            .map_err(|e| format!("create {}: {e}", out_path.display()))?;
+        let mut encoder = png::Encoder::new(
+            std::io::BufWriter::new(file),
+            width as u32,
+            height as u32,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| format!("png header: {e}"))?;
+        writer
+            .write_image_data(&buf)
+            .map_err(|e| format!("png data: {e}"))?;
+    }
+    Ok(())
+}
+
+fn screenshot_path(port: u16) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("llm-chat-qa");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("screenshot-{port}.png"))
+}
+
 // ========== Claude Discovery ==========
 fn find_claude_path() -> Option<String> {
     if let Ok(path_var) = std::env::var("PATH") {
@@ -954,6 +1074,24 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                         append_control_log("in", &req);
                         let cmd = req.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
                         let reply: serde_json::Value = match cmd {
+                            "screenshot" => {
+                                #[cfg(windows)]
+                                {
+                                    let out = screenshot_path(port);
+                                    match capture_main_window_to_png(&app_handle_ctrl, &out) {
+                                        Ok(()) => serde_json::json!({
+                                            "ok": true,
+                                            "path": out.to_string_lossy(),
+                                            "port": port,
+                                        }),
+                                        Err(e) => serde_json::json!({"ok": false, "error": e}),
+                                    }
+                                }
+                                #[cfg(not(windows))]
+                                {
+                                    serde_json::json!({"ok": false, "error": "screenshot is windows-only"})
+                                }
+                            }
                             "list" => {
                                 use tauri::Manager;
                                 let st = app_handle_ctrl.state::<AppState>();
@@ -1365,6 +1503,30 @@ pub fn run() {
         if let Some(bash) = find_git_bash_path() {
             std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", &bash);
         }
+    }
+    // Hint full-color, dark-theme terminal so claude renders its rich TUI
+    // (orange box, mascot, etc.) instead of the degraded plain mode it falls
+    // back to when capabilities look weak. `npm run tauri dev` sets these via
+    // npm; bare `cargo build` + manager spawn doesn't, so set them ourselves.
+    if std::env::var("FORCE_COLOR").is_err() {
+        std::env::set_var("FORCE_COLOR", "3");
+    }
+    if std::env::var("COLORFGBG").is_err() {
+        std::env::set_var("COLORFGBG", "15;0");
+    }
+    if std::env::var("COLORTERM").is_err() {
+        std::env::set_var("COLORTERM", "truecolor");
+    }
+    if std::env::var("TERM").is_err() {
+        std::env::set_var("TERM", "xterm-256color");
+    }
+    // UTF-8 locale so claude/Ink uses Unicode box drawing instead of the
+    // ASCII fallback (`|` pipes, blocky mascot) we get in clean-env spawns.
+    if std::env::var("LANG").is_err() {
+        std::env::set_var("LANG", "en_US.UTF-8");
+    }
+    if std::env::var("LC_ALL").is_err() {
+        std::env::set_var("LC_ALL", "en_US.UTF-8");
     }
     tauri::Builder::default()
         .manage(AppState {

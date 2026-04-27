@@ -168,6 +168,12 @@ fn spawn_instance(exe: &str, port: u16, auth_token: &str) -> std::io::Result<()>
     Command::new(&canon)
         .env("LLM_CHAT_WS_PORT", port.to_string())
         .env("LLM_CHAT_AUTH_TOKEN", auth_token)
+        .env("FORCE_COLOR", "3")
+        .env("COLORTERM", "truecolor")
+        .env("TERM", "xterm-256color")
+        .env("COLORFGBG", "15;0")
+        .env("LANG", "en_US.UTF-8")
+        .env("LC_ALL", "en_US.UTF-8")
         .spawn()?;
     Ok(())
 }
@@ -358,6 +364,32 @@ async fn handle_control(
                     }
                     serde_json::json!({"ok":true,"histories":all})
                 }
+            }
+            "screenshot" => {
+                // Capture one backend (by port or sessionId), or all backends
+                // when nothing is specified. Reply lists the PNG paths each
+                // backend wrote.
+                let target_port: Option<u16> = match req.get("port").and_then(|v| v.as_u64()) {
+                    Some(p) => Some(p as u16),
+                    None => match req.get("sessionId").and_then(|v| v.as_str()) {
+                        Some(sid) => lookup_port(&state, sid).await,
+                        None => None,
+                    },
+                };
+                let ports: Vec<u16> = match target_port {
+                    Some(p) => vec![p],
+                    None => state.lock().await.instance_ports.clone(),
+                };
+                let mut shots = serde_json::Map::new();
+                for p in &ports {
+                    let r = call_backend(*p, serde_json::json!({"cmd":"screenshot"})).await;
+                    let entry = match r {
+                        Ok(v) => v,
+                        Err(e) => serde_json::json!({"ok":false,"error":e.to_string()}),
+                    };
+                    shots.insert(p.to_string(), entry);
+                }
+                serde_json::json!({"ok":true,"byPort":shots})
             }
             "switch" | "clear" | "current" | "log" => {
                 let sid = req.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string());

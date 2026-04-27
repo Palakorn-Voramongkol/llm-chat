@@ -22,6 +22,7 @@ tokio-tungstenite = "0.21"
 futures-util = "0.3"
 rand = "0.8"
 subtle = "2"
+png = "0.17"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
@@ -34,4 +35,6 @@ windows = { version = "0.58", features = [
     "Win32_System_IO",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_Xps",
 ] }

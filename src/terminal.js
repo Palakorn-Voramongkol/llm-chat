@@ -44,8 +44,9 @@ function makeSession(id) {
     cursorBlink: true,
     fontSize: 14,
     fontFamily: 'Consolas, "Courier New", monospace',
-    theme: { background: '#1a1a2e', foreground: '#e0e0e0', cursor: '#3498db' },
+    theme: { background: '#ffffff', foreground: '#1a1a2e', cursor: '#3498db' },
     scrollback: 10000,
+    minimumContrastRatio: 4.5,
   });
   const fitAddon = new FitAddon.FitAddon();
   term.loadAddon(fitAddon);
