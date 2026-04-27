@@ -168,12 +168,6 @@ fn spawn_instance(exe: &str, port: u16, auth_token: &str) -> std::io::Result<()>
     Command::new(&canon)
         .env("LLM_CHAT_WS_PORT", port.to_string())
         .env("LLM_CHAT_AUTH_TOKEN", auth_token)
-        .env("FORCE_COLOR", "3")
-        .env("COLORTERM", "truecolor")
-        .env("TERM", "xterm-256color")
-        .env("COLORFGBG", "15;0")
-        .env("LANG", "en_US.UTF-8")
-        .env("LC_ALL", "en_US.UTF-8")
         .spawn()?;
     Ok(())
 }

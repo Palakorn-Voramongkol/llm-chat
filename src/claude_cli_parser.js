@@ -51,7 +51,7 @@ function createClaudeCliParser(term, fitAddon) {
         const line = lines[i].trim();
         if (!line) continue;
 
-        const qMatch = line.match(/^[>❯]\s+(.+)/);
+        const qMatch = line.match(/^[>\u276F]\s+(.+)/);
         if (qMatch) {
           if (currentQ && currentALines.length > 0) {
             pairs.push({ q: currentQ, a: currentALines.join('\n') });
@@ -61,7 +61,7 @@ function createClaudeCliParser(term, fitAddon) {
           continue;
         }
 
-        if (/^[>❯]\s*$/.test(line)) continue;
+        if (/^[>\u276F]\s*$/.test(line)) continue;
 
         const aMatch = line.match(/^●\s*(.*)/);
         if (aMatch && currentQ) {
@@ -99,14 +99,8 @@ function createClaudeCliParser(term, fitAddon) {
           }
           // Update live panel
           this.renderToPanel(this.qaCount, pair.q, pair.a, isNew);
-          // Broadcast to Tauri webviews + per-session WebSocket subscribers.
-          invoke('broadcast_qa', {
-            num: this.qaCount,
-            question: pair.q,
-            answer: pair.a,
-            sessionId: this.sessionId || '',
-            isNew,
-          }).catch(() => {});
+          // Broadcast to WebSocket clients
+          invoke('broadcast_qa', { num: this.qaCount, question: pair.q, answer: pair.a }).catch(() => {});
           const statusEl = document.getElementById('qa-status');
           if (statusEl) statusEl.textContent = `QA: ${this.qaCount}`;
         }
@@ -114,12 +108,9 @@ function createClaudeCliParser(term, fitAddon) {
     },
 
     renderToPanel(num, question, answer, isNew) {
-      const panel = document.getElementById(this.panelContentId || 'qa-panel-content');
+      const panel = document.getElementById('qa-panel-content');
       if (!panel) return;
-      // Namespace the entry id by panelContentId so that per-session panels
-      // don't collide on `qa-entry-1` (each session's first Q&A has num=1).
-      const ns = (this.panelContentId || 'qa-panel-content').replace(/^qa-content-/, '');
-      const entryId = `qa-entry-${ns}-${num}`;
+      const entryId = `qa-entry-${num}`;
       let entry = document.getElementById(entryId);
       if (!entry) {
         if (num > 1) {
@@ -159,7 +150,7 @@ function createClaudeCliParser(term, fitAddon) {
       if (currentHour !== this.lastHour) {
         this.lastHour = currentHour;
         try {
-          const newPath = await invoke('get_qa_log_path', { sessionId: this.sessionId });
+          const newPath = await invoke('get_qa_log_path');
           if (newPath !== this.logPath) {
             if (this.logPath) {
               invoke('append_qa_log', { content: `\n=== Continued in next file ===\n`, path: this.logPath }).catch(() => {});
@@ -195,7 +186,7 @@ function createClaudeCliParser(term, fitAddon) {
       }
       const panel = document.getElementById('qa-panel');
       if (panel) panel.classList.add('visible');
-      const content = document.getElementById(this.panelContentId || 'qa-panel-content');
+      const content = document.getElementById('qa-panel-content');
       if (content) content.innerHTML = '';
       setTimeout(() => {
         if (fitAddon) {
@@ -226,3 +217,6 @@ function createClaudeCliParser(term, fitAddon) {
 
 // Export for use by terminal.js
 window.createClaudeCliParser = createClaudeCliParser;
+
+// Export for use by terminal.js
+window.createCliParser = createCliParser;
