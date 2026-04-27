@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="lib/xterm/xterm.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Terminal</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        width: 100%; height: 100%;
+        overflow: hidden;
+        background: #1a1a2e;
+        font-family: 'Segoe UI', system-ui, sans-serif;
+      }
+      .terminal-app {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        background: #1a1a2e;
+        border: 1px solid rgba(255,255,255,0.05);
+      }
+      /* Body wrapper around terminal + qa-panel so we can flip its flex
+         direction for "right" layout. */
+      .body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        position: relative; /* anchor for floating panel */
+      }
+      .terminal-app.layout-right .body { flex-direction: row; }
+      .terminal-app.layout-right .qa-panel.visible {
+        max-height: none;
+        height: 100%;
+        width: 380px;
+        border-top: none;
+        border-left: 1px solid #3a3a5c;
+        flex-direction: column;
+      }
+      .terminal-app.layout-right .qa-resizer {
+        height: auto;
+        width: 5px;
+        cursor: ew-resize;
+        border-top: none;
+        border-left: 1px solid #3a3a5c;
+      }
+      .terminal-app.layout-float .qa-panel.visible {
+        position: fixed;
+        top: 90px;
+        right: 24px;
+        width: 420px;
+        height: 460px;
+        max-height: none;
+        border: 1px solid #3a3a5c;
+        border-radius: 8px;
+        box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+        z-index: 1000;
+        resize: both;
+        overflow: hidden;
+      }
+      .terminal-app.layout-float .qa-resizer { display: none; }
+      .terminal-app.layout-float .qa-panel-header { cursor: grab; }
+      .terminal-app.layout-float .qa-panel-header.dragging { cursor: grabbing; }
+      /* When the Claude Stream is detached into a separate OS window, hide
+         the in-app panel and reclaim its space for the terminal. */
+      .terminal-app.app-detached .qa-panel { display: none !important; }
+      .terminal-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 12px;
+        background: #0f0f23;
+        cursor: grab;
+        min-height: 34px;
+        -webkit-app-region: drag;
+      }
+      .terminal-topbar-left {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        pointer-events: none;
+      }
+      .terminal-topbar-left .icon { font-size: 14px; color: #a78bfa; }
+      .terminal-topbar-left .title {
+        font-size: 12px; font-weight: 600; color: #e0e0ff;
+        letter-spacing: 0.5px;
+      }
+      .terminal-topbar-right {
+        display: flex; gap: 4px;
+        -webkit-app-region: no-drag;
+      }
+      .tb-btn {
+        width: 24px; height: 24px; border: none; border-radius: 6px;
+        background: rgba(255,255,255,0.06); color: #8888bb;
+        font-size: 11px; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        transition: all 0.15s ease;
+      }
+      .tb-btn:hover { background: rgba(255,255,255,0.12); color: #e0e0ff; }
+      .tb-btn.close:hover { background: #e74c3c; color: white; }
+      .toolbar {
+        display: flex; align-items: center; gap: 6px;
+        padding: 4px 12px; background: #0f0f23;
+        border-bottom: 1px solid #3a3a5c;
+      }
+      .tool-btn {
+        height: 22px; border: none; border-radius: 4px;
+        background: rgba(255,255,255,0.06); color: #8888bb;
+        font-size: 10px; cursor: pointer; padding: 0 8px;
+        transition: all 0.15s ease; white-space: nowrap;
+      }
+      .tool-btn:hover { background: rgba(255,255,255,0.12); color: #e0e0ff; }
+      .tool-btn.active { background: rgba(231,76,60,0.3); color: #ff6b6b; }
+      .tool-btn.danger:hover { background: rgba(231,76,60,0.3); color: #e74c3c; }
+      .tab-bar {
+        display: flex;
+        align-items: stretch;
+        background: #0f0f23;
+        border-bottom: 1px solid #3a3a5c;
+        min-height: 28px;
+        overflow-x: auto;
+      }
+      .tab {
+        display: flex; align-items: center; gap: 6px;
+        padding: 4px 10px;
+        cursor: pointer;
+        color: #8888bb;
+        border-right: 1px solid #3a3a5c;
+        font-size: 11px;
+        user-select: none;
+        white-space: nowrap;
+      }
+      .tab.active { background: #1a1a2e; color: #e0e0ff; border-bottom: 2px solid #a78bfa; }
+      .tab-badge { color: #a0ffa0; font-size: 10px; }
+      .qa-tab-bar {
+        display: flex;
+        align-items: stretch;
+        background: #0a0a18;
+        border-bottom: 1px solid #2a2a44;
+        min-height: 22px;
+        overflow-x: auto;
+      }
+      .qa-tab {
+        display: flex; align-items: center;
+        padding: 2px 10px;
+        cursor: pointer;
+        color: #6e6e9a;
+        font-size: 10px;
+        white-space: nowrap;
+        border-right: 1px solid #2a2a44;
+        user-select: none;
+      }
+      .qa-tab.active { background: #0d0d18; color: #a0ffa0; border-bottom: 2px solid #a0ffa0; }
+      .qa-tab:hover { background: rgba(255,255,255,0.04); }
+      .tab:hover { background: rgba(255,255,255,0.04); }
+      .tab-close {
+        background: none; border: none; color: #8888bb;
+        cursor: pointer; padding: 0 2px; font-size: 12px; line-height: 1;
+        border-radius: 3px;
+      }
+      .tab-close:hover { background: rgba(231,76,60,0.3); color: #e74c3c; }
+      #btn-new-tab {
+        background: none; border: none; color: #a78bfa;
+        cursor: pointer; font-size: 16px; padding: 0 12px;
+        border-right: 1px solid #3a3a5c;
+      }
+      #btn-new-tab:hover { background: rgba(255,255,255,0.06); }
+      #term-stack {
+        flex: 1;
+        position: relative;
+        min-height: 0;
+        min-width: 0;
+      }
+      .term-host {
+        display: none;
+        position: absolute;
+        inset: 0;
+        padding: 4px;
+      }
+      .term-host.active { display: block; }
+      .term-host .xterm { height: 100%; }
+      #qa-stack {
+        flex: 1;
+        position: relative;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .qa-content {
+        display: none;
+        position: absolute;
+        inset: 0;
+        overflow-y: auto;
+        padding: 8px 12px;
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #e0e0ff;
+        user-select: text;
+      }
+      .qa-content.active { display: block; }
+      .term-panel {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        background: #1a1a2e;
+      }
+      .term-panel-header {
+        display: flex;
+        align-items: center;
+        padding: 4px 12px;
+        background: #0f0f23;
+        gap: 8px;
+        min-height: 28px;
+        border-bottom: 1px solid #3a3a5c;
+      }
+      .term-panel-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: #a78bfa;
+        letter-spacing: 0.5px;
+        flex: 1;
+      }
+
+      /* Q&A Viewer Panel */
+      .qa-panel {
+        display: none;
+        flex-direction: column;
+        max-height: 40%;
+        min-height: 100px;
+        border-top: 1px solid #3a3a5c;
+        background: #0d0d18;
+      }
+      .qa-panel.visible { display: flex; }
+      .qa-resizer {
+        height: 5px;
+        cursor: ns-resize;
+        background: rgba(255,255,255,0.04);
+        border-top: 1px solid #3a3a5c;
+        flex-shrink: 0;
+      }
+      .qa-resizer:hover, .qa-resizer.dragging { background: rgba(167,139,250,0.4); }
+      .qa-panel-header {
+        display: flex;
+        align-items: center;
+        padding: 4px 12px;
+        background: #0f0f23;
+        gap: 8px;
+        min-height: 28px;
+      }
+      .qa-panel-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: #a78bfa;
+        letter-spacing: 0.5px;
+        flex: 1;
+      }
+      .qa-panel-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px 12px;
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #e0e0ff;
+      }
+      .qa-panel-content .qa-entry { margin-bottom: 12px; }
+      .qa-panel-content .qa-label {
+        font-weight: 700;
+        color: #7c6aff;
+        margin-right: 6px;
+      }
+      .qa-panel-content .qa-question {
+        color: #ff6ac1;
+        font-weight: 500;
+      }
+      .qa-panel-content .qa-answer {
+        color: #a0ffa0;
+        white-space: pre-wrap;
+      }
+      .qa-panel-content .qa-separator {
+        border: none;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        margin: 8px 0;
+      }
+    </style>
+    <script>
+      // Fallback close/minimize if Tauri API or terminal.js fails to load
+      function closeTerminal() {
+        try { window.__TAURI__.window.getCurrentWindow().hide(); } catch(e) {
+          try { window.close(); } catch(e2) {}
+        }
+      }
+      function minimizeTerminal() {
+        try { window.__TAURI__.window.getCurrentWindow().minimize(); } catch(e) {}
+      }
+      // Global error handler to show JS errors in debug-status
+      window.onerror = function(msg, src, line, col, err) {
+        const el = document.getElementById('debug-status');
+        if (el) el.textContent = 'ERR: ' + msg + ' (' + src + ':' + line + ')';
+        console.error('GLOBAL ERROR:', msg, src, line, col, err);
+      };
+    </script>
+    <script src="lib/xterm/xterm.js" onerror="document.getElementById('debug-status').textContent='xterm.js FAILED'"></script>
+    <script src="lib/xterm/addon-fit.js" onerror="document.getElementById('debug-status').textContent='addon-fit FAILED'"></script>
+    <script src="/claude_cli_parser.js" onerror="document.getElementById('debug-status').textContent='claude_cli_parser FAILED'"></script>
+    <script src="/terminal.js" defer onerror="document.getElementById('debug-status').textContent='terminal.js FAILED'"></script>
+  </head>
+  <body>
+    <div class="terminal-app layout-bottom" id="terminal-app">
+      <div class="terminal-topbar" data-tauri-drag-region>
+        <div class="terminal-topbar-left">
+          <span class="icon">&#9000;</span>
+          <span class="title" id="terminal-title">Terminal</span>
+        </div>
+        <div class="terminal-topbar-right">
+          <button class="tb-btn" id="btn-minimize" title="Minimize" onclick="minimizeTerminal()">&#8211;</button>
+          <button class="tb-btn close" id="btn-close" title="Close" onclick="closeTerminal()">&#10005;</button>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button class="tool-btn" id="btn-qa-log" title="Toggle Q&A auto-logging">&#128221; QA Log</button>
+        <span id="qa-status" style="font-size:10px;color:#a78bfa;margin-left:4px;"></span>
+        <span id="debug-status" style="font-size:10px;color:#ff6b6b;margin-left:4px;"></span>
+        <span style="flex:1"></span>
+        <button class="tool-btn" id="btn-layout" title="Cycle Claude Stream layout">&#9783; Bottom</button>
+      </div>
+      <div class="tab-bar" id="tab-bar">
+        <!-- .tab elements injected by JS -->
+        <button id="btn-new-tab" title="New session">&#43;</button>
+      </div>
+      <div class="body">
+      <div class="term-panel">
+        <div class="term-panel-header">
+          <span class="term-panel-title">&#9000; Terminal</span>
+          <button class="tool-btn" id="btn-copy" title="Copy selection">&#128203; Copy</button>
+          <button class="tool-btn" id="btn-save" title="Save terminal to file">&#128190; Save</button>
+          <button class="tool-btn danger" id="btn-clear" title="Clear terminal">&#10006; Clear</button>
+        </div>
+        <div id="term-stack"></div>
+      </div>
+      <div class="qa-panel" id="qa-panel">
+        <div class="qa-resizer" id="qa-resizer" title="Drag to resize"></div>
+        <div class="qa-panel-header">
+          <span class="qa-panel-title">&#128221; Claude Stream</span>
+          <button class="tool-btn" id="btn-qa-detach" title="Detach as floating window">&#10696; Detach</button>
+          <button class="tool-btn" id="btn-qa-copy" title="Copy panel to clipboard">&#128203; Copy</button>
+          <button class="tool-btn" id="btn-qa-save" title="Save panel to file">&#128190; Save</button>
+          <button class="tool-btn danger" id="btn-qa-clear" title="Clear Q&A panel">&#10006; Clear</button>
+        </div>
+        <div id="qa-stack"></div>
+      </div>
+      </div>
+    </div>
+  </body>
+</html>

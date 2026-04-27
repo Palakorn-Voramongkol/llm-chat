@@ -1,0 +1,24 @@
+opened s1777246142646180 on backend port 7879
+opened s1777246142662306 on backend port 7878
+opened s1777246142702542 on backend port 7878
+opened s1777246142731417 on backend port 7879
+backend ports used: [ 7879, 7878 ]
+instances state: {
+  ok: true,
+  ports: [ 7878, 7879 ],
+  sessionsPerPort: { '7878': 2, '7879': 2 }
+}
+warming up backends for 8s...
+
+=== summary ===
+[OK] s1 (s1777246142646180…) sent "MAGNOLIA"
+[OK] s2 (s1777246142662306…) sent "TANGERINE"
+[OK] s3 (s1777246142702542…) sent "HEMLOCK"
+[OK] s4 (s1777246142731417…) sent "PISTACHIO"
+  history s1777246142646180… → 0 entries; matches a magic = false
+  history s1777246142662306… → 0 entries; matches a magic = false
+  history s1777246142702542… → 0 entries; matches a magic = false
+  history s1777246142731417… → 0 entries; matches a magic = false
+after close, list count: 0
+
+FAIL

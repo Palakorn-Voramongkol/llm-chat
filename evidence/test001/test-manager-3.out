@@ -1,0 +1,24 @@
+opened s1777246560463712 on backend port 7878
+opened s1777246560485822 on backend port 7879
+opened s1777246560528253 on backend port 7878
+opened s1777246560590988 on backend port 7879
+backend ports used: [ 7878, 7879 ]
+instances state: {
+  ok: true,
+  ports: [ 7878, 7879 ],
+  sessionsPerPort: { '7878': 2, '7879': 2 }
+}
+warming up backends for 8s...
+
+=== summary ===
+[OK] s1 (s1777246560463712…) sent "MAGNOLIA"
+[OK] s2 (s1777246560485822…) sent "TANGERINE"
+[OK] s3 (s1777246560528253…) sent "HEMLOCK"
+[OK] s4 (s1777246560590988…) sent "PISTACHIO"
+  history s1777246560463712… → 1 entries; matches a magic = true
+  history s1777246560485822… → 1 entries; matches a magic = true
+  history s1777246560528253… → 1 entries; matches a magic = true
+  history s1777246560590988… → 1 entries; matches a magic = true
+after close, list count: 2
+
+PASS: manager delegates correctly across backends
