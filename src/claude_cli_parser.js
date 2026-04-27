@@ -108,9 +108,14 @@ function createClaudeCliParser(term, fitAddon) {
     },
 
     renderToPanel(num, question, answer, isNew) {
-      const panel = document.getElementById('qa-panel-content');
+      // Allow per-session panels (multi-session UI sets panelContentId).
+      // Falls back to the original single-panel id when unset.
+      const panel = document.getElementById(this.panelContentId || 'qa-panel-content');
       if (!panel) return;
-      const entryId = `qa-entry-${num}`;
+      // Namespace the entry id by panel so per-session panels don't clash on
+      // `qa-entry-1` (each session's first pair has num=1).
+      const ns = (this.panelContentId || 'qa-panel-content').replace(/^qa-content-/, '');
+      const entryId = `qa-entry-${ns}-${num}`;
       let entry = document.getElementById(entryId);
       if (!entry) {
         if (num > 1) {
@@ -186,7 +191,7 @@ function createClaudeCliParser(term, fitAddon) {
       }
       const panel = document.getElementById('qa-panel');
       if (panel) panel.classList.add('visible');
-      const content = document.getElementById('qa-panel-content');
+      const content = document.getElementById(this.panelContentId || 'qa-panel-content');
       if (content) content.innerHTML = '';
       setTimeout(() => {
         if (fitAddon) {
