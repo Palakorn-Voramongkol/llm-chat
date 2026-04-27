@@ -26,7 +26,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{
     connect_async,
-    tungstenite::{handshake::server::Request, Message},
+    tungstenite::{
+        client::IntoClientRequest,
+        handshake::server::{ErrorResponse, Request, Response},
+        http,
+        Message,
+    },
 };
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -36,12 +41,50 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+fn random_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn auth_token_path() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("llm-chat-qa");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("auth.token")
+}
+
+fn check_token_eq(provided: &str, expected: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
+fn extract_token(req: &Request) -> Option<String> {
+    if let Some(auth) = req.headers().get("authorization") {
+        if let Ok(s) = auth.to_str() {
+            if let Some(t) = s.strip_prefix("Bearer ") {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    if let Some(query) = req.uri().query() {
+        for kv in query.split('&') {
+            if let Some(t) = kv.strip_prefix("token=") {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[derive(Default)]
 struct ManagerState {
     /// Backend ports, in spawn order.
     instance_ports: Vec<u16>,
     /// sessionId -> backend port that owns it.
     session_to_port: HashMap<String, u16>,
+    /// Shared auth token used for both manager↔client and manager↔backend.
+    auth_token: String,
 }
 
 type SharedState = Arc<Mutex<ManagerState>>;
@@ -73,10 +116,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         manager_port, n_instances, start_port, exe_path
     );
 
+    // Generate a single per-process auth token used for every WS connection
+    // (manager↔backend and client↔manager). Persist it so local clients can
+    // read it from a known file.
+    let auth_token = random_token();
+    let token_path = auth_token_path();
+    std::fs::write(&token_path, &auth_token)?;
+    eprintln!(
+        "[manager] auth token written to {}",
+        token_path.display()
+    );
+
     let mut ports = Vec::new();
     for i in 0..n_instances {
         let port = start_port + i as u16;
-        spawn_instance(&exe_path, port)?;
+        spawn_instance(&exe_path, port, &auth_token)?;
         ports.push(port);
     }
 
@@ -89,6 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state: SharedState = Arc::new(Mutex::new(ManagerState {
         instance_ports: ports.clone(),
         session_to_port: HashMap::new(),
+        auth_token: auth_token.clone(),
     }));
 
     let listener = TcpListener::bind(("127.0.0.1", manager_port)).await?;
@@ -105,13 +160,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn spawn_instance(exe: &str, port: u16) -> std::io::Result<()> {
+fn spawn_instance(exe: &str, port: u16, auth_token: &str) -> std::io::Result<()> {
     use std::process::Command;
     let path = std::path::Path::new(exe);
     let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     eprintln!("[manager] spawning {} on port {}", canon.display(), port);
     Command::new(&canon)
         .env("LLM_CHAT_WS_PORT", port.to_string())
+        .env("LLM_CHAT_AUTH_TOKEN", auth_token)
         .spawn()?;
     Ok(())
 }
@@ -133,11 +189,35 @@ async fn handle_client(
     stream: TcpStream,
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let expected_token = state.lock().await.auth_token.clone();
     let path_holder = Arc::new(std::sync::Mutex::new(String::new()));
     let path_capture = path_holder.clone();
-    let cb = move |req: &Request,
-                   resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+    let cb = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         *path_capture.lock().unwrap() = req.uri().path().to_string();
+        if let Some(origin) = req.headers().get("origin") {
+            let s = origin.to_str().unwrap_or("");
+            if s.starts_with("http://") || s.starts_with("https://") {
+                return Err(http::Response::builder()
+                    .status(http::StatusCode::FORBIDDEN)
+                    .body(Some("origin not allowed".to_string()))
+                    .unwrap());
+            }
+        }
+        let provided = match extract_token(req) {
+            Some(t) => t,
+            None => {
+                return Err(http::Response::builder()
+                    .status(http::StatusCode::UNAUTHORIZED)
+                    .body(Some("missing auth token".to_string()))
+                    .unwrap());
+            }
+        };
+        if !check_token_eq(&provided, &expected_token) {
+            return Err(http::Response::builder()
+                .status(http::StatusCode::UNAUTHORIZED)
+                .body(Some("invalid auth token".to_string()))
+                .unwrap());
+        }
         Ok(resp)
     };
     let ws = tokio_tungstenite::accept_hdr_async(stream, cb).await?;
@@ -349,14 +429,31 @@ async fn cmd_close(
     Ok(())
 }
 
+/// Build a tungstenite request to a backend with the auth token attached.
+fn auth_request(
+    url: &str,
+    token: &str,
+) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, Box<dyn std::error::Error + Send + Sync>>
+{
+    let mut req = url.into_client_request()?;
+    req.headers_mut()
+        .insert("Authorization", format!("Bearer {}", token).parse()?);
+    Ok(req)
+}
+
 /// Open a fresh /control WS to a backend, send one command, read one reply,
 /// close. Useful for one-shot RPC calls from the manager.
 async fn call_backend(
     port: u16,
     req: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    // Read the token from disk every call — manager wrote it at startup.
+    // (For perf this could be cached on AppState; left simple for now.)
+    let token = std::fs::read_to_string(auth_token_path())?
+        .trim()
+        .to_string();
     let url = format!("ws://127.0.0.1:{}/control", port);
-    let (mut ws, _) = connect_async(url).await?;
+    let (mut ws, _) = connect_async(auth_request(&url, &token)?).await?;
     // Discard the initial hello banner
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await;
     ws.send(Message::Text(req.to_string())).await?;
@@ -390,7 +487,17 @@ async fn bridge_session(
         }
     };
     let url = format!("ws://127.0.0.1:{}{}{}", port, base, sid);
-    let (backend_ws, _) = match connect_async(&url).await {
+    let token = state.lock().await.auth_token.clone();
+    let req_with_auth = match auth_request(&url, &token) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = client_sink
+                .send(Message::Text(format!("auth request build failed: {}", e)))
+                .await;
+            return Ok(());
+        }
+    };
+    let (backend_ws, _) = match connect_async(req_with_auth).await {
         Ok(p) => p,
         Err(e) => {
             let _ = client_sink
@@ -444,11 +551,18 @@ async fn handle_root(
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut sink, _) = ws.split();
-    let ports = state.lock().await.instance_ports.clone();
+    let (ports, token) = {
+        let st = state.lock().await;
+        (st.instance_ports.clone(), st.auth_token.clone())
+    };
     let mut all: Vec<String> = Vec::new();
     for p in &ports {
         let url = format!("ws://127.0.0.1:{}/", p);
-        if let Ok((mut bws, _)) = connect_async(&url).await {
+        let req = match auth_request(&url, &token) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if let Ok((mut bws, _)) = connect_async(req).await {
             if let Ok(Some(Ok(Message::Text(t)))) =
                 tokio::time::timeout(std::time::Duration::from_secs(2), bws.next()).await
             {

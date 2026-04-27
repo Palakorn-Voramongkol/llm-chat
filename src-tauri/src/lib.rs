@@ -795,16 +795,76 @@ fn append_control_log(dir: &str, msg: &serde_json::Value) {
     }
 }
 
+// ========== WebSocket auth ==========
+// Every WS endpoint requires a per-process random token. Manager passes the
+// token to spawned backends via LLM_CHAT_AUTH_TOKEN; standalone backends
+// generate one and write it to <temp>\llm-chat-qa\auth.token so local
+// scripts/the user can read it (filesystem ACL is the only barrier — fine
+// for loopback-only).
+fn load_or_generate_auth_token() -> String {
+    if let Ok(t) = std::env::var("LLM_CHAT_AUTH_TOKEN") {
+        if !t.is_empty() {
+            return t;
+        }
+    }
+    let token_path = qa_root_dir().join("auth.token");
+    if let Ok(t) = std::fs::read_to_string(&token_path) {
+        let trimmed = t.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    let token: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+    let _ = std::fs::write(&token_path, &token);
+    token
+}
+
+fn check_token_eq(provided: &str, expected: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    provided.as_bytes().ct_eq(expected.as_bytes()).into()
+}
+
+fn extract_token_from_request(
+    req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+) -> Option<String> {
+    if let Some(auth) = req.headers().get("authorization") {
+        if let Ok(s) = auth.to_str() {
+            if let Some(t) = s.strip_prefix("Bearer ") {
+                return Some(t.trim().to_string());
+            }
+        }
+    }
+    if let Some(query) = req.uri().query() {
+        for kv in query.split('&') {
+            if let Some(t) = kv.strip_prefix("token=") {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
 // ========== WebSocket relay server ==========
 // External chat clients can connect to ws://127.0.0.1:7878/s/<index> where
 // <index> is the 1-based session number. The server bridges the WS frames to
 // the session's PTY: WS text/binary -> PTY stdin; PTY output -> WS binary.
+//
+// Every connection must present the auth token, either via
+// `Authorization: Bearer <token>` header or `?token=<token>` query string.
+// Browser-style http(s) Origin headers are rejected outright.
 #[cfg(windows)]
 fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
     use futures_util::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
-    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+    use tokio_tungstenite::tungstenite::http;
     use tokio_tungstenite::tungstenite::Message;
+
+    let auth_token = load_or_generate_auth_token();
+    eprintln!("[ws] auth token loaded ({} chars)", auth_token.len());
 
     tauri::async_runtime::spawn(async move {
         let addr = format!("127.0.0.1:{}", port);
@@ -822,11 +882,38 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                 Err(e) => { eprintln!("WS accept: {}", e); continue; }
             };
             let app_handle = app_handle.clone();
+            let auth_token = auth_token.clone();
             tokio::spawn(async move {
                 let path_holder = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
                 let path_capture = path_holder.clone();
-                let cb = move |req: &Request, resp: Response| {
+                let token_for_cb = auth_token.clone();
+                let cb = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
                     *path_capture.lock().unwrap() = req.uri().path().to_string();
+                    // Reject browser-style origins outright.
+                    if let Some(origin) = req.headers().get("origin") {
+                        let s = origin.to_str().unwrap_or("");
+                        if s.starts_with("http://") || s.starts_with("https://") {
+                            return Err(http::Response::builder()
+                                .status(http::StatusCode::FORBIDDEN)
+                                .body(Some("origin not allowed".to_string()))
+                                .unwrap());
+                        }
+                    }
+                    let provided = match extract_token_from_request(req) {
+                        Some(t) => t,
+                        None => {
+                            return Err(http::Response::builder()
+                                .status(http::StatusCode::UNAUTHORIZED)
+                                .body(Some("missing auth token".to_string()))
+                                .unwrap());
+                        }
+                    };
+                    if !check_token_eq(&provided, &token_for_cb) {
+                        return Err(http::Response::builder()
+                            .status(http::StatusCode::UNAUTHORIZED)
+                            .body(Some("invalid auth token".to_string()))
+                            .unwrap());
+                    }
                     Ok(resp)
                 };
                 let ws = match tokio_tungstenite::accept_hdr_async(stream, cb).await {

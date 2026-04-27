@@ -2,7 +2,13 @@
 // Connects to ws://127.0.0.1:7777/control, opens 4 sessions (manager runs 2
 // backends, so it should round-robin), sends distinct prompts to each via
 // the manager's /s/<sessionId>, and asserts each got its own response.
+import fs from 'node:fs';
+import path from 'node:path';
 const decoder = new TextDecoder();
+
+const TOKEN_PATH = path.join(process.env.TEMP || process.env.TMPDIR || '/tmp', 'llm-chat-qa', 'auth.token');
+const TOKEN = fs.readFileSync(TOKEN_PATH, 'utf8').trim();
+const Q = `?token=${encodeURIComponent(TOKEN)}`;
 const strip = (s) => s
   .replace(/\x1b\][^\x07]*\x07/g, '')
   .replace(/\x1b\[[0-9;<>?]*[a-zA-Z]/g, '')
@@ -19,7 +25,7 @@ async function ctrl(ws, cmd) {
 
 function chat(label, sid, magic, ms = 22000) {
   return new Promise((res) => {
-    const ws = new WebSocket(`ws://127.0.0.1:7777/s/${sid}`);
+    const ws = new WebSocket(`ws://127.0.0.1:7777/s/${sid}${Q}`);
     ws.binaryType = 'arraybuffer';
     let raw = '';
     ws.addEventListener('open', () => ws.send(`reply with the single word ${magic}\r`));
@@ -35,7 +41,7 @@ function chat(label, sid, magic, ms = 22000) {
 }
 
 (async () => {
-  const w = new WebSocket('ws://127.0.0.1:7777/control');
+  const w = new WebSocket(`ws://127.0.0.1:7777/control${Q}`);
   await once(w, 'open');
   await once(w, 'message');
 
