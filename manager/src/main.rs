@@ -49,9 +49,53 @@ fn random_token() -> String {
 }
 
 fn auth_token_path() -> std::path::PathBuf {
+    // Prefer %LOCALAPPDATA%\com.llm-chat.app\ — per-user, not swept by temp
+    // cleaners, conventional Windows app-data location.
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let dir = std::path::Path::new(&local).join("com.llm-chat.app");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return dir.join("auth.token");
+        }
+    }
+    // Fallback (Linux/macOS or env-var missing): use temp.
     let dir = std::env::temp_dir().join("llm-chat-qa");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("auth.token")
+}
+
+/// Restrict the auth-token file's ACL so only the current user can read or
+/// write it. No-op on non-Windows. Best-effort — failures are logged, not
+/// fatal (the file is still per-user-readable by default ACL).
+fn lock_token_acl(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let username = match std::env::var("USERNAME") {
+            Ok(u) if !u.is_empty() => u,
+            _ => return,
+        };
+        let result = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/inheritance:r")
+            .arg("/grant:r")
+            .arg(format!("{}:F", username))
+            .output();
+        match result {
+            Ok(o) if o.status.success() => {
+                eprintln!("[manager] auth token ACL locked to user '{}'", username);
+            }
+            Ok(o) => {
+                eprintln!(
+                    "[manager] icacls non-zero exit: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+            Err(e) => eprintln!("[manager] icacls spawn failed: {}", e),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+    }
 }
 
 fn check_token_eq(provided: &str, expected: &str) -> bool {
@@ -122,10 +166,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let auth_token = random_token();
     let token_path = auth_token_path();
     std::fs::write(&token_path, &auth_token)?;
+    lock_token_acl(&token_path);
     eprintln!(
-        "[manager] auth token written to {}",
+        "[manager] auth token persisted to {}",
         token_path.display()
     );
+    // Also print the token itself to stderr so external clients can capture
+    // it without needing filesystem access.
+    eprintln!("[manager] auth token: {}", auth_token);
 
     let stealth: bool = matches!(
         std::env::var("MANAGER_STEALTH").ok().as_deref(),

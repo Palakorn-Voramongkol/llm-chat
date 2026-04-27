@@ -918,16 +918,47 @@ fn append_control_log(dir: &str, msg: &serde_json::Value) {
 // ========== WebSocket auth ==========
 // Every WS endpoint requires a per-process random token. Manager passes the
 // token to spawned backends via LLM_CHAT_AUTH_TOKEN; standalone backends
-// generate one and write it to <temp>\llm-chat-qa\auth.token so local
-// scripts/the user can read it (filesystem ACL is the only barrier — fine
-// for loopback-only).
+// fall back to %LOCALAPPDATA%\com.llm-chat.app\auth.token (per-user, not
+// swept by temp cleaners) and tighten its ACL so only the current user can
+// read it. The token is also printed to stderr at startup so external
+// clients can capture it without needing filesystem access.
+fn auth_token_file_path() -> std::path::PathBuf {
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        let dir = std::path::Path::new(&local).join("com.llm-chat.app");
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return dir.join("auth.token");
+        }
+    }
+    qa_root_dir().join("auth.token")
+}
+
+fn lock_token_file_acl(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let username = match std::env::var("USERNAME") {
+            Ok(u) if !u.is_empty() => u,
+            _ => return,
+        };
+        let _ = std::process::Command::new("icacls")
+            .arg(path)
+            .arg("/inheritance:r")
+            .arg("/grant:r")
+            .arg(format!("{}:F", username))
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+    }
+}
+
 fn load_or_generate_auth_token() -> String {
     if let Ok(t) = std::env::var("LLM_CHAT_AUTH_TOKEN") {
         if !t.is_empty() {
             return t;
         }
     }
-    let token_path = qa_root_dir().join("auth.token");
+    let token_path = auth_token_file_path();
     if let Ok(t) = std::fs::read_to_string(&token_path) {
         let trimmed = t.trim().to_string();
         if !trimmed.is_empty() {
@@ -939,6 +970,9 @@ fn load_or_generate_auth_token() -> String {
     rand::thread_rng().fill_bytes(&mut bytes);
     let token: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     let _ = std::fs::write(&token_path, &token);
+    lock_token_file_acl(&token_path);
+    eprintln!("[llm-chat] auth token: {}", token);
+    eprintln!("[llm-chat] persisted to {}", token_path.display());
     token
 }
 
