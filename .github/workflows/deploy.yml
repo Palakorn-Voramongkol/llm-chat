@@ -151,23 +151,20 @@ jobs:
 
       - name: Materialize kabytech key
         run: |
-          mkdir -p ~/.config/llm-chat
-          echo "${{ secrets.KABYTECH_KEY }}" > ~/.config/llm-chat/kabytech-key.json
-          chmod 600 ~/.config/llm-chat/kabytech-key.json
+          mkdir -p "$HOME/.config/llm-chat"
+          echo "${{ secrets.KABYTECH_KEY }}" > "$HOME/.config/llm-chat/kabytech-key.json"
+          chmod 600 "$HOME/.config/llm-chat/kabytech-key.json"
 
       - name: Run e2e client
         env:
           ZITADEL_ISSUER: ${{ env.ZITADEL_ISSUER }}
           PROJECT_ID:     ${{ env.PROJECT_ID }}
-          KABYTECH_KEY:   ~/.config/llm-chat/kabytech-key.json
-          # Hit the manager via the public host.
           MANAGER_WS:     wss://${{ env.MANAGER_PUBLIC_HOST }}/chat
         run: |
-          KABY_KEY=$(echo $KABYTECH_KEY)
           python clients/python/llm_chat_client.py \
             --issuer    "$ZITADEL_ISSUER" \
             --project   "$PROJECT_ID" \
-            --key-file  "$KABY_KEY" \
+            --key-file  "$HOME/.config/llm-chat/kabytech-key.json" \
             --manager   "$MANAGER_WS" \
             --send      "hello" \
             --timeout   60
