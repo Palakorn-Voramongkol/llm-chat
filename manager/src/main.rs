@@ -73,6 +73,8 @@ impl ChatDb {
     }
 
     /// INSERT a 'pending' question. Returns the autoincrement seq.
+    /// `attachment_paths_json` is an optional JSON array string of absolute
+    /// file paths the backend saved for this question (e.g. `["/path/a.png"]`).
     async fn insert_pending(
         &self,
         connection_id: &str,
@@ -80,23 +82,28 @@ impl ChatDb {
         q_id: &str,
         text: &str,
         time_in: &str,
+        attachment_paths_json: Option<&str>,
     ) -> Result<i64, sqlx::Error> {
         match self {
             ChatDb::Sqlite(p) => {
                 let r = sqlx::query(
-                    "INSERT INTO chat_question (connection_id, sid, q_id, text, time_in, status)
-                     VALUES (?, ?, ?, ?, ?, 'pending')",
+                    "INSERT INTO chat_question
+                     (connection_id, sid, q_id, text, time_in, status, attachment_paths)
+                     VALUES (?, ?, ?, ?, ?, 'pending', ?)",
                 )
                 .bind(connection_id).bind(sid).bind(q_id).bind(text).bind(time_in)
+                .bind(attachment_paths_json)
                 .execute(p).await?;
                 Ok(r.last_insert_rowid())
             }
             ChatDb::Postgres(p) => {
                 let row: (i64,) = sqlx::query_as(
-                    "INSERT INTO chat_question (connection_id, sid, q_id, text, time_in, status)
-                     VALUES ($1, $2, $3, $4, $5, 'pending') RETURNING seq",
+                    "INSERT INTO chat_question
+                     (connection_id, sid, q_id, text, time_in, status, attachment_paths)
+                     VALUES ($1, $2, $3, $4, $5, 'pending', $6) RETURNING seq",
                 )
                 .bind(connection_id).bind(sid).bind(q_id).bind(text).bind(time_in)
+                .bind(attachment_paths_json)
                 .fetch_one(p).await?;
                 Ok(row.0)
             }
@@ -254,17 +261,20 @@ async fn init_schema_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
             status TEXT NOT NULL DEFAULT 'pending',
             answer_text TEXT,
             time_out TEXT,
-            time_confirmed TEXT
+            time_confirmed TEXT,
+            attachment_paths TEXT
         );
         "#,
     )
     .execute(pool)
     .await?;
-    // Migration: add time_confirmed to existing tables. SQLite has no
-    // ADD COLUMN IF NOT EXISTS — ignore the duplicate-column error.
+    // SQLite has no ADD COLUMN IF NOT EXISTS — ignore the duplicate-column
+    // errors. These migrations run once per startup and are idempotent
+    // either way (the column either exists already or we just added it).
     let _ = sqlx::query("ALTER TABLE chat_question ADD COLUMN time_confirmed TEXT;")
-        .execute(pool)
-        .await;
+        .execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE chat_question ADD COLUMN attachment_paths TEXT;")
+        .execute(pool).await;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);")
         .execute(pool)
         .await?;
@@ -284,17 +294,17 @@ async fn init_schema_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
             status TEXT NOT NULL DEFAULT 'pending',
             answer_text TEXT,
             time_out TEXT,
-            time_confirmed TEXT
+            time_confirmed TEXT,
+            attachment_paths TEXT
         );
         "#,
     )
     .execute(pool)
     .await?;
-    // Migration: add time_confirmed to existing tables. Postgres supports it
-    // natively; safe to run on every startup.
     sqlx::query("ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS time_confirmed TEXT;")
-        .execute(pool)
-        .await?;
+        .execute(pool).await?;
+    sqlx::query("ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS attachment_paths TEXT;")
+        .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);")
         .execute(pool)
         .await?;
@@ -318,11 +328,11 @@ async fn query_chat_queue(
     status: Option<&str>,
     limit: i64,
 ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
-    type Row = (i64, String, String, String, String, String, String, Option<String>, Option<String>);
+    type Row = (i64, String, String, String, String, String, String, Option<String>, Option<String>, Option<String>);
     let rows: Vec<Row> = match db {
         ChatDb::Sqlite(pool) => {
             let mut sql = String::from(
-                "SELECT seq, connection_id, sid, q_id, text, time_in, status, answer_text, time_out
+                "SELECT seq, connection_id, sid, q_id, text, time_in, status, answer_text, time_out, attachment_paths
                  FROM chat_question WHERE 1=1",
             );
             if connection_id.is_some() { sql.push_str(" AND connection_id = ?"); }
@@ -337,7 +347,7 @@ async fn query_chat_queue(
         }
         ChatDb::Postgres(pool) => {
             let mut sql = String::from(
-                "SELECT seq, connection_id, sid, q_id, text, time_in, status, answer_text, time_out
+                "SELECT seq, connection_id, sid, q_id, text, time_in, status, answer_text, time_out, attachment_paths
                  FROM chat_question WHERE 1=1",
             );
             let mut idx = 1;
@@ -354,7 +364,13 @@ async fn query_chat_queue(
     };
     Ok(rows
         .into_iter()
-        .map(|(seq, conn, sid, qid, text, ti, st, atxt, to)| {
+        .map(|(seq, conn, sid, qid, text, ti, st, atxt, to, atts)| {
+            // attachment_paths is stored as a JSON array string. Parse it back
+            // to a JSON value so consumers don't get a double-encoded string.
+            let attachments_json: serde_json::Value = atts
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::Value::Null);
             serde_json::json!({
                 "seq": seq,
                 "connectionId": conn,
@@ -365,6 +381,7 @@ async fn query_chat_queue(
                 "status": st,
                 "answerText": atxt,
                 "timeOut": to,
+                "attachmentPaths": attachments_json,
             })
         })
         .collect())
@@ -478,6 +495,24 @@ fn extract_token(req: &Request) -> Option<String> {
     None
 }
 
+/// Live registry entry for one connected /chat client. Mutated as the client
+/// sends questions; removed when the connection ends. Purely in-memory — the
+/// chat_question table has the persistent record of what they sent.
+#[derive(Clone, serde::Serialize)]
+struct ClientInfo {
+    #[serde(rename = "connectionId")]
+    connection_id: String,
+    sid: String,
+    #[serde(rename = "backendPort")]
+    backend_port: u16,
+    #[serde(rename = "connectedAt")]
+    connected_at: String,
+    #[serde(rename = "lastQAt")]
+    last_q_at: Option<String>,
+    #[serde(rename = "questionsSent")]
+    questions_sent: u32,
+}
+
 // Not Default — chat_db requires an open SqlitePool, constructed in main().
 struct ManagerState {
     /// Backend ports, in spawn order.
@@ -490,6 +525,10 @@ struct ManagerState {
     /// $MANAGER_DB_URL. Source of truth for the queue; outlives any single
     /// connection so a crash mid-question is recoverable.
     chat_db: ChatDb,
+    /// Live /chat clients keyed by connection_id. Inserted on connect,
+    /// updated on each q, removed on disconnect. /control "clients" reads
+    /// this for a real-time view of who's online.
+    clients: HashMap<String, ClientInfo>,
 }
 
 type SharedState = Arc<Mutex<ManagerState>>;
@@ -595,6 +634,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_to_port: HashMap::new(),
         auth_token: auth_token.clone(),
         chat_db,
+        clients: HashMap::new(),
     }));
 
     let listener = TcpListener::bind(("127.0.0.1", manager_port)).await?;
@@ -870,6 +910,15 @@ async fn handle_control(
                     }
                     serde_json::json!({"ok":true,"histories":all})
                 }
+            }
+            "clients" => {
+                // Live registry: who's currently connected to /chat right
+                // now (separate from chat_question, which is the historical
+                // record of what they sent).
+                let st = state.lock().await;
+                let mut list: Vec<ClientInfo> = st.clients.values().cloned().collect();
+                list.sort_by(|a, b| a.connected_at.cmp(&b.connected_at));
+                serde_json::json!({"ok": true, "count": list.len(), "clients": list})
             }
             "queue" => {
                 // Inspect the manager's OWN /chat queue (chat_question table
@@ -1190,6 +1239,22 @@ async fn handle_chat(
         "session opened"
     );
 
+    // Register in the live clients map so /control "clients" sees us.
+    {
+        let mut st = state.lock().await;
+        st.clients.insert(
+            connection_id.clone(),
+            ClientInfo {
+                connection_id: connection_id.clone(),
+                sid: sid.clone(),
+                backend_port: port,
+                connected_at: now_iso(),
+                last_q_at: None,
+                questions_sent: 0,
+            },
+        );
+    }
+
     let (token, db) = {
         let st = state.lock().await;
         (st.auth_token.clone(), st.chat_db.clone())
@@ -1259,6 +1324,7 @@ async fn handle_chat(
     let connection_id_for_in = connection_id.clone();
     let sid_for_in = sid.clone();
     let answer_tx_for_in = answer_tx.clone();
+    let state_for_in = state.clone();
     let reader = tokio::spawn(async move {
         while let Some(msg) = ws_stream.next().await {
             let text = match msg {
@@ -1324,10 +1390,90 @@ async fn handle_chat(
                     .await;
                 continue;
             }
+
+            // Forward any attachments to the backend FIRST so we get back
+            // the absolute on-disk paths, then prepend `@<path>` markers to
+            // the text claude will actually see. Failures stop the whole q.
+            let attachments = v.get("attachments").and_then(|x| x.as_array()).cloned();
+            let mut saved_paths: Vec<String> = Vec::new();
+            if let Some(arr) = attachments {
+                let mut hard_err: Option<String> = None;
+                for att in arr {
+                    let name = att.get("name").and_then(|x| x.as_str()).unwrap_or("attachment").to_string();
+                    let mime = att.get("mime").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let data = att.get("data").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    if mime.is_empty() || data.is_empty() {
+                        hard_err = Some(format!("attachment '{}' missing mime or data", name));
+                        break;
+                    }
+                    let req_payload = serde_json::json!({
+                        "cmd": "save_attachment",
+                        "sid": sid_for_in,
+                        "name": name,
+                        "mime": mime,
+                        "data": data,
+                    });
+                    match call_backend(port, req_payload).await {
+                        Ok(reply) => {
+                            if reply.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                                if let Some(p) = reply.get("path").and_then(|v| v.as_str()) {
+                                    saved_paths.push(p.to_string());
+                                } else {
+                                    hard_err = Some("backend save_attachment returned no path".into());
+                                    break;
+                                }
+                            } else {
+                                let err = reply.get("error").and_then(|v| v.as_str())
+                                    .unwrap_or("unknown error").to_string();
+                                hard_err = Some(format!("backend save_attachment: {}", err));
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            hard_err = Some(format!("backend call: {}", e));
+                            break;
+                        }
+                    }
+                }
+                if let Some(err) = hard_err {
+                    let _ = answer_tx_for_in
+                        .send(serde_json::json!({
+                            "type":"err","id":id,"text":err,
+                            "timeIn":time_in,"timeOut":now_iso(),
+                        })).await;
+                    continue;
+                }
+            }
+
+            // Tell claude about each attachment via plain text + an
+            // explicit instruction to use its Read tool. The naive `@<path>`
+            // approach doesn't work in our PTY-driven flow because `@` opens
+            // claude's interactive file-picker menu (which expects keyboard
+            // navigation, not a typed path) — the prompt then never submits.
+            // Read-tool wording is reliable: claude reads the file as part
+            // of normal chat handling.
+            let final_text = if saved_paths.is_empty() {
+                q_text.clone()
+            } else {
+                let prefix = saved_paths.iter()
+                    .map(|p| format!("Read the file at {}.", p))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{} {}", prefix, q_text)
+            };
+            let attachment_paths_json = if saved_paths.is_empty() {
+                None
+            } else {
+                serde_json::to_string(&saved_paths).ok()
+            };
+
             // INSERT into the FIFO with status='pending'. seq is the FIFO key
             // AND the server-assigned receipt id we return in `ack` and `a`.
             let seq = match db_for_in
-                .insert_pending(&connection_id_for_in, &sid_for_in, &id, &q_text, &time_in)
+                .insert_pending(
+                    &connection_id_for_in, &sid_for_in, &id, &final_text, &time_in,
+                    attachment_paths_json.as_deref(),
+                )
                 .await
             {
                 Ok(s) => s,
@@ -1353,10 +1499,12 @@ async fn handle_chat(
                     "timeIn": time_in,
                 }))
                 .await;
-            // Write to backend PTY, then mark 'sent'. If the write fails the
-            // row stays 'pending' on disk — useful for diagnostics later.
-            let payload = format!("{}\r", q_text);
-            if s_sink.send(Message::Text(payload)).await.is_err() {
+            // Write to backend PTY in TWO frames: the text body, a brief
+            // pause, then the Enter (\r) keystroke. Claude's TUI input box
+            // sometimes fails to submit when text + \r arrive in a single
+            // write (especially long prompts that wrap to multiple visual
+            // lines) — the human-typing pattern works reliably.
+            if s_sink.send(Message::Text(final_text.clone())).await.is_err() {
                 let _ = db_for_in.update_status(seq, "error").await;
                 let _ = answer_tx_for_in
                     .send(serde_json::json!({
@@ -1365,7 +1513,25 @@ async fn handle_chat(
                     })).await;
                 break;
             }
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            if s_sink.send(Message::Text("\r".to_string())).await.is_err() {
+                let _ = db_for_in.update_status(seq, "error").await;
+                let _ = answer_tx_for_in
+                    .send(serde_json::json!({
+                        "type":"err","id":id,"seq":seq,"text":"backend PTY closed (enter)",
+                        "timeIn": time_in,"timeOut": now_iso(),
+                    })).await;
+                break;
+            }
             let _ = db_for_in.update_status(seq, "sent").await;
+            // Bump the client's live counter so /control "clients" reflects activity.
+            {
+                let mut st = state_for_in.lock().await;
+                if let Some(info) = st.clients.get_mut(&connection_id_for_in) {
+                    info.last_q_at = Some(time_in.clone());
+                    info.questions_sent += 1;
+                }
+            }
             tracing::debug!(target: "manager::chat", id=%id, seq, "queued + sent");
         }
     });
@@ -1488,6 +1654,8 @@ async fn handle_chat(
         connection_id = %connection_id,
         "client disconnected → auto-close"
     );
+    // Drop from the live registry (chat_question rows persist independently).
+    state.lock().await.clients.remove(&connection_id);
     let _ = cmd_close(&state, &sid).await;
     Ok(())
 }

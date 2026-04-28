@@ -1988,6 +1988,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "windows 0.58.0",
 ]
 

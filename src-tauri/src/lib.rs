@@ -132,6 +132,83 @@ async fn query_pty_input(
         .collect())
 }
 
+// ---------- Attachments ----------
+//
+// The manager forwards attached files (PDFs, images) to the backend via a
+// /control "save_attachment" command. We decode the base64 payload and write
+// it into a per-session directory:
+//
+//   $XDG_DATA_HOME/com.llm-chat.app/attachments/<sid>/<uuid>-<sanitized-name>
+//
+// On session close, the entire <sid>/ directory is removed.
+//
+// Only image/* and application/pdf MIME types are accepted — claude can
+// process those via vision / PDF reader. Anything else is rejected so we
+// don't silently store untrusted blobs of unknown type.
+const ATTACHMENT_ALLOWED_MIME: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "application/pdf",
+];
+
+fn attachment_dir(sid: &str) -> std::path::PathBuf {
+    auth_token_file_path()
+        .with_file_name("attachments")
+        .join(sanitize_path_component(sid))
+}
+
+fn sanitize_path_component(s: &str) -> String {
+    // Drop anything that could escape the directory or look weird in a path.
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect()
+}
+
+fn save_attachment(sid: &str, name: &str, mime: &str, b64: &str) -> Result<std::path::PathBuf, String> {
+    if !ATTACHMENT_ALLOWED_MIME.contains(&mime) {
+        return Err(format!("MIME type not allowed: {}", mime));
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("base64 decode: {}", e))?;
+    let dir = attachment_dir(sid);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
+    let safe_name = sanitize_path_component(name);
+    // Prefix with a short uuid to avoid collisions when the same name is
+    // attached more than once in one session.
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let id_short = &id[..8];
+    let path = dir.join(format!("{}-{}", id_short, safe_name));
+    std::fs::write(&path, &bytes).map_err(|e| format!("write {}: {}", path.display(), e))?;
+    tracing::info!(
+        target: "backend::attachment",
+        sid,
+        name = name,
+        mime,
+        bytes = bytes.len(),
+        path = %path.display(),
+        "attachment saved"
+    );
+    Ok(path)
+}
+
+fn cleanup_attachments(sid: &str) {
+    let dir = attachment_dir(sid);
+    if dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            tracing::warn!(target: "backend::attachment", sid, error = %e, "cleanup failed");
+        } else {
+            tracing::debug!(target: "backend::attachment", sid, path = %dir.display(), "cleaned up");
+        }
+    }
+}
+
+// We need uuid in the backend now. Add it to Cargo.toml.
+
 /// Mark a previously-recorded write as completed (or errored).
 async fn pty_input_mark(seq: i64, ok: bool) {
     let Some(pool) = PTY_INPUT_DB.get() else { return };
@@ -756,13 +833,24 @@ fn do_spawn_session(
             ));
         }
     }
-    let cmd = find_claude_path().unwrap_or_else(|| {
+    let claude_path = find_claude_path().unwrap_or_else(|| {
         tracing::warn!(target: "backend::pty", "claude CLI not found on PATH");
         #[cfg(windows)]
         { "echo Claude CLI not found in PATH, APPDATA\\npm, or %LOCALAPPDATA%\\AnthropicClaude && pause".into() }
         #[cfg(unix)]
         { "echo 'Claude CLI not found in PATH'; sleep 30".into() }
     });
+    // Claude needs explicit permission to use its Read tool on each file. In
+    // a PTY-driven chat, the permission prompt blocks the input we typed past
+    // it, so we always run claude with --dangerously-skip-permissions. The
+    // user can override via $LLM_CHAT_CLAUDE_ARGS.
+    let extra_args = std::env::var("LLM_CHAT_CLAUDE_ARGS")
+        .unwrap_or_else(|_| "--dangerously-skip-permissions".into());
+    let cmd = if extra_args.is_empty() {
+        claude_path
+    } else {
+        format!("{} {}", claude_path, extra_args)
+    };
     let c = if cols == 0 { 120i16 } else { cols as i16 };
     let r = if rows == 0 { 30i16 } else { rows as i16 };
     tracing::info!(
@@ -840,6 +928,7 @@ fn close_session(
             .lock()
             .unwrap()
             .retain(|id| id != &session_id);
+        cleanup_attachments(&session_id);
         tracing::info!(
             target: "backend::session",
             sid = %session_id,
@@ -1727,6 +1816,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     .lock()
                                     .unwrap()
                                     .retain(|x| x != &sid);
+                                cleanup_attachments(&sid);
                                 use tauri::Emitter;
                                 let _ = app_handle_ctrl.emit(
                                     "external-session-closed",
@@ -1760,6 +1850,22 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     "ok": true,
                                     "path": path.to_string_lossy(),
                                 })
+                            }
+                            "save_attachment" => {
+                                // Manager-only call: { sid, name, mime, data:base64 }
+                                // → { ok, path } (absolute file path on this host)
+                                let sid = req.get("sid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("attachment").to_string();
+                                let mime = req.get("mime").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let data = req.get("data").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                if sid.is_empty() || mime.is_empty() || data.is_empty() {
+                                    serde_json::json!({"ok":false,"error":"sid+mime+data required"})
+                                } else {
+                                    match save_attachment(&sid, &name, &mime, &data) {
+                                        Ok(p) => serde_json::json!({"ok":true,"path":p.to_string_lossy()}),
+                                        Err(e) => serde_json::json!({"ok":false,"error":e}),
+                                    }
+                                }
                             }
                             "fifo" => {
                                 // Inspect the SQLite-backed PTY input FIFO.
