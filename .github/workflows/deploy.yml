@@ -150,10 +150,18 @@ jobs:
         run: pip install --quiet pyjwt cryptography requests websockets
 
       - name: Materialize kabytech key
+        env:
+          # Pull the secret in via env so the value isn't interpreted by the
+          # shell. `echo "${{ secrets.X }}"` mangles backslashes / quote chars
+          # that appear inside an OpenSSH-formatted JSON value.
+          KABY_SECRET: ${{ secrets.KABYTECH_KEY }}
         run: |
           mkdir -p "$HOME/.config/llm-chat"
-          echo "${{ secrets.KABYTECH_KEY }}" > "$HOME/.config/llm-chat/kabytech-key.json"
+          printf '%s' "$KABY_SECRET" > "$HOME/.config/llm-chat/kabytech-key.json"
           chmod 600 "$HOME/.config/llm-chat/kabytech-key.json"
+          # Sanity: file must parse as JSON
+          python -c "import json; json.load(open('$HOME/.config/llm-chat/kabytech-key.json'))" \
+              && echo "kabytech key parses as JSON OK"
 
       - name: Run e2e client
         env:
