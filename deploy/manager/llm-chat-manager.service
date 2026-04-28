@@ -1,0 +1,33 @@
+[Unit]
+Description=llm-chat manager (Rust)
+Documentation=https://github.com/Palakorn-Voramongkol/llm-chat
+After=network-online.target zitadel.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=llm-chat
+Group=llm-chat
+WorkingDirectory=/var/lib/llm-chat
+EnvironmentFile=/etc/llm-chat/manager.env
+ExecStart=/usr/local/bin/llm-chat-manager
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+# Hardening — manager only needs network and its own data dir.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/llm-chat
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

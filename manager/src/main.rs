@@ -15,7 +15,7 @@
 //   MANAGER_START_PORT    — first backend port; consecutive ports are used
 //                            (default 7878)
 //   LLM_CHAT_EXE          — path to llm-chat.exe (default
-//                            "../src-tauri/target/debug/llm-chat.exe"
+//                            "../worker/target/debug/llm-chat.exe"
 //                            relative to manager.exe location)
 
 mod auth_zitadel;
@@ -581,8 +581,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // built in release, but fall back to debug if release isn't present.
         let backend_name = if cfg!(windows) { "llm-chat.exe" } else { "llm-chat" };
         let project_root = exe_dir.join("..").join("..").join("..");
-        let release = project_root.join("src-tauri").join("target").join("release").join(backend_name);
-        let debug = project_root.join("src-tauri").join("target").join("debug").join(backend_name);
+        let release = project_root.join("worker").join("target").join("release").join(backend_name);
+        let debug = project_root.join("worker").join("target").join("debug").join(backend_name);
         let chosen = if release.exists() { release } else { debug };
         chosen.to_string_lossy().into_owned()
     });

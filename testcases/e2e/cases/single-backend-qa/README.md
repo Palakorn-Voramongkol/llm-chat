@@ -9,7 +9,7 @@ backend's auto-spawned boot session.
 ```bash
 # from project root
 LLM_CHAT_AUTH_TOKEN=devtoken123 LLM_CHAT_WS_PORT=7878 \
-  setsid xvfb-run -a ./src-tauri/target/release/llm-chat \
+  setsid xvfb-run -a ./worker/target/release/llm-chat \
   > /tmp/single-backend.log 2>&1 < /dev/null &
 disown
 sleep 8

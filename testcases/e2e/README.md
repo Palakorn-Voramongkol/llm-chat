@@ -7,7 +7,7 @@ PASS looks like.
 All test cases assume the project's release binaries are built:
 
 ```bash
-(cd src-tauri && cargo build --release)
+(cd worker && cargo build --release)
 (cd manager   && cargo build --release)
 ```
 

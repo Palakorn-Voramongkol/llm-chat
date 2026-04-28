@@ -1,0 +1,164 @@
+name: Deploy + e2e
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Only one deploy in flight at a time, latest wins.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  ZITADEL_ISSUER: https://id.palakorn.com
+  PROJECT_ID: "370627061150121985"
+  # The manager's WS endpoints (/chat /control /qa /s) live on the same
+  # nginx vhost as Zitadel — those paths don't collide with Zitadel's.
+  MANAGER_PUBLIC_HOST: id.palakorn.com
+
+jobs:
+  # ────────────────────────────────────────────────────────────────
+  # 1. Build release artifacts for both crates.
+  # ────────────────────────────────────────────────────────────────
+  build:
+    name: build release artifacts
+    runs-on: ubuntu-24.04
+    outputs:
+      manager_sha: ${{ steps.hash.outputs.manager }}
+      worker_sha:  ${{ steps.hash.outputs.worker }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            manager
+            worker
+
+      - name: Install Tauri Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libsoup-3.0-dev libxdo-dev patchelf
+
+      - name: cargo build --release (manager)
+        run: cargo build --release --manifest-path manager/Cargo.toml
+
+      - name: cargo build --release (worker)
+        run: cargo build --release --manifest-path worker/Cargo.toml
+
+      - name: Hash artifacts
+        id: hash
+        run: |
+          echo "manager=$(sha256sum manager/target/release/llm-chat-manager | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "worker=$(sha256sum worker/target/release/llm-chat | awk '{print $1}')"           >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: |
+            manager/target/release/llm-chat-manager
+            worker/target/release/llm-chat
+          if-no-files-found: error
+          retention-days: 7
+
+  # ────────────────────────────────────────────────────────────────
+  # 2. Deploy: scp binaries + systemctl restart via the deploy SSH key.
+  # ────────────────────────────────────────────────────────────────
+  deploy:
+    name: deploy to id.palakorn.com
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-binaries
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Inspect downloaded artifacts
+        run: |
+          ls -la
+          ls -la manager/target/release/ 2>/dev/null
+          ls -la worker/target/release/ 2>/dev/null
+
+      - name: Upload binaries → staging
+        env:
+          SCP: "scp -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new"
+        run: |
+          # The forced command on the server allows scp into the staging dirs.
+          $SCP manager/target/release/llm-chat-manager \
+              "deploy@${{ secrets.SSH_HOST }}:/var/lib/deploy/llm-chat/manager/llm-chat-manager"
+          $SCP worker/target/release/llm-chat \
+              "deploy@${{ secrets.SSH_HOST }}:/var/lib/deploy/llm-chat/worker/llm-chat-worker"
+
+      - name: Install binaries + restart manager
+        run: |
+          ssh -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" install-worker-binary
+          ssh -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" install-manager-binary
+          # Manager owns the worker as a child process; restarting it respawns
+          # the worker with the new binary.
+          ssh -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" restart-manager
+
+      - name: Wait for manager ready
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 3 "https://${{ env.MANAGER_PUBLIC_HOST }}/.well-known/openid-configuration" > /dev/null; then
+              echo "ok"; exit 0
+            fi
+            sleep 2
+          done
+          echo "manager did not become reachable" >&2
+          exit 1
+
+  # ────────────────────────────────────────────────────────────────
+  # 3. End-to-end: kabytech (machine user) → manager /chat → expect answer.
+  # ────────────────────────────────────────────────────────────────
+  e2e:
+    name: e2e (kabytech says hello)
+    runs-on: ubuntu-24.04
+    needs: deploy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install client deps
+        run: pip install --quiet pyjwt cryptography requests websockets
+
+      - name: Materialize kabytech key
+        run: |
+          mkdir -p ~/.config/llm-chat
+          echo "${{ secrets.KABYTECH_KEY }}" > ~/.config/llm-chat/kabytech-key.json
+          chmod 600 ~/.config/llm-chat/kabytech-key.json
+
+      - name: Run e2e client
+        env:
+          ZITADEL_ISSUER: ${{ env.ZITADEL_ISSUER }}
+          PROJECT_ID:     ${{ env.PROJECT_ID }}
+          KABYTECH_KEY:   ~/.config/llm-chat/kabytech-key.json
+          # Hit the manager via the public host.
+          MANAGER_WS:     wss://${{ env.MANAGER_PUBLIC_HOST }}/chat
+        run: |
+          KABY_KEY=$(echo $KABYTECH_KEY)
+          python clients/python/llm_chat_client.py \
+            --issuer    "$ZITADEL_ISSUER" \
+            --project   "$PROJECT_ID" \
+            --key-file  "$KABY_KEY" \
+            --manager   "$MANAGER_WS" \
+            --send      "hello" \
+            --timeout   60

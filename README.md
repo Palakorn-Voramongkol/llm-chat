@@ -17,24 +17,37 @@ That's it. No on-screen keyboard, no auth, no web server, no NATS — just a ter
 
 ```
 .
-├── src/
-│   ├── index.html          # single window
-│   ├── main.js             # xterm + PTY wiring + auto-start
-│   ├── styles.css
-│   └── lib/xterm/          # vendored xterm.js + fit addon
-└── src-tauri/
-    ├── src/
-    │   ├── main.rs
-    │   └── lib.rs          # ConPTY, find_claude_path, pty_write/resize/terminal_ready
-    ├── capabilities/default.json
-    ├── tauri.conf.json
-    ├── Cargo.toml
-    └── build.rs
+├── manager/                  # Rust manager (auth, queue, routing) — listens 7777
+│   ├── Cargo.toml
+│   └── src/
+│       ├── main.rs
+│       └── auth_zitadel.rs   # Zitadel JWT verifier (JWKS-cached, sync verify)
+│
+├── worker/                   # Tauri PTY backend — spawns claude CLI in a PTY
+│   ├── Cargo.toml
+│   ├── src/                  # Rust: ConPTY (Win) + portable-pty (Unix)
+│   ├── tauri.conf.json
+│   ├── capabilities/   icons/   build.rs
+│   ├── frontend/             # JS UI (xterm.js + parser)
+│   │   ├── index.html  terminal.js  claude_cli_parser.js
+│   │   └── lib/xterm/        # vendored xterm.js + fit addon
+│   ├── package.json
+│   └── package-lock.json
+│
+├── clients/python/           # Reference Python client (machine-user JWT auth)
+├── tests/                    # Cross-component WS integration tests
+├── deploy/
+│   ├── zitadel/              # Zitadel + login UI deployment artifacts
+│   ├── manager/              # (TODO) systemd unit + nginx vhost for the manager
+│   └── worker/               # (TODO)
+├── docs/                     # Endpoint reference per component
+└── .github/workflows/ci.yml  # matrix CI: manager × worker, debug × release
 ```
 
-## Run
+## Run (worker only, dev)
 
 ```bash
+cd worker
 npm install
 npm run tauri dev
 ```
