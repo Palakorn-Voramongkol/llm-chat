@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Cancel in-flight runs for the same branch — only the latest matters.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The Tauri build script reads this so package.json doesn't need to be present
+  # on workers that only build the Rust side.
+  TAURI_SKIP_DEVSERVER_CHECK: "true"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────
+  # Manager — pure Rust, no system deps, fast.
+  # ──────────────────────────────────────────────────────────────────
+  manager:
+    name: manager (${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [ debug, release ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: manager
+          key: manager-${{ matrix.profile }}
+
+      - name: rustfmt
+        if: matrix.profile == 'debug'
+        run: cargo fmt --manifest-path manager/Cargo.toml --all -- --check
+
+      - name: clippy
+        if: matrix.profile == 'debug'
+        run: cargo clippy --manifest-path manager/Cargo.toml --all-targets -- -D warnings
+        continue-on-error: true   # warnings exist today; flip to false once cleaned up
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.profile }}" = "release" ]; then
+            cargo build --release --manifest-path manager/Cargo.toml
+          else
+            cargo build --manifest-path manager/Cargo.toml
+          fi
+
+      - name: Tests
+        if: matrix.profile == 'debug'
+        run: cargo test --manifest-path manager/Cargo.toml --all
+
+  # ──────────────────────────────────────────────────────────────────
+  # Tauri backend — `cargo check` only on Linux. Full bundle would
+  # need system deps (libwebkit2gtk, libsoup, etc.) and the JS
+  # frontend; not needed for code review.
+  # ──────────────────────────────────────────────────────────────────
+  tauri-check:
+    name: tauri backend check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri build deps (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libxdo-dev \
+            patchelf
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: tauri-check
+
+      - name: cargo check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
