@@ -1081,6 +1081,61 @@ fn open_qa_log(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Strip Claude-CLI TUI footer noise from a parser-emitted answer.
+///
+/// Two passes:
+///   1. Line-based filter for raw multi-line input.
+///   2. Inline truncation at the first TUI-chrome glyph. The frontend parser
+///      joins xterm visual rows with single spaces before invoking
+///      broadcast_qa, which collapses chrome lines into the answer; pass 1
+///      can't see them. The glyphs below (spinners, mode/model indicators)
+///      never appear in normal prose, so truncating at the first occurrence
+///      reliably cuts the footer without harming legitimate text.
+fn clean_answer(text: &str) -> String {
+    let line_filtered = text
+        .lines()
+        .map(|l| l.trim_end())
+        .filter(|l| !l.is_empty())
+        .filter(|l| {
+            if let Some(c) = l.chars().next() {
+                // Spinner glyphs: "✻ Cogitated for 6s", "✶ ...", "✽ ...", "✢ ..."
+                if matches!(c, '✻' | '✶' | '✽' | '✢' | '✱' | '✷' | '✺') {
+                    return false;
+                }
+                // Model/effort indicator line: "◉ xhigh · /effort"
+                if matches!(c, '◉' | '◯') {
+                    return false;
+                }
+            }
+            // Claude's PATH hint and the export command it suggests
+            if l.starts_with("Native installation exists") {
+                return false;
+            }
+            if l.starts_with("echo 'export PATH=") {
+                return false;
+            }
+            // Bottom hint bar: "? for shortcuts" / "esc to interrupt ..."
+            if l.starts_with("? for shortcuts") || l.starts_with("esc to interrupt") {
+                return false;
+            }
+            // Mode hint: "⏵⏵ bypass permissions on (shift+tab to cycle)"
+            if l.starts_with("⏵⏵") || l.contains("(shift+tab to cycle)") {
+                return false;
+            }
+            true
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    const CHROME_CHARS: &[char] = &[
+        '⏵', '◉', '◯', '✻', '✶', '✢', '✷', '✺', '✱', '✽',
+    ];
+    match line_filtered.find(|c: char| CHROME_CHARS.contains(&c)) {
+        Some(pos) => line_filtered[..pos].trim_end().to_string(),
+        None => line_filtered,
+    }
+}
+
 #[tauri::command]
 fn broadcast_qa(
     num: u32,
@@ -1092,6 +1147,12 @@ fn broadcast_qa(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri::Emitter;
+    // Normalize once at the source so every downstream consumer (in-app
+    // history, Tauri event listeners, /qa/<sid> WebSocket subscribers, and
+    // the manager bridge) receives the same cleaned text. The JS parser
+    // already drops most chrome line-by-line, but anything that slipped
+    // through and got space-joined into the answer is scrubbed here.
+    let answer = clean_answer(&answer);
     let payload = serde_json::json!({
         "num": num,
         "question": question,

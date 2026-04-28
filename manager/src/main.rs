@@ -1571,9 +1571,9 @@ async fn handle_chat(
                 Some(n) => n as u32, None => continue,
             };
             let raw = v.get("answer").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let cleaned = clean_answer(&raw);
-
-            pending_text.lock().await.insert(num, cleaned);
+            // The backend (llm-chat) cleans TUI noise before broadcasting on
+            // /qa/<sid>, so this stream is already normalized. Pass through.
+            pending_text.lock().await.insert(num, raw);
             let new_version = {
                 let mut versions = versions.lock().await;
                 let v = versions.entry(num).or_insert(0);
@@ -1658,37 +1658,6 @@ async fn handle_chat(
     state.lock().await.clients.remove(&connection_id);
     let _ = cmd_close(&state, &sid).await;
     Ok(())
-}
-
-/// Strip claude TUI footer noise from a raw parser `answer`. Lives server-side
-/// so every client (Python CLI, future clients) gets clean text without each
-/// having to reimplement the same filter.
-fn clean_answer(text: &str) -> String {
-    text.lines()
-        .map(|l| l.trim_end())
-        .filter(|l| !l.is_empty())
-        .filter(|l| {
-            // Spinner status lines: "✻ Cogitated for 6s", "✶ ...", "✽ ...", "✢ ..."
-            if let Some(c) = l.chars().next() {
-                if matches!(c, '✻' | '✶' | '✽' | '✢') {
-                    return false;
-                }
-            }
-            // Claude's PATH hint and the export command it suggests
-            if l.starts_with("Native installation exists") {
-                return false;
-            }
-            if l.starts_with("echo 'export PATH=") {
-                return false;
-            }
-            // Bottom hint bar: "? for shortcuts" / "esc to interrupt ..."
-            if l.starts_with("? for shortcuts") || l.starts_with("esc to interrupt") {
-                return false;
-            }
-            true
-        })
-        .collect::<Vec<&str>>()
-        .join("\n")
 }
 
 /// Pump frames between a client WebSocket and a backend WebSocket. Used for

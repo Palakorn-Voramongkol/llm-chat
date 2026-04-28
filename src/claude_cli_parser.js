@@ -30,7 +30,12 @@ function createClaudeCliParser(term, fitAddon) {
     isChrome(line) {
       if (!line) return true;
       if (/^[─│┌┐└┘├┤╭╮╰╯┬┴╔╗╚╝║═▶◀▲▼━┃╌╎\s]+$/.test(line)) return true;
-      if (/^[?✱✽]/.test(line)) return true;
+      // Spinner glyphs the Claude CLI cycles for its activity indicator.
+      if (/^[?✱✽✻✶✢✷✺]/.test(line)) return true;
+      // Mode-hint footer: "⏵⏵ bypass permissions on (shift+tab to cycle)" etc.
+      if (/^⏵|\(shift\+tab to cycle\)/.test(line)) return true;
+      // Model + effort indicator line: "◉ xhigh · /effort"
+      if (/^[◉◯]/.test(line)) return true;
       if (/^\s*Claude Code/.test(line)) return true;
       if (/Welcome back|Tips for getting|Recent activity|No recent activity|Run \/init|CLAUDE\.md/.test(line)) return true;
       if (/Opus|Claude Max|Organization/.test(line)) return true;
