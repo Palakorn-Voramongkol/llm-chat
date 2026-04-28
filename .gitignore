@@ -3,3 +3,4 @@ src-tauri/target/
 manager/target/
 *.log
 *.env
+.claude/

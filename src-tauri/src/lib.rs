@@ -1,7 +1,150 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::broadcast;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+
+// ---------- SQLite-backed PTY input FIFO ----------
+//
+// One file per backend instance:
+//   $XDG_DATA_HOME/com.llm-chat.app/backend-{port}.sqlite
+// (override via $LLM_CHAT_DB_PATH). Single table:
+//
+//   pty_input(seq, sid, payload, time_in, status, time_written)
+//
+// Every write to a session's PTY (via pty_write command OR the /s/<sid> WS
+// forwarder) is recorded here in FIFO order. Status: pending → written/error.
+// Source of truth — survives a backend restart for diagnostic/audit.
+static PTY_INPUT_DB: OnceLock<SqlitePool> = OnceLock::new();
+
+fn pty_db_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("LLM_CHAT_DB_PATH") {
+        return std::path::PathBuf::from(p);
+    }
+    let port: u16 = std::env::var("LLM_CHAT_WS_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7878);
+    auth_token_file_path().with_file_name(format!("backend-{}.sqlite", port))
+}
+
+async fn open_pty_db(path: &std::path::Path) -> Result<SqlitePool, sqlx::Error> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let opts = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+    let pool = SqlitePool::connect_with(opts).await?;
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pty_input (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            sid TEXT NOT NULL,
+            payload BLOB NOT NULL,
+            time_in TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            time_written TEXT
+        );
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_pty_input_sid_seq ON pty_input(sid, seq);")
+        .execute(&pool)
+        .await?;
+    Ok(pool)
+}
+
+fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Record one PTY write into the SQLite FIFO. Returns the row's `seq` so the
+/// caller can mark it 'written' (or 'error') after attempting the actual PTY
+/// write. Best-effort — DB unavailable is logged at WARN, never blocks.
+async fn pty_input_record(sid: &str, bytes: &[u8]) -> Option<i64> {
+    let pool = PTY_INPUT_DB.get()?;
+    let res = sqlx::query(
+        "INSERT INTO pty_input (sid, payload, time_in, status) VALUES (?, ?, ?, 'pending')",
+    )
+    .bind(sid)
+    .bind(bytes)
+    .bind(now_iso())
+    .execute(pool)
+    .await;
+    match res {
+        Ok(r) => Some(r.last_insert_rowid()),
+        Err(e) => {
+            tracing::warn!(target: "backend::db", error=%e, "INSERT pty_input failed");
+            None
+        }
+    }
+}
+
+/// Read recent rows from the PTY input FIFO. Returns the most recent rows
+/// first (descending seq), filtered by optional sid + status, capped by limit.
+/// Empty Vec if the DB isn't initialized yet (just started, init failed, etc.).
+async fn query_pty_input(
+    sid: Option<&str>,
+    status: Option<&str>,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let Some(pool) = PTY_INPUT_DB.get() else {
+        return Ok(Vec::new());
+    };
+    // Build the WHERE clause dynamically. sqlx's QueryBuilder would be
+    // cleaner; raw query with bind is fine for two optional filters.
+    let mut sql = String::from(
+        "SELECT seq, sid, payload, time_in, status, time_written FROM pty_input WHERE 1=1",
+    );
+    if sid.is_some() {
+        sql.push_str(" AND sid = ?");
+    }
+    if status.is_some() {
+        sql.push_str(" AND status = ?");
+    }
+    sql.push_str(" ORDER BY seq DESC LIMIT ?");
+    let mut q = sqlx::query_as::<_, (i64, String, Vec<u8>, String, String, Option<String>)>(&sql);
+    if let Some(s) = sid { q = q.bind(s); }
+    if let Some(s) = status { q = q.bind(s); }
+    q = q.bind(limit);
+    let rows = q.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(seq, sid, payload, time_in, status, time_written)| {
+            // payload is bytes; expose as utf-8 (lossy) so JSON can carry it
+            // and humans can read it. A `payloadLen` field gives the byte size
+            // for binary-safety inspection.
+            let payload_str = String::from_utf8_lossy(&payload).into_owned();
+            serde_json::json!({
+                "seq": seq,
+                "sid": sid,
+                "payload": payload_str,
+                "payloadLen": payload.len(),
+                "timeIn": time_in,
+                "status": status,
+                "timeWritten": time_written,
+            })
+        })
+        .collect())
+}
+
+/// Mark a previously-recorded write as completed (or errored).
+async fn pty_input_mark(seq: i64, ok: bool) {
+    let Some(pool) = PTY_INPUT_DB.get() else { return };
+    let status = if ok { "written" } else { "error" };
+    let _ = sqlx::query(
+        "UPDATE pty_input SET status = ?, time_written = ? WHERE seq = ?",
+    )
+    .bind(status)
+    .bind(now_iso())
+    .bind(seq)
+    .execute(pool)
+    .await;
+}
 
 // ========== ConPTY ==========
 #[cfg(windows)]
@@ -214,6 +357,163 @@ pub(crate) mod pty {
     }
 }
 
+// ========== Unix PTY ==========
+// Mirror of `mod pty` (Windows ConPTY) on Unix using portable-pty's openpty/
+// forkpty wrapper. Same public API — `PtySession::{create, write, resize,
+// close, spawn_reader}` — so call sites in `do_spawn_session`, `pty_write`,
+// `pty_resize`, `close_session` are platform-agnostic.
+#[cfg(unix)]
+pub(crate) mod pty {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+
+    pub struct PtySession {
+        master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+        writer: Arc<Mutex<Box<dyn std::io::Write + Send>>>,
+        child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+        pub reader_active: Arc<AtomicBool>,
+        closed: bool,
+    }
+
+    impl PtySession {
+        pub fn create(command: &str, cols: i16, rows: i16) -> Result<Self, String> {
+            let size = PtySize {
+                rows: rows.max(1) as u16,
+                cols: cols.max(1) as u16,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
+            let pair = native_pty_system()
+                .openpty(size)
+                .map_err(|e| format!("openpty: {}", e))?;
+
+            // Run via /bin/sh -c so the caller can pass a free-form command
+            // line (matches the cmd.exe /k pattern used on Windows).
+            let mut cb = CommandBuilder::new("/bin/sh");
+            cb.arg("-c");
+            cb.arg(command);
+            // CommandBuilder starts with a clean env on unix; forward the
+            // vars Claude / Ink / xterm need to render its TUI.
+            for var in [
+                "HOME", "USER", "LOGNAME", "PATH", "SHELL",
+                "LANG", "LC_ALL", "LC_CTYPE", "TERM",
+                "FORCE_COLOR", "COLORFGBG", "COLORTERM",
+                "CLAUDE_CODE_GIT_BASH_PATH", "DISPLAY", "WAYLAND_DISPLAY",
+                "XDG_RUNTIME_DIR",
+            ] {
+                if let Ok(v) = std::env::var(var) {
+                    cb.env(var, v);
+                }
+            }
+            // CWD = parent's CWD (matches Windows ConPTY behavior).
+            if let Ok(cwd) = std::env::current_dir() {
+                cb.cwd(cwd);
+            }
+
+            let child = pair
+                .slave
+                .spawn_command(cb)
+                .map_err(|e| format!("spawn_command: {}", e))?;
+            // Drop the slave so the master sees EOF when the child exits.
+            drop(pair.slave);
+
+            let writer = pair
+                .master
+                .take_writer()
+                .map_err(|e| format!("take_writer: {}", e))?;
+
+            Ok(PtySession {
+                master: Arc::new(Mutex::new(pair.master)),
+                writer: Arc::new(Mutex::new(writer)),
+                child: Arc::new(Mutex::new(child)),
+                reader_active: Arc::new(AtomicBool::new(true)),
+                closed: false,
+            })
+        }
+
+        pub fn write(&self, data: &[u8]) -> Result<(), String> {
+            use std::io::Write as _;
+            let mut w = self.writer.lock().unwrap();
+            w.write_all(data).map_err(|e| format!("write: {}", e))?;
+            w.flush().map_err(|e| format!("flush: {}", e))?;
+            Ok(())
+        }
+
+        pub fn resize(&self, cols: i16, rows: i16) -> Result<(), String> {
+            let size = PtySize {
+                rows: rows.max(1) as u16,
+                cols: cols.max(1) as u16,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
+            self.master
+                .lock()
+                .unwrap()
+                .resize(size)
+                .map_err(|e| format!("resize: {}", e))
+        }
+
+        pub fn close(&mut self) {
+            if self.closed {
+                return;
+            }
+            self.closed = true;
+            self.reader_active.store(false, Ordering::Relaxed);
+            let _ = self.child.lock().unwrap().kill();
+        }
+
+        pub fn spawn_reader(
+            &self,
+            app_handle: tauri::AppHandle,
+            session_id: String,
+            ws_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
+        ) {
+            let mut reader = match self.master.lock().unwrap().try_clone_reader() {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::error!(target: "backend::pty", error = %e, "try_clone_reader");
+                    return;
+                }
+            };
+            let active = self.reader_active.clone();
+            std::thread::spawn(move || {
+                use std::io::Read as _;
+                use tauri::Emitter;
+                let mut buf = [0u8; 4096];
+                while active.load(Ordering::Relaxed) {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let data = buf[..n].to_vec();
+                            let _ = ws_tx.send(data.clone());
+                            use base64::Engine;
+                            let encoded =
+                                base64::engine::general_purpose::STANDARD.encode(&data);
+                            let _ = app_handle.emit(
+                                "pty-data",
+                                serde_json::json!({
+                                    "sessionId": session_id,
+                                    "data": encoded
+                                }),
+                            );
+                        }
+                        Err(_) => break,
+                    }
+                }
+                active.store(false, Ordering::Relaxed);
+                let _ = app_handle.emit("pty-closed", &session_id);
+            });
+        }
+    }
+
+    impl Drop for PtySession {
+        fn drop(&mut self) {
+            self.close();
+        }
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 struct QaItem {
     num: u32,
@@ -223,7 +523,7 @@ struct QaItem {
 
 // ========== App State ==========
 struct AppState {
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     pty_sessions: Mutex<HashMap<String, pty::PtySession>>,
     pty_broadcasts: Mutex<HashMap<String, broadcast::Sender<Vec<u8>>>>,
     qa_broadcasts: Mutex<HashMap<String, broadcast::Sender<String>>>,
@@ -438,7 +738,7 @@ fn find_claude_path() -> Option<String> {
 
 // ========== Tauri Commands ==========
 
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 fn do_spawn_session(
     session_id: String,
     cols: u16,
@@ -457,10 +757,22 @@ fn do_spawn_session(
         }
     }
     let cmd = find_claude_path().unwrap_or_else(|| {
-        "echo Claude CLI not found in PATH, APPDATA\\npm, or %LOCALAPPDATA%\\AnthropicClaude && pause".into()
+        tracing::warn!(target: "backend::pty", "claude CLI not found on PATH");
+        #[cfg(windows)]
+        { "echo Claude CLI not found in PATH, APPDATA\\npm, or %LOCALAPPDATA%\\AnthropicClaude && pause".into() }
+        #[cfg(unix)]
+        { "echo 'Claude CLI not found in PATH'; sleep 30".into() }
     });
     let c = if cols == 0 { 120i16 } else { cols as i16 };
     let r = if rows == 0 { 30i16 } else { rows as i16 };
+    tracing::info!(
+        target: "backend::session",
+        sid = %session_id,
+        cols = c,
+        rows = r,
+        cmd = %cmd,
+        "spawning PTY session"
+    );
     let _ = app_handle.emit(
         "new-pty-session",
         serde_json::json!({"sessionId": session_id}),
@@ -504,7 +816,7 @@ fn spawn_session(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     {
         return do_spawn_session(session_id, cols, rows, &state, &app_handle);
     }
@@ -517,11 +829,9 @@ fn close_session(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     {
-        if let Some(mut sess) = state.pty_sessions.lock().unwrap().remove(&session_id) {
-            sess.close();
-        }
+        let existed = state.pty_sessions.lock().unwrap().remove(&session_id).map(|mut s| s.close()).is_some();
         state.pty_broadcasts.lock().unwrap().remove(&session_id);
         state.qa_broadcasts.lock().unwrap().remove(&session_id);
         state.qa_history.lock().unwrap().remove(&session_id);
@@ -530,6 +840,12 @@ fn close_session(
             .lock()
             .unwrap()
             .retain(|id| id != &session_id);
+        tracing::info!(
+            target: "backend::session",
+            sid = %session_id,
+            existed,
+            "PTY session closed"
+        );
     }
     Ok(())
 }
@@ -667,6 +983,12 @@ fn open_qa_log(path: String) -> Result<(), String> {
             );
         }
     }
+    // xdg-open takes a single argument and execs the user's preferred handler;
+    // no shell interpolation, so the same injection-resistance argument holds.
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&path).spawn();
+    }
     Ok(())
 }
 
@@ -750,19 +1072,29 @@ fn pty_write(
     data: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     {
         let bytes = data.as_bytes();
         // xterm focus reports can hang ConPTY/cmd.exe during startup
         if bytes == b"\x1b[I" || bytes == b"\x1b[O" {
             return Ok(());
         }
-        let map = state.pty_sessions.lock().unwrap();
-        if let Some(session) = map.get(&session_id) {
-            session.write(bytes)?;
-            return Ok(());
+        // Record into SQLite FIFO (best-effort) before writing to the PTY.
+        // This is a sync command but the DB API is async — use the tauri async
+        // runtime to drive the small INSERT inline. Latency is sub-millisecond
+        // for SQLite WAL on local disk.
+        let seq = tauri::async_runtime::block_on(pty_input_record(&session_id, bytes));
+        let res = {
+            let map = state.pty_sessions.lock().unwrap();
+            match map.get(&session_id) {
+                Some(session) => session.write(bytes),
+                None => Err(format!("No PTY session: {}", session_id)),
+            }
+        };
+        if let Some(seq) = seq {
+            tauri::async_runtime::block_on(pty_input_mark(seq, res.is_ok()));
         }
-        return Err(format!("No PTY session: {}", session_id));
+        return res;
     }
     #[allow(unreachable_code)]
     Ok(())
@@ -775,7 +1107,7 @@ fn pty_resize(
     rows: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     {
         if cols == 0 || rows == 0 {
             return Ok(());
@@ -923,10 +1255,32 @@ fn append_control_log(dir: &str, msg: &serde_json::Value) {
 // read it. The token is also printed to stderr at startup so external
 // clients can capture it without needing filesystem access.
 fn auth_token_file_path() -> std::path::PathBuf {
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let dir = std::path::Path::new(&local).join("com.llm-chat.app");
-        if std::fs::create_dir_all(&dir).is_ok() {
-            return dir.join("auth.token");
+    // Per-user persistent app-data location, mirrors the manager's choice so
+    // backend-{port}.sqlite ends up next to manager.sqlite in the same dir.
+    //   Windows: %LOCALAPPDATA%\com.llm-chat.app\
+    //   Linux/macOS: $XDG_DATA_HOME/com.llm-chat.app/  (default ~/.local/share)
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let dir = std::path::Path::new(&local).join("com.llm-chat.app");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                return dir.join("auth.token");
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        let base = std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+            });
+        if let Some(b) = base {
+            let dir = b.join("com.llm-chat.app");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                return dir.join("auth.token");
+            }
         }
     }
     qa_root_dir().join("auth.token")
@@ -946,9 +1300,10 @@ fn lock_token_file_acl(path: &std::path::Path) {
             .arg(format!("{}:F", username))
             .output();
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let _ = path;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
 }
 
@@ -971,8 +1326,13 @@ fn load_or_generate_auth_token() -> String {
     let token: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
     let _ = std::fs::write(&token_path, &token);
     lock_token_file_acl(&token_path);
-    eprintln!("[llm-chat] auth token: {}", token);
-    eprintln!("[llm-chat] persisted to {}", token_path.display());
+    // Backend persists its own token only when standalone (no env var). The
+    // manager already logged its persistence, so this is just diagnostic depth.
+    tracing::debug!(
+        target: "backend::auth",
+        token_path = %token_path.display(),
+        "persisted standalone auth token"
+    );
     token
 }
 
@@ -1009,7 +1369,7 @@ fn extract_token_from_request(
 // Every connection must present the auth token, either via
 // `Authorization: Bearer <token>` header or `?token=<token>` query string.
 // Browser-style http(s) Origin headers are rejected outright.
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
     use futures_util::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
@@ -1018,22 +1378,53 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
     use tokio_tungstenite::tungstenite::Message;
 
     let auth_token = load_or_generate_auth_token();
-    eprintln!("[ws] auth token loaded ({} chars)", auth_token.len());
+    tracing::debug!(target: "backend::auth", token_len = auth_token.len(), "auth token loaded");
 
     tauri::async_runtime::spawn(async move {
+        // Initialize SQLite-backed PTY input FIFO before binding the WS port,
+        // so first writes after bind always land in the durable queue.
+        let db_path = pty_db_path();
+        match open_pty_db(&db_path).await {
+            Ok(pool) => {
+                if PTY_INPUT_DB.set(pool).is_err() {
+                    tracing::debug!(target: "backend::db", "PTY_INPUT_DB already set");
+                }
+                tracing::info!(
+                    target: "backend::db",
+                    path = %db_path.display(),
+                    "PTY input FIFO opened"
+                );
+            }
+            Err(e) => {
+                // Backend continues without DB — writes still flow but won't be
+                // durably queued. Logged at ERROR so it's obvious.
+                tracing::error!(
+                    target: "backend::db",
+                    path = %db_path.display(),
+                    error = %e,
+                    "open PTY input FIFO failed (running without durable queue)"
+                );
+            }
+        }
+
         let addr = format!("127.0.0.1:{}", port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("WS bind {} failed: {}", addr, e);
+                tracing::error!(target: "backend::ws", port, error = %e, "WS bind failed");
                 return;
             }
         };
-        eprintln!("WS server listening on ws://{}", addr);
+        // Manager logs the higher-level "backend ready" event after wait_for_tcp;
+        // this stays at DEBUG so we don't double-report binding success.
+        tracing::debug!(target: "backend::ws", port, "WS server listening");
         loop {
             let (stream, _peer) = match listener.accept().await {
                 Ok(p) => p,
-                Err(e) => { eprintln!("WS accept: {}", e); continue; }
+                Err(e) => {
+                    tracing::warn!(target: "backend::ws", error = %e, "accept");
+                    continue;
+                }
             };
             let app_handle = app_handle.clone();
             let auth_token = auth_token.clone();
@@ -1072,7 +1463,12 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                 };
                 let ws = match tokio_tungstenite::accept_hdr_async(stream, cb).await {
                     Ok(w) => w,
-                    Err(e) => { eprintln!("WS handshake: {}", e); return; }
+                    Err(e) => {
+                        // Common: nc -zv probes, manager wait_for_tcp, port scanners.
+                        // Log at DEBUG so it doesn't pollute INFO output.
+                        tracing::debug!(target: "backend::ws", error = %e, "handshake");
+                        return;
+                    }
                 };
                 let req_path = path_holder.lock().unwrap().clone();
                 let state = {
@@ -1365,6 +1761,18 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     "path": path.to_string_lossy(),
                                 })
                             }
+                            "fifo" => {
+                                // Inspect the SQLite-backed PTY input FIFO.
+                                // Optional filters: sid (string), status (pending|written|error),
+                                // limit (default 100, capped at 1000).
+                                let sid_filter = req.get("sid").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let status_filter = req.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let limit = req.get("limit").and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+                                match query_pty_input(sid_filter.as_deref(), status_filter.as_deref(), limit).await {
+                                    Ok(rows) => serde_json::json!({"ok": true, "rows": rows, "count": rows.len()}),
+                                    Err(e) => serde_json::json!({"ok": false, "error": format!("fifo query: {}", e)}),
+                                }
+                            }
                             other => serde_json::json!({"ok":false,"error":format!("unknown cmd: {}", other)}),
                         };
                         append_control_log("out", &reply);
@@ -1510,16 +1918,23 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                         Message::Close(_) => break,
                         _ => continue,
                     };
+                    // Record the write into the SQLite FIFO BEFORE doing the
+                    // PTY write, so a crash mid-write leaves a 'pending' row
+                    // we can audit/replay later. Then write to PTY and mark.
+                    let seq = pty_input_record(&session_for_write, &bytes).await;
                     // Scope the std::sync::Mutex guard so it's dropped before
-                    // the next iteration's `.await`, otherwise the future is
-                    // not `Send`.
-                    {
+                    // the next iteration's `.await` (not Send across await).
+                    let write_ok = {
                         use tauri::Manager;
                         let st = app_handle_inner.state::<AppState>();
                         let map = st.pty_sessions.lock().unwrap();
-                        if let Some(sess) = map.get(&session_for_write) {
-                            let _ = sess.write(&bytes);
+                        match map.get(&session_for_write) {
+                            Some(sess) => sess.write(&bytes).is_ok(),
+                            None => false,
                         }
+                    };
+                    if let Some(seq) = seq {
+                        pty_input_mark(seq, write_ok).await;
                     }
                 }
                 forward.abort();
@@ -1528,8 +1943,44 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
     });
 }
 
+/// Init the backend's tracing subscriber. Mirrors the manager's setup so the
+/// two streams interleave cleanly in shared logs. RUST_LOG default is INFO;
+/// override per-component, e.g. `RUST_LOG=backend=debug,backend::pty=trace`.
+fn init_backend_tracing() {
+    use tracing_subscriber::EnvFilter;
+    // Idempotent: try_init avoids panicking if a subscriber is already set
+    // (e.g. when the backend is loaded as a library by tests).
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let json = matches!(std::env::var("LOG_JSON").ok().as_deref(), Some("1") | Some("true"));
+    let _ = if json {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .try_init()
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_writer(std::io::stderr)
+            .try_init()
+    };
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_backend_tracing();
+    let backend_port: Option<u16> = std::env::var("LLM_CHAT_WS_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    tracing::info!(
+        target: "backend",
+        port = backend_port.unwrap_or(0),
+        stealth = std::env::var("LLM_CHAT_STEALTH").ok().as_deref() == Some("1"),
+        managed = std::env::var("LLM_CHAT_AUTH_TOKEN").is_ok(),
+        "backend starting"
+    );
     // Claude Code v2.1+ on Windows refuses to start without bash.exe. If the
     // user has Git for Windows installed but bash isn't on PATH and the env
     // var isn't set, set it now so child processes inherit it.
@@ -1564,7 +2015,7 @@ pub fn run() {
     }
     tauri::Builder::default()
         .manage(AppState {
-            #[cfg(windows)]
+            #[cfg(any(unix, windows))]
             pty_sessions: Mutex::new(HashMap::new()),
             pty_broadcasts: Mutex::new(HashMap::new()),
             qa_broadcasts: Mutex::new(HashMap::new()),
@@ -1589,7 +2040,7 @@ pub fn run() {
             save_terminal_output,
         ])
         .setup(|app| {
-            #[cfg(windows)]
+            #[cfg(any(unix, windows))]
             {
                 let port: u16 = std::env::var("LLM_CHAT_WS_PORT")
                     .ok()

@@ -54,7 +54,12 @@ function createClaudeCliParser(term, fitAddon) {
         const qMatch = line.match(/^[>\u276F]\s+(.+)/);
         if (qMatch) {
           if (currentQ && currentALines.length > 0) {
-            pairs.push({ q: currentQ, a: currentALines.join('\n') });
+            // Join with a single space — the captured "lines" are xterm
+            // visual rows where claude wrapped at the terminal width, NOT
+            // logical paragraph breaks. Joining with \n would freeze the
+            // wrap into the answer text and surface as escaped \n on the
+            // wire.
+            pairs.push({ q: currentQ, a: currentALines.join(' ') });
           }
           currentQ = qMatch[1].trim();
           currentALines = [];
@@ -75,7 +80,7 @@ function createClaudeCliParser(term, fitAddon) {
         }
       }
       if (currentQ && currentALines.length > 0) {
-        pairs.push({ q: currentQ, a: currentALines.join('\n') });
+        pairs.push({ q: currentQ, a: currentALines.join(' ') });
       }
 
       for (const pair of pairs) {
@@ -99,8 +104,15 @@ function createClaudeCliParser(term, fitAddon) {
           }
           // Update live panel
           this.renderToPanel(this.qaCount, pair.q, pair.a, isNew);
-          // Broadcast to WebSocket clients
-          invoke('broadcast_qa', { num: this.qaCount, question: pair.q, answer: pair.a }).catch(() => {});
+          // Broadcast to WebSocket clients. sessionId+isNew are required —
+          // without sessionId, broadcast_qa can't fan out to /qa/<sid>.
+          invoke('broadcast_qa', {
+            num: this.qaCount,
+            question: pair.q,
+            answer: pair.a,
+            sessionId: this.sessionId || null,
+            isNew,
+          }).catch(() => {});
           const statusEl = document.getElementById('qa-status');
           if (statusEl) statusEl.textContent = `QA: ${this.qaCount}`;
         }

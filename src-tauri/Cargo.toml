@@ -23,6 +23,13 @@ futures-util = "0.3"
 rand = "0.8"
 subtle = "2"
 png = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[target.'cfg(unix)'.dependencies]
+portable-pty = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
