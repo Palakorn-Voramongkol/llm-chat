@@ -85,15 +85,11 @@ jobs:
         run: |
           set -x
           mkdir -p ~/.ssh
-          # printf preserves the trailing newline that OpenSSH requires
           printf '%s\n' "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          ls -la ~/.ssh/
-          # First few bytes of the key (for shape sanity, not the whole secret)
-          head -c 40 ~/.ssh/id_deploy ; echo
-          ssh-keyscan -t ed25519,rsa "${{ secrets.SSH_HOST }}" 2>&1 | tee -a ~/.ssh/known_hosts || true
-          # Probe SSH reach (don't fail the step if probe is slow; the next step will)
-          timeout 8 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+          # SSH server is on port 2222 (not 22)
+          ssh-keyscan -p 2222 -t ed25519,rsa "${{ secrets.SSH_HOST }}" 2>&1 | tee -a ~/.ssh/known_hosts || true
+          timeout 8 ssh -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
               -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" \
               echo ssh-ok 2>&1 || true
 
@@ -105,7 +101,7 @@ jobs:
 
       - name: Upload binaries → staging
         env:
-          SCP: "scp -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new"
+          SCP: "scp -P 2222 -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new"
         run: |
           # The forced command on the server allows scp into the staging dirs.
           $SCP manager/target/release/llm-chat-manager \
@@ -114,12 +110,14 @@ jobs:
               "deploy@${{ secrets.SSH_HOST }}:/var/lib/deploy/llm-chat/worker/llm-chat-worker"
 
       - name: Install binaries + restart manager
+        env:
+          SSH: "ssh -p 2222 -i ~/.ssh/id_deploy"
         run: |
-          ssh -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" install-worker-binary
-          ssh -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" install-manager-binary
+          $SSH "deploy@${{ secrets.SSH_HOST }}" install-worker-binary
+          $SSH "deploy@${{ secrets.SSH_HOST }}" install-manager-binary
           # Manager owns the worker as a child process; restarting it respawns
           # the worker with the new binary.
-          ssh -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" restart-manager
+          $SSH "deploy@${{ secrets.SSH_HOST }}" restart-manager
 
       - name: Wait for manager ready
         run: |
