@@ -7,7 +7,7 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# Cancel in-flight runs for the same branch — only the latest matters.
+# Cancel superseded runs on the same ref — only the latest matters.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -15,21 +15,46 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # The Tauri build script reads this so package.json doesn't need to be present
-  # on workers that only build the Rust side.
-  TAURI_SKIP_DEVSERVER_CHECK: "true"
 
 jobs:
-  # ──────────────────────────────────────────────────────────────────
-  # Manager — pure Rust, no system deps, fast.
-  # ──────────────────────────────────────────────────────────────────
-  manager:
-    name: manager (${{ matrix.profile }})
+  # Single matrix that fans out to every Rust crate in the repo. Add a project
+  # by adding one row — no new job block needed. The `extra_steps` field is a
+  # heredoc shell snippet that runs before `cargo`, used here for Tauri's
+  # Linux system deps (libwebkit2gtk, etc).
+  build:
+    name: build / ${{ matrix.project }} (${{ matrix.profile }})
     runs-on: ubuntu-24.04
+
     strategy:
       fail-fast: false
       matrix:
-        profile: [ debug, release ]
+        project:
+          - manager
+          - src-tauri
+        profile:
+          - debug
+          - release
+        include:
+          # Per-project knobs. Keep these next to the matrix so the table
+          # stays one place to look.
+          - project: manager
+            cargo_path: manager/Cargo.toml
+            run_clippy: true
+            run_tests: true
+            apt_deps: ""
+          - project: src-tauri
+            cargo_path: src-tauri/Cargo.toml
+            run_clippy: false        # tauri-build emits warnings we haven't tackled
+            run_tests: false         # no tests in the tauri crate yet
+            apt_deps: >-
+              libwebkit2gtk-4.1-dev
+              libgtk-3-dev
+              libayatana-appindicator3-dev
+              librsvg2-dev
+              libsoup-3.0-dev
+              libxdo-dev
+              patchelf
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,64 +63,35 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Cargo cache
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: manager
-          key: manager-${{ matrix.profile }}
+          workspaces: ${{ matrix.project }}
+          key: ${{ matrix.project }}-${{ matrix.profile }}
 
-      - name: rustfmt
-        if: matrix.profile == 'debug'
-        run: cargo fmt --manifest-path manager/Cargo.toml --all -- --check
-
-      - name: clippy
-        if: matrix.profile == 'debug'
-        run: cargo clippy --manifest-path manager/Cargo.toml --all-targets -- -D warnings
-        continue-on-error: true   # warnings exist today; flip to false once cleaned up
-
-      - name: Build
-        run: |
-          if [ "${{ matrix.profile }}" = "release" ]; then
-            cargo build --release --manifest-path manager/Cargo.toml
-          else
-            cargo build --manifest-path manager/Cargo.toml
-          fi
-
-      - name: Tests
-        if: matrix.profile == 'debug'
-        run: cargo test --manifest-path manager/Cargo.toml --all
-
-  # ──────────────────────────────────────────────────────────────────
-  # Tauri backend — `cargo check` only on Linux. Full bundle would
-  # need system deps (libwebkit2gtk, libsoup, etc.) and the JS
-  # frontend; not needed for code review.
-  # ──────────────────────────────────────────────────────────────────
-  tauri-check:
-    name: tauri backend check
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Tauri build deps (Linux)
+      - name: Install system dependencies
+        if: matrix.apt_deps != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libsoup-3.0-dev \
-            libxdo-dev \
-            patchelf
+          sudo apt-get install -y ${{ matrix.apt_deps }}
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: tauri-check
+      # Lint passes only on the debug build of each project — running them on
+      # both profiles would just duplicate work.
+      - name: rustfmt --check
+        if: matrix.profile == 'debug'
+        run: cargo fmt --manifest-path ${{ matrix.cargo_path }} --all -- --check
 
-      - name: cargo check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+      - name: clippy
+        if: matrix.profile == 'debug' && matrix.run_clippy
+        run: cargo clippy --manifest-path ${{ matrix.cargo_path }} --all-targets -- -D warnings
+        continue-on-error: true   # warning-only for now; flip to false once clean
+
+      - name: Build (${{ matrix.profile }})
+        run: |
+          flag=""
+          [ "${{ matrix.profile }}" = "release" ] && flag="--release"
+          cargo build $flag --manifest-path ${{ matrix.cargo_path }}
+
+      - name: Tests
+        if: matrix.profile == 'debug' && matrix.run_tests
+        run: cargo test --manifest-path ${{ matrix.cargo_path }} --all
