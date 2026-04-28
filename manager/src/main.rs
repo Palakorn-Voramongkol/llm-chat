@@ -49,23 +49,44 @@ fn random_token() -> String {
 }
 
 fn auth_token_path() -> std::path::PathBuf {
-    // Prefer %LOCALAPPDATA%\com.llm-chat.app\ — per-user, not swept by temp
-    // cleaners, conventional Windows app-data location.
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let dir = std::path::Path::new(&local).join("com.llm-chat.app");
-        if std::fs::create_dir_all(&dir).is_ok() {
-            return dir.join("auth.token");
+    // Per-user, persistent, not-swept-by-temp-cleaners app-data location.
+    // Windows: %LOCALAPPDATA%\com.llm-chat.app\
+    // Linux/macOS: $XDG_DATA_HOME/com.llm-chat.app/ → ~/.local/share/com.llm-chat.app/
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let dir = std::path::Path::new(&local).join("com.llm-chat.app");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                return dir.join("auth.token");
+            }
         }
     }
-    // Fallback (Linux/macOS or env-var missing): use temp.
+    #[cfg(unix)]
+    {
+        let base = std::env::var("XDG_DATA_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| std::path::Path::new(&h).join(".local").join("share"))
+            });
+        if let Some(b) = base {
+            let dir = b.join("com.llm-chat.app");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                return dir.join("auth.token");
+            }
+        }
+    }
     let dir = std::env::temp_dir().join("llm-chat-qa");
     let _ = std::fs::create_dir_all(&dir);
     dir.join("auth.token")
 }
 
-/// Restrict the auth-token file's ACL so only the current user can read or
-/// write it. No-op on non-Windows. Best-effort — failures are logged, not
-/// fatal (the file is still per-user-readable by default ACL).
+/// Restrict the auth-token file's permissions so only the current user can
+/// read or write it. Best-effort — failures are logged, not fatal.
+/// Windows → icacls grant only current user; Unix → chmod 0600.
 fn lock_token_acl(path: &std::path::Path) {
     #[cfg(windows)]
     {
@@ -92,9 +113,13 @@ fn lock_token_acl(path: &std::path::Path) {
             Err(e) => eprintln!("[manager] icacls spawn failed: {}", e),
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let _ = path;
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            Ok(()) => eprintln!("[manager] auth token mode set to 0600"),
+            Err(e) => eprintln!("[manager] chmod 0600 failed: {}", e),
+        }
     }
 }
 
@@ -143,6 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let bin = if cfg!(windows) { "llm-chat.exe" } else { "llm-chat" };
         exe_dir
             .join("..")
             .join("..")
@@ -150,7 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join("src-tauri")
             .join("target")
             .join("debug")
-            .join("llm-chat.exe")
+            .join(bin)
             .to_string_lossy()
             .into_owned()
     });
@@ -199,8 +225,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_token: auth_token.clone(),
     }));
 
-    let listener = TcpListener::bind(("127.0.0.1", manager_port)).await?;
-    eprintln!("[manager] listening on ws://127.0.0.1:{}", manager_port);
+    // Default to loopback. Override via `MANAGER_BIND_ADDR=0.0.0.0` for Docker.
+    let bind_addr = std::env::var("MANAGER_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".into());
+    let listener = TcpListener::bind((bind_addr.as_str(), manager_port)).await?;
+    eprintln!("[manager] listening on ws://{}:{}", bind_addr, manager_port);
 
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -225,7 +253,11 @@ fn spawn_instance(exe: &str, port: u16, auth_token: &str, stealth: bool) -> std:
     );
     let mut cmd = Command::new(&canon);
     cmd.env("LLM_CHAT_WS_PORT", port.to_string())
-        .env("LLM_CHAT_AUTH_TOKEN", auth_token);
+        .env("LLM_CHAT_AUTH_TOKEN", auth_token)
+        // Tell the backend not to create its own default session — the
+        // manager owns every session via /control "open" so it can route
+        // /s/<sid> traffic to the right backend.
+        .env("LLM_CHAT_NO_AUTO_SPAWN", "1");
     if stealth {
         cmd.env("LLM_CHAT_STEALTH", "1");
     }

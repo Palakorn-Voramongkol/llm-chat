@@ -3,153 +3,100 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
-// ========== ConPTY ==========
-#[cfg(windows)]
+// ========== Cross-platform PTY (portable-pty wraps ConPTY on Windows and
+// openpty/forkpty on Unix) ==========
 pub(crate) mod pty {
+    use std::io::{Read, Write};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-    use windows::Win32::Foundation::*;
-    use windows::Win32::Security::SECURITY_ATTRIBUTES;
-    use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-    use windows::Win32::System::Console::*;
-    use windows::Win32::System::Pipes::*;
-    use windows::Win32::System::Threading::*;
-    use windows::core::PWSTR;
+    use std::sync::{Arc, Mutex};
 
-    #[derive(Clone, Copy)]
-    pub struct SendHandle(pub HANDLE);
-    unsafe impl Send for SendHandle {}
-    unsafe impl Sync for SendHandle {}
-
-    #[derive(Clone, Copy)]
-    pub struct SendHPCON(pub HPCON);
-    unsafe impl Send for SendHPCON {}
-    unsafe impl Sync for SendHPCON {}
+    use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
     pub struct PtySession {
-        pub hpc: SendHPCON,
-        pub stdin_write: SendHandle,
-        pub stdout_read: SendHandle,
-        pub stdin_read: SendHandle,
-        pub stdout_write: SendHandle,
-        pub process_handle: SendHandle,
+        master: Mutex<Box<dyn MasterPty + Send>>,
+        writer: Mutex<Box<dyn Write + Send>>,
+        reader: Mutex<Option<Box<dyn Read + Send>>>,
+        child: Mutex<Box<dyn portable_pty::Child + Send + Sync>>,
         pub reader_active: Arc<AtomicBool>,
         closed: bool,
     }
 
     impl PtySession {
         pub fn create(command: &str, cols: i16, rows: i16) -> Result<Self, String> {
-            unsafe {
-                let mut stdin_read = HANDLE::default();
-                let mut stdin_write = HANDLE::default();
-                let mut stdout_read = HANDLE::default();
-                let mut stdout_write = HANDLE::default();
-
-                // Pipes must be non-inheritable for ConPTY
-                let sa = SECURITY_ATTRIBUTES {
-                    nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-                    lpSecurityDescriptor: std::ptr::null_mut(),
-                    bInheritHandle: FALSE,
-                };
-
-                CreatePipe(&mut stdin_read, &mut stdin_write, Some(&sa), 0)
-                    .map_err(|e| format!("CreatePipe stdin: {}", e))?;
-                CreatePipe(&mut stdout_read, &mut stdout_write, Some(&sa), 0)
-                    .map_err(|e| format!("CreatePipe stdout: {}", e))?;
-
-                let size = COORD { X: cols, Y: rows };
-                let hpc = CreatePseudoConsole(size, stdin_read, stdout_write, 0)
-                    .map_err(|e| format!("CreatePseudoConsole: {}", e))?;
-
-                let mut attr_list_size: usize = 0;
-                let _ = InitializeProcThreadAttributeList(
-                    LPPROC_THREAD_ATTRIBUTE_LIST(std::ptr::null_mut()),
-                    1,
-                    0,
-                    &mut attr_list_size,
-                );
-
-                let attr_list_buf = vec![0u8; attr_list_size];
-                let attr_list =
-                    LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_buf.as_ptr() as *mut _);
-
-                InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_list_size)
-                    .map_err(|e| format!("InitializeProcThreadAttributeList: {}", e))?;
-
-                UpdateProcThreadAttribute(
-                    attr_list,
-                    0,
-                    0x00020016, // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
-                    Some(hpc.0 as *const std::ffi::c_void),
-                    std::mem::size_of::<HPCON>(),
-                    None,
-                    None,
-                )
-                .map_err(|e| format!("UpdateProcThreadAttribute: {}", e))?;
-
-                let mut si = STARTUPINFOEXW::default();
-                si.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-                si.lpAttributeList = attr_list;
-                // Force INVALID stdio so the child doesn't inherit the GUI parent's
-                // broken handles — proven fix from WezTerm for ConPTY in GUI processes.
-                si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-                si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
-                si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
-                si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
-
-                let mut pi = PROCESS_INFORMATION::default();
-
-                // chcp 65001 sets the child console to UTF-8
-                let cmd_line = format!("cmd.exe /k \"chcp 65001 >nul & {}\"", command);
-                let mut cmd_wide: Vec<u16> =
-                    cmd_line.encode_utf16().chain(std::iter::once(0)).collect();
-
-                CreateProcessW(
-                    None,
-                    PWSTR(cmd_wide.as_mut_ptr()),
-                    None,
-                    None,
-                    false,
-                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-                    None,
-                    None,
-                    &si.StartupInfo,
-                    &mut pi,
-                )
-                .map_err(|e| format!("CreateProcessW: {}", e))?;
-
-                let _ = CloseHandle(pi.hThread);
-                DeleteProcThreadAttributeList(attr_list);
-
-                Ok(PtySession {
-                    hpc: SendHPCON(hpc),
-                    stdin_write: SendHandle(stdin_write),
-                    stdout_read: SendHandle(stdout_read),
-                    stdin_read: SendHandle(stdin_read),
-                    stdout_write: SendHandle(stdout_write),
-                    process_handle: SendHandle(pi.hProcess),
-                    reader_active: Arc::new(AtomicBool::new(true)),
-                    closed: false,
+            let pty_system = native_pty_system();
+            let pair = pty_system
+                .openpty(PtySize {
+                    rows: rows.max(1) as u16,
+                    cols: cols.max(1) as u16,
+                    pixel_width: 0,
+                    pixel_height: 0,
                 })
-            }
+                .map_err(|e| format!("openpty: {}", e))?;
+
+            // On Windows we historically wrapped with `cmd.exe /k "chcp 65001 >nul & <cmd>"`
+            // so the child console is UTF-8. portable-pty + ConPTY already opens
+            // a real Windows console; we keep the wrapper to preserve the
+            // chcp UTF-8 behavior the existing app relies on.
+            #[cfg(windows)]
+            let cmd_builder = {
+                let mut cb = CommandBuilder::new("cmd.exe");
+                cb.args(["/k", &format!("chcp 65001 >nul & {}", command)]);
+                cb
+            };
+            // On Unix, run the command directly through `sh -c` so paths with
+            // spaces and shell-style quoting work the same way as on Windows.
+            #[cfg(unix)]
+            let cmd_builder = {
+                let mut cb = CommandBuilder::new("sh");
+                cb.args(["-c", command]);
+                cb.env("TERM", "xterm-256color");
+                cb
+            };
+
+            let child = pair
+                .slave
+                .spawn_command(cmd_builder)
+                .map_err(|e| format!("spawn_command: {}", e))?;
+            // Drop the slave so EOF propagates correctly when the child exits.
+            drop(pair.slave);
+
+            let writer = pair
+                .master
+                .take_writer()
+                .map_err(|e| format!("take_writer: {}", e))?;
+            let reader = pair
+                .master
+                .try_clone_reader()
+                .map_err(|e| format!("clone_reader: {}", e))?;
+
+            Ok(PtySession {
+                master: Mutex::new(pair.master),
+                writer: Mutex::new(writer),
+                reader: Mutex::new(Some(reader)),
+                child: Mutex::new(child),
+                reader_active: Arc::new(AtomicBool::new(true)),
+                closed: false,
+            })
         }
 
         pub fn write(&self, data: &[u8]) -> Result<(), String> {
-            unsafe {
-                let mut written: u32 = 0;
-                WriteFile(self.stdin_write.0, Some(data), Some(&mut written), None)
-                    .map_err(|e| format!("WriteFile: {}", e))?;
-            }
+            let mut w = self.writer.lock().unwrap();
+            w.write_all(data).map_err(|e| format!("write: {}", e))?;
+            w.flush().map_err(|e| format!("flush: {}", e))?;
             Ok(())
         }
 
         pub fn resize(&self, cols: i16, rows: i16) -> Result<(), String> {
-            unsafe {
-                let size = COORD { X: cols, Y: rows };
-                ResizePseudoConsole(self.hpc.0, size)
-                    .map_err(|e| format!("ResizePseudoConsole: {}", e))?;
-            }
-            Ok(())
+            self.master
+                .lock()
+                .unwrap()
+                .resize(PtySize {
+                    rows: rows.max(1) as u16,
+                    cols: cols.max(1) as u16,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| format!("resize: {}", e))
         }
 
         pub fn close(&mut self) {
@@ -158,13 +105,10 @@ pub(crate) mod pty {
             }
             self.closed = true;
             self.reader_active.store(false, Ordering::Relaxed);
-            unsafe {
-                ClosePseudoConsole(self.hpc.0);
-                let _ = CloseHandle(self.stdin_write.0);
-                let _ = CloseHandle(self.stdin_read.0);
-                let _ = CloseHandle(self.stdout_write.0);
-                let _ = CloseHandle(self.process_handle.0);
-            }
+            // Killing the child causes the reader thread to receive EOF.
+            let _ = self.child.lock().unwrap().kill();
+            // try_wait keeps zombie state cleared on Unix.
+            let _ = self.child.lock().unwrap().try_wait();
         }
 
         pub fn spawn_reader(
@@ -173,23 +117,23 @@ pub(crate) mod pty {
             session_id: String,
             ws_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
         ) {
-            let handle_val = self.stdout_read.0 .0 as usize;
+            let reader_opt = self.reader.lock().unwrap().take();
+            let mut reader = match reader_opt {
+                Some(r) => r,
+                None => return,
+            };
             let active = self.reader_active.clone();
-
             std::thread::spawn(move || {
                 use tauri::Emitter;
-                let raw_handle = HANDLE(handle_val as *mut std::ffi::c_void);
                 let mut buf = [0u8; 4096];
                 while active.load(Ordering::Relaxed) {
-                    let mut bytes_read: u32 = 0;
-                    let ok = unsafe {
-                        ReadFile(raw_handle, Some(&mut buf), Some(&mut bytes_read), None)
+                    let n = match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
                     };
-                    if ok.is_err() || bytes_read == 0 {
-                        break;
-                    }
-                    let data = buf[..bytes_read as usize].to_vec();
-                    // Fan out to any connected WebSocket clients (best-effort).
+                    let data = buf[..n].to_vec();
+                    // Best-effort fan-out to connected WebSocket clients.
                     let _ = ws_tx.send(data.clone());
                     use base64::Engine;
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
@@ -200,9 +144,6 @@ pub(crate) mod pty {
                 }
                 active.store(false, Ordering::Relaxed);
                 let _ = app_handle.emit("pty-closed", &session_id);
-                unsafe {
-                    let _ = CloseHandle(HANDLE(handle_val as *mut std::ffi::c_void));
-                }
             });
         }
     }
@@ -223,7 +164,6 @@ struct QaItem {
 
 // ========== App State ==========
 struct AppState {
-    #[cfg(windows)]
     pty_sessions: Mutex<HashMap<String, pty::PtySession>>,
     pty_broadcasts: Mutex<HashMap<String, broadcast::Sender<Vec<u8>>>>,
     qa_broadcasts: Mutex<HashMap<String, broadcast::Sender<String>>>,
@@ -237,6 +177,7 @@ struct AppState {
 // Claude Code v2.1+ on Windows requires bash.exe and reads its location from
 // CLAUDE_CODE_GIT_BASH_PATH. We probe standard Git for Windows install dirs
 // across drives so the user doesn't have to set anything by hand.
+#[cfg(windows)]
 fn find_git_bash_path() -> Option<String> {
     let drives = ["C:", "D:", "E:", "F:"];
     let suffixes = [
@@ -396,6 +337,7 @@ fn capture_main_window_to_png(
     Ok(())
 }
 
+#[cfg(windows)]
 fn screenshot_path(port: u16) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("llm-chat-qa");
     let _ = std::fs::create_dir_all(&dir);
@@ -419,18 +361,37 @@ fn find_claude_path() -> Option<String> {
             }
         }
     }
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        let npm_path = std::path::Path::new(&appdata).join("npm").join("claude.cmd");
-        if npm_path.exists() {
-            return Some(npm_path.to_string_lossy().into_owned());
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let npm_path = std::path::Path::new(&appdata).join("npm").join("claude.cmd");
+            if npm_path.exists() {
+                return Some(npm_path.to_string_lossy().into_owned());
+            }
+        }
+        if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
+            let claude_desktop = std::path::Path::new(&localappdata)
+                .join("AnthropicClaude")
+                .join("claude.exe");
+            if claude_desktop.exists() {
+                return Some(claude_desktop.to_string_lossy().into_owned());
+            }
         }
     }
-    if let Ok(localappdata) = std::env::var("LOCALAPPDATA") {
-        let claude_desktop = std::path::Path::new(&localappdata)
-            .join("AnthropicClaude")
-            .join("claude.exe");
-        if claude_desktop.exists() {
-            return Some(claude_desktop.to_string_lossy().into_owned());
+    #[cfg(unix)]
+    {
+        for c in &["/usr/local/bin/claude", "/usr/bin/claude", "/opt/claude/bin/claude"] {
+            if std::path::Path::new(c).exists() {
+                return Some((*c).into());
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            for sub in &[".local/bin/claude", ".npm-global/bin/claude", ".volta/bin/claude"] {
+                let p = std::path::Path::new(&home).join(sub);
+                if p.exists() {
+                    return Some(p.to_string_lossy().into_owned());
+                }
+            }
         }
     }
     None
@@ -438,7 +399,6 @@ fn find_claude_path() -> Option<String> {
 
 // ========== Tauri Commands ==========
 
-#[cfg(windows)]
 fn do_spawn_session(
     session_id: String,
     cols: u16,
@@ -459,13 +419,19 @@ fn do_spawn_session(
     let cmd = find_claude_path().unwrap_or_else(|| {
         "echo Claude CLI not found in PATH, APPDATA\\npm, or %LOCALAPPDATA%\\AnthropicClaude && pause".into()
     });
+    // Optional extra args appended to the claude invocation (e.g. set in
+    // Docker via `LLM_CHAT_CLAUDE_ARGS=--dangerously-skip-permissions`).
+    let spawn_cmd = match std::env::var("LLM_CHAT_CLAUDE_ARGS") {
+        Ok(args) if !args.trim().is_empty() => format!("{} {}", cmd, args.trim()),
+        _ => cmd.clone(),
+    };
     let c = if cols == 0 { 120i16 } else { cols as i16 };
     let r = if rows == 0 { 30i16 } else { rows as i16 };
     let _ = app_handle.emit(
         "new-pty-session",
         serde_json::json!({"sessionId": session_id}),
     );
-    let session = pty::PtySession::create(&cmd, c, r)?;
+    let session = pty::PtySession::create(&spawn_cmd, c, r)?;
     let (ws_tx, _ws_rx) = broadcast::channel::<Vec<u8>>(256);
     let (qa_tx, _qa_rx) = broadcast::channel::<String>(256);
     state
@@ -504,12 +470,7 @@ fn spawn_session(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
-    #[cfg(windows)]
-    {
-        return do_spawn_session(session_id, cols, rows, &state, &app_handle);
-    }
-    #[allow(unreachable_code)]
-    Err("Unsupported platform".into())
+    do_spawn_session(session_id, cols, rows, &state, &app_handle)
 }
 
 #[tauri::command]
@@ -517,7 +478,6 @@ fn close_session(
     session_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
     {
         if let Some(mut sess) = state.pty_sessions.lock().unwrap().remove(&session_id) {
             sess.close();
@@ -667,6 +627,17 @@ fn open_qa_log(path: String) -> Result<(), String> {
             );
         }
     }
+    #[cfg(unix)]
+    {
+        // xdg-open is the standard Linux file-open dispatcher. We ignore
+        // failure — if it isn't installed (e.g. in the headless container),
+        // the caller still got the path.
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
     Ok(())
 }
 
@@ -721,6 +692,16 @@ fn broadcast_qa(
 }
 
 #[tauri::command]
+fn is_managed_mode() -> bool {
+    // True when the manager spawned this backend (via env var). Frontend
+    // skips its auto-spawn so the manager owns every session.
+    matches!(
+        std::env::var("LLM_CHAT_NO_AUTO_SPAWN").ok().as_deref(),
+        Some("1") | Some("true")
+    )
+}
+
+#[tauri::command]
 fn save_terminal_output(content: String) -> Result<String, String> {
     let dir = std::env::temp_dir().join("llm-chat-output");
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
@@ -750,22 +731,17 @@ fn pty_write(
     data: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let bytes = data.as_bytes();
-        // xterm focus reports can hang ConPTY/cmd.exe during startup
-        if bytes == b"\x1b[I" || bytes == b"\x1b[O" {
-            return Ok(());
-        }
-        let map = state.pty_sessions.lock().unwrap();
-        if let Some(session) = map.get(&session_id) {
-            session.write(bytes)?;
-            return Ok(());
-        }
-        return Err(format!("No PTY session: {}", session_id));
+    let bytes = data.as_bytes();
+    // xterm focus reports can hang ConPTY/cmd.exe during startup
+    if bytes == b"\x1b[I" || bytes == b"\x1b[O" {
+        return Ok(());
     }
-    #[allow(unreachable_code)]
-    Ok(())
+    let map = state.pty_sessions.lock().unwrap();
+    if let Some(session) = map.get(&session_id) {
+        session.write(bytes)?;
+        return Ok(());
+    }
+    Err(format!("No PTY session: {}", session_id))
 }
 
 #[tauri::command]
@@ -775,15 +751,12 @@ fn pty_resize(
     rows: u16,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        if cols == 0 || rows == 0 {
-            return Ok(());
-        }
-        let map = state.pty_sessions.lock().unwrap();
-        if let Some(session) = map.get(&session_id) {
-            session.resize(cols as i16, rows as i16)?;
-        }
+    if cols == 0 || rows == 0 {
+        return Ok(());
+    }
+    let map = state.pty_sessions.lock().unwrap();
+    if let Some(session) = map.get(&session_id) {
+        session.resize(cols as i16, rows as i16)?;
     }
     Ok(())
 }
@@ -923,10 +896,33 @@ fn append_control_log(dir: &str, msg: &serde_json::Value) {
 // read it. The token is also printed to stderr at startup so external
 // clients can capture it without needing filesystem access.
 fn auth_token_file_path() -> std::path::PathBuf {
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        let dir = std::path::Path::new(&local).join("com.llm-chat.app");
-        if std::fs::create_dir_all(&dir).is_ok() {
-            return dir.join("auth.token");
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let dir = std::path::Path::new(&local).join("com.llm-chat.app");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                return dir.join("auth.token");
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        // Prefer $XDG_DATA_HOME, falling back to ~/.local/share — that's the
+        // freedesktop spec'd home for per-user persistent state.
+        let base = std::env::var("XDG_DATA_HOME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| std::path::Path::new(&h).join(".local").join("share"))
+            });
+        if let Some(b) = base {
+            let dir = b.join("com.llm-chat.app");
+            if std::fs::create_dir_all(&dir).is_ok() {
+                return dir.join("auth.token");
+            }
         }
     }
     qa_root_dir().join("auth.token")
@@ -946,9 +942,13 @@ fn lock_token_file_acl(path: &std::path::Path) {
             .arg(format!("{}:F", username))
             .output();
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let _ = path;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(0o600),
+        );
     }
 }
 
@@ -1009,7 +1009,6 @@ fn extract_token_from_request(
 // Every connection must present the auth token, either via
 // `Authorization: Bearer <token>` header or `?token=<token>` query string.
 // Browser-style http(s) Origin headers are rejected outright.
-#[cfg(windows)]
 fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
     use futures_util::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
@@ -1020,8 +1019,11 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
     let auth_token = load_or_generate_auth_token();
     eprintln!("[ws] auth token loaded ({} chars)", auth_token.len());
 
+    // Default to loopback for security. Override via `LLM_CHAT_WS_HOST=0.0.0.0`
+    // when running inside a container so the host can reach the bridged port.
+    let host = std::env::var("LLM_CHAT_WS_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     tauri::async_runtime::spawn(async move {
-        let addr = format!("127.0.0.1:{}", port);
+        let addr = format!("{}:{}", host, port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -1533,9 +1535,12 @@ pub fn run() {
     // Claude Code v2.1+ on Windows refuses to start without bash.exe. If the
     // user has Git for Windows installed but bash isn't on PATH and the env
     // var isn't set, set it now so child processes inherit it.
-    if std::env::var("CLAUDE_CODE_GIT_BASH_PATH").is_err() {
-        if let Some(bash) = find_git_bash_path() {
-            std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", &bash);
+    #[cfg(windows)]
+    {
+        if std::env::var("CLAUDE_CODE_GIT_BASH_PATH").is_err() {
+            if let Some(bash) = find_git_bash_path() {
+                std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", &bash);
+            }
         }
     }
     // Hint full-color, dark-theme terminal so claude renders its rich TUI
@@ -1564,7 +1569,6 @@ pub fn run() {
     }
     tauri::Builder::default()
         .manage(AppState {
-            #[cfg(windows)]
             pty_sessions: Mutex::new(HashMap::new()),
             pty_broadcasts: Mutex::new(HashMap::new()),
             qa_broadcasts: Mutex::new(HashMap::new()),
@@ -1581,6 +1585,7 @@ pub fn run() {
             close_session,
             list_sessions,
             set_active_session,
+            is_managed_mode,
             get_qa_log_path,
             append_qa_log,
             write_qa_log,
@@ -1589,14 +1594,11 @@ pub fn run() {
             save_terminal_output,
         ])
         .setup(|app| {
-            #[cfg(windows)]
-            {
-                let port: u16 = std::env::var("LLM_CHAT_WS_PORT")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(7878);
-                start_ws_server(app.handle().clone(), port);
-            }
+            let port: u16 = std::env::var("LLM_CHAT_WS_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7878);
+            start_ws_server(app.handle().clone(), port);
             // Stealth mode: hide the main window at startup. The Rust process
             // and WS server keep running normally; just no visible UI / no
             // taskbar entry. Useful for headless tests.
