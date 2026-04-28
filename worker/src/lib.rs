@@ -1,8 +1,8 @@
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::broadcast;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 
 // ---------- SQLite-backed PTY input FIFO ----------
 //
@@ -108,8 +108,12 @@ async fn query_pty_input(
     }
     sql.push_str(" ORDER BY seq DESC LIMIT ?");
     let mut q = sqlx::query_as::<_, (i64, String, Vec<u8>, String, String, Option<String>)>(&sql);
-    if let Some(s) = sid { q = q.bind(s); }
-    if let Some(s) = status { q = q.bind(s); }
+    if let Some(s) = sid {
+        q = q.bind(s);
+    }
+    if let Some(s) = status {
+        q = q.bind(s);
+    }
     q = q.bind(limit);
     let rows = q.fetch_all(pool).await?;
     Ok(rows
@@ -163,11 +167,22 @@ fn attachment_dir(sid: &str) -> std::path::PathBuf {
 fn sanitize_path_component(s: &str) -> String {
     // Drop anything that could escape the directory or look weird in a path.
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
-fn save_attachment(sid: &str, name: &str, mime: &str, b64: &str) -> Result<std::path::PathBuf, String> {
+fn save_attachment(
+    sid: &str,
+    name: &str,
+    mime: &str,
+    b64: &str,
+) -> Result<std::path::PathBuf, String> {
     if !ATTACHMENT_ALLOWED_MIME.contains(&mime) {
         return Err(format!("MIME type not allowed: {}", mime));
     }
@@ -211,16 +226,16 @@ fn cleanup_attachments(sid: &str) {
 
 /// Mark a previously-recorded write as completed (or errored).
 async fn pty_input_mark(seq: i64, ok: bool) {
-    let Some(pool) = PTY_INPUT_DB.get() else { return };
+    let Some(pool) = PTY_INPUT_DB.get() else {
+        return;
+    };
     let status = if ok { "written" } else { "error" };
-    let _ = sqlx::query(
-        "UPDATE pty_input SET status = ?, time_written = ? WHERE seq = ?",
-    )
-    .bind(status)
-    .bind(now_iso())
-    .bind(seq)
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("UPDATE pty_input SET status = ?, time_written = ? WHERE seq = ?")
+        .bind(status)
+        .bind(now_iso())
+        .bind(seq)
+        .execute(pool)
+        .await;
 }
 
 // ========== ConPTY ==========
@@ -228,13 +243,13 @@ async fn pty_input_mark(seq: i64, ok: bool) {
 pub(crate) mod pty {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use windows::core::PWSTR;
     use windows::Win32::Foundation::*;
     use windows::Win32::Security::SECURITY_ATTRIBUTES;
     use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
     use windows::Win32::System::Console::*;
     use windows::Win32::System::Pipes::*;
     use windows::Win32::System::Threading::*;
-    use windows::core::PWSTR;
 
     #[derive(Clone, Copy)]
     pub struct SendHandle(pub HANDLE);
@@ -290,8 +305,7 @@ pub(crate) mod pty {
                 );
 
                 let attr_list_buf = vec![0u8; attr_list_size];
-                let attr_list =
-                    LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_buf.as_ptr() as *mut _);
+                let attr_list = LPPROC_THREAD_ATTRIBUTE_LIST(attr_list_buf.as_ptr() as *mut _);
 
                 InitializeProcThreadAttributeList(attr_list, 1, 0, &mut attr_list_size)
                     .map_err(|e| format!("InitializeProcThreadAttributeList: {}", e))?;
@@ -441,9 +455,9 @@ pub(crate) mod pty {
 // `pty_resize`, `close_session` are platform-agnostic.
 #[cfg(unix)]
 pub(crate) mod pty {
+    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-    use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
     pub struct PtySession {
         master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
@@ -473,10 +487,21 @@ pub(crate) mod pty {
             // CommandBuilder starts with a clean env on unix; forward the
             // vars Claude / Ink / xterm need to render its TUI.
             for var in [
-                "HOME", "USER", "LOGNAME", "PATH", "SHELL",
-                "LANG", "LC_ALL", "LC_CTYPE", "TERM",
-                "FORCE_COLOR", "COLORFGBG", "COLORTERM",
-                "CLAUDE_CODE_GIT_BASH_PATH", "DISPLAY", "WAYLAND_DISPLAY",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "PATH",
+                "SHELL",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "TERM",
+                "FORCE_COLOR",
+                "COLORFGBG",
+                "COLORTERM",
+                "CLAUDE_CODE_GIT_BASH_PATH",
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
                 "XDG_RUNTIME_DIR",
             ] {
                 if let Ok(v) = std::env::var(var) {
@@ -565,8 +590,7 @@ pub(crate) mod pty {
                             let data = buf[..n].to_vec();
                             let _ = ws_tx.send(data.clone());
                             use base64::Engine;
-                            let encoded =
-                                base64::engine::general_purpose::STANDARD.encode(&data);
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
                             let _ = app_handle.emit(
                                 "pty-data",
                                 serde_json::json!({
@@ -673,8 +697,8 @@ fn capture_main_window_to_png(
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
-        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        HGDIOBJ, SRCCOPY,
     };
     use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
     use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
@@ -756,11 +780,8 @@ fn capture_main_window_to_png(
         }
         let file = std::fs::File::create(out_path)
             .map_err(|e| format!("create {}: {e}", out_path.display()))?;
-        let mut encoder = png::Encoder::new(
-            std::io::BufWriter::new(file),
-            width as u32,
-            height as u32,
-        );
+        let mut encoder =
+            png::Encoder::new(std::io::BufWriter::new(file), width as u32, height as u32);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder
@@ -797,7 +818,9 @@ fn find_claude_path() -> Option<String> {
         }
     }
     if let Ok(appdata) = std::env::var("APPDATA") {
-        let npm_path = std::path::Path::new(&appdata).join("npm").join("claude.cmd");
+        let npm_path = std::path::Path::new(&appdata)
+            .join("npm")
+            .join("claude.cmd");
         if npm_path.exists() {
             return Some(npm_path.to_string_lossy().into_owned());
         }
@@ -878,11 +901,7 @@ fn do_spawn_session(
         .lock()
         .unwrap()
         .insert(session_id.clone(), qa_tx);
-    state
-        .session_order
-        .lock()
-        .unwrap()
-        .push(session_id.clone());
+    state.session_order.lock().unwrap().push(session_id.clone());
     session.spawn_reader(app_handle.clone(), session_id.clone(), ws_tx);
     state
         .pty_sessions
@@ -913,13 +932,16 @@ fn spawn_session(
 }
 
 #[tauri::command]
-fn close_session(
-    session_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+fn close_session(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     #[cfg(any(unix, windows))]
     {
-        let existed = state.pty_sessions.lock().unwrap().remove(&session_id).map(|mut s| s.close()).is_some();
+        let existed = state
+            .pty_sessions
+            .lock()
+            .unwrap()
+            .remove(&session_id)
+            .map(|mut s| s.close())
+            .is_some();
         state.pty_broadcasts.lock().unwrap().remove(&session_id);
         state.qa_broadcasts.lock().unwrap().remove(&session_id);
         state.qa_history.lock().unwrap().remove(&session_id);
@@ -945,10 +967,7 @@ fn list_sessions(state: tauri::State<'_, AppState>) -> Vec<String> {
 }
 
 #[tauri::command]
-fn set_active_session(
-    session_id: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+fn set_active_session(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     *state.active_session_id.lock().unwrap() = Some(session_id);
     Ok(())
 }
@@ -998,16 +1017,38 @@ fn get_qa_log_path(session_id: Option<String>) -> Result<String, String> {
     let mut y = 1970i64;
     let mut remaining = days as i64;
     loop {
-        let days_in_year = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
-        if remaining < days_in_year { break; }
+        let days_in_year = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+            366
+        } else {
+            365
+        };
+        if remaining < days_in_year {
+            break;
+        }
         remaining -= days_in_year;
         y += 1;
     }
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 0usize;
     for i in 0..12 {
-        if remaining < mdays[i] { m = i + 1; break; }
+        if remaining < mdays[i] {
+            m = i + 1;
+            break;
+        }
         remaining -= mdays[i];
     }
     let d = remaining + 1;
@@ -1015,7 +1056,10 @@ fn get_qa_log_path(session_id: Option<String>) -> Result<String, String> {
         .as_deref()
         .map(|s| format!("_{}", s.replace(|c: char| !c.is_ascii_alphanumeric(), "")))
         .unwrap_or_default();
-    let filename = format!("qa_claude_{:04}{:02}{:02}_{:02}{}.log", y, m, d, hour, suffix);
+    let filename = format!(
+        "qa_claude_{:04}{:02}{:02}_{:02}{}.log",
+        y, m, d, hour, suffix
+    );
     let path = dir.join(filename);
     Ok(path.to_string_lossy().into_owned())
 }
@@ -1127,9 +1171,7 @@ fn clean_answer(text: &str) -> String {
         .collect::<Vec<&str>>()
         .join("\n");
 
-    const CHROME_CHARS: &[char] = &[
-        '⏵', '◉', '◯', '✻', '✶', '✢', '✷', '✺', '✱', '✽',
-    ];
+    const CHROME_CHARS: &[char] = &['⏵', '◉', '◯', '✻', '✶', '✢', '✷', '✺', '✱', '✽'];
     match line_filtered.find(|c: char| CHROME_CHARS.contains(&c)) {
         Some(pos) => line_filtered[..pos].trim_end().to_string(),
         None => line_filtered,
@@ -1201,8 +1243,7 @@ fn save_terminal_output(content: String) -> Result<String, String> {
         .unwrap_or_default()
         .as_secs();
     let path = dir.join(format!("terminal_output_{}.txt", secs));
-    std::fs::write(&path, content.as_bytes())
-        .map_err(|e| format!("Failed to write: {}", e))?;
+    std::fs::write(&path, content.as_bytes()).map_err(|e| format!("Failed to write: {}", e))?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -1284,20 +1325,45 @@ fn iso_now() -> String {
     let mut y = 1970i64;
     let mut rem = (total_secs / 86400) as i64;
     loop {
-        let dy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
-        if rem < dy { break; }
+        let dy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+            366
+        } else {
+            365
+        };
+        if rem < dy {
+            break;
+        }
         rem -= dy;
         y += 1;
     }
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 0usize;
     for i in 0..12 {
-        if rem < mdays[i] { mo = i + 1; break; }
+        if rem < mdays[i] {
+            mo = i + 1;
+            break;
+        }
         rem -= mdays[i];
     }
     let d = rem + 1;
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, mo, d, h, mi, s, millis)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        y, mo, d, h, mi, s, millis
+    )
 }
 
 const CONTROL_LOG_MAX_BYTES: u64 = 1024 * 1024;
@@ -1310,16 +1376,38 @@ fn today_yyyymmdd() -> String {
     let mut y = 1970i64;
     let mut rem = (total_secs / 86400) as i64;
     loop {
-        let dy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
-        if rem < dy { break; }
+        let dy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+            366
+        } else {
+            365
+        };
+        if rem < dy {
+            break;
+        }
         rem -= dy;
         y += 1;
     }
     let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let mdays = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut mo = 0usize;
     for i in 0..12 {
-        if rem < mdays[i] { mo = i + 1; break; }
+        if rem < mdays[i] {
+            mo = i + 1;
+            break;
+        }
         rem -= mdays[i];
     }
     let d = rem + 1;
@@ -1354,14 +1442,20 @@ fn next_seq_for_date(date: &str) -> u32 {
                 if let Some(rest) = name.strip_prefix(&prefix) {
                     if let Some(num_str) = rest.strip_suffix(".log") {
                         if let Ok(n) = num_str.parse::<u32>() {
-                            if n > max_seq { max_seq = n; }
+                            if n > max_seq {
+                                max_seq = n;
+                            }
                         }
                     }
                 }
             }
         }
     }
-    if max_seq == 0 { 1 } else { max_seq }
+    if max_seq == 0 {
+        1
+    } else {
+        max_seq
+    }
 }
 
 fn control_log_path() -> std::path::PathBuf {
@@ -1423,8 +1517,7 @@ fn auth_token_file_path() -> std::path::PathBuf {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
             .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
             });
         if let Some(b) = base {
             let dir = b.join("com.llm-chat.app");
@@ -1631,8 +1724,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                 // Resolve session id from the path. Crucially: clone any data
                 // out of the Mutex guards BEFORE we hit an `.await`, otherwise
                 // the future captured by tokio::spawn isn't `Send`.
-                let order_snapshot: Vec<String> =
-                    state.session_order.lock().unwrap().clone();
+                let order_snapshot: Vec<String> = state.session_order.lock().unwrap().clone();
 
                 // /control endpoint — JSON command channel. Clients send one
                 // command per line: {"cmd":"open"} | {"cmd":"close","sessionId":"..."} |
@@ -1788,7 +1880,9 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                             "sessionId": s,
                                             "history": hist.get(&s).cloned().unwrap_or_default(),
                                         }),
-                                        None => serde_json::json!({"ok":false,"error":"bad sessionId"}),
+                                        None => {
+                                            serde_json::json!({"ok":false,"error":"bad sessionId"})
+                                        }
                                     }
                                 } else {
                                     // No session specified → return histories for every session.
@@ -1820,10 +1914,8 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                         .terminal_ready
                                         .load(std::sync::atomic::Ordering::Relaxed)
                                     {
-                                        tokio::time::sleep(
-                                            std::time::Duration::from_millis(100),
-                                        )
-                                        .await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(100))
+                                            .await;
                                         waits += 1;
                                         if waits > 100 {
                                             break;
@@ -1865,18 +1957,14 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     .to_string();
                                 use tauri::Manager;
                                 let st = app_handle_ctrl.state::<AppState>();
-                                if let Some(mut sess) =
-                                    st.pty_sessions.lock().unwrap().remove(&sid)
+                                if let Some(mut sess) = st.pty_sessions.lock().unwrap().remove(&sid)
                                 {
                                     sess.close();
                                 }
                                 st.pty_broadcasts.lock().unwrap().remove(&sid);
                                 st.qa_broadcasts.lock().unwrap().remove(&sid);
                                 st.qa_history.lock().unwrap().remove(&sid);
-                                st.session_order
-                                    .lock()
-                                    .unwrap()
-                                    .retain(|x| x != &sid);
+                                st.session_order.lock().unwrap().retain(|x| x != &sid);
                                 cleanup_attachments(&sid);
                                 use tauri::Emitter;
                                 let _ = app_handle_ctrl.emit(
@@ -1915,15 +2003,33 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                             "save_attachment" => {
                                 // Manager-only call: { sid, name, mime, data:base64 }
                                 // → { ok, path } (absolute file path on this host)
-                                let sid = req.get("sid").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let name = req.get("name").and_then(|v| v.as_str()).unwrap_or("attachment").to_string();
-                                let mime = req.get("mime").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                let data = req.get("data").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let sid = req
+                                    .get("sid")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let name = req
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("attachment")
+                                    .to_string();
+                                let mime = req
+                                    .get("mime")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let data = req
+                                    .get("data")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
                                 if sid.is_empty() || mime.is_empty() || data.is_empty() {
                                     serde_json::json!({"ok":false,"error":"sid+mime+data required"})
                                 } else {
                                     match save_attachment(&sid, &name, &mime, &data) {
-                                        Ok(p) => serde_json::json!({"ok":true,"path":p.to_string_lossy()}),
+                                        Ok(p) => {
+                                            serde_json::json!({"ok":true,"path":p.to_string_lossy()})
+                                        }
                                         Err(e) => serde_json::json!({"ok":false,"error":e}),
                                     }
                                 }
@@ -1932,15 +2038,37 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 // Inspect the SQLite-backed PTY input FIFO.
                                 // Optional filters: sid (string), status (pending|written|error),
                                 // limit (default 100, capped at 1000).
-                                let sid_filter = req.get("sid").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let status_filter = req.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
-                                let limit = req.get("limit").and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
-                                match query_pty_input(sid_filter.as_deref(), status_filter.as_deref(), limit).await {
-                                    Ok(rows) => serde_json::json!({"ok": true, "rows": rows, "count": rows.len()}),
-                                    Err(e) => serde_json::json!({"ok": false, "error": format!("fifo query: {}", e)}),
+                                let sid_filter = req
+                                    .get("sid")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                let status_filter = req
+                                    .get("status")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                let limit = req
+                                    .get("limit")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(100)
+                                    .clamp(1, 1000);
+                                match query_pty_input(
+                                    sid_filter.as_deref(),
+                                    status_filter.as_deref(),
+                                    limit,
+                                )
+                                .await
+                                {
+                                    Ok(rows) => {
+                                        serde_json::json!({"ok": true, "rows": rows, "count": rows.len()})
+                                    }
+                                    Err(e) => {
+                                        serde_json::json!({"ok": false, "error": format!("fifo query: {}", e)})
+                                    }
                                 }
                             }
-                            other => serde_json::json!({"ok":false,"error":format!("unknown cmd: {}", other)}),
+                            other => {
+                                serde_json::json!({"ok":false,"error":format!("unknown cmd: {}", other)})
+                            }
                         };
                         append_control_log("out", &reply);
                         if ws_sink
@@ -1961,10 +2089,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                     let qa_session_id = if let Ok(idx) = trimmed.parse::<usize>() {
                         if idx == 0 || idx > order_snapshot.len() {
                             let _ = ws_sink
-                                .send(Message::Text(format!(
-                                    "session index {} out of range",
-                                    idx
-                                )))
+                                .send(Message::Text(format!("session index {} out of range", idx)))
                                 .await;
                             return;
                         }
@@ -1988,10 +2113,13 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                         }
                     };
                     let _ = ws_sink
-                        .send(Message::Text(serde_json::json!({
-                            "type": "subscribed",
-                            "sessionId": qa_session_id,
-                        }).to_string()))
+                        .send(Message::Text(
+                            serde_json::json!({
+                                "type": "subscribed",
+                                "sessionId": qa_session_id,
+                            })
+                            .to_string(),
+                        ))
                         .await;
                     loop {
                         match qa_rx.recv().await {
@@ -2012,9 +2140,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                     let _ = ws_sink.send(Message::Text(body)).await;
                     return;
                 } else {
-                    let trimmed = req_path
-                        .trim_start_matches("/s/")
-                        .trim_start_matches('/');
+                    let trimmed = req_path.trim_start_matches("/s/").trim_start_matches('/');
                     if let Ok(idx) = trimmed.parse::<usize>() {
                         if idx == 0 || idx > order_snapshot.len() {
                             let msg = format!(
@@ -2049,7 +2175,10 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                 };
 
                 let _ = ws_sink
-                    .send(Message::Text(format!("connected to session {}", session_id)))
+                    .send(Message::Text(format!(
+                        "connected to session {}",
+                        session_id
+                    )))
                     .await;
 
                 let ws_sink = std::sync::Arc::new(tokio::sync::Mutex::new(ws_sink));
@@ -2117,9 +2246,11 @@ fn init_backend_tracing() {
     use tracing_subscriber::EnvFilter;
     // Idempotent: try_init avoids panicking if a subscriber is already set
     // (e.g. when the backend is loaded as a library by tests).
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    let json = matches!(std::env::var("LOG_JSON").ok().as_deref(), Some("1") | Some("true"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let json = matches!(
+        std::env::var("LOG_JSON").ok().as_deref(),
+        Some("1") | Some("true")
+    );
     let _ = if json {
         tracing_subscriber::fmt()
             .json()

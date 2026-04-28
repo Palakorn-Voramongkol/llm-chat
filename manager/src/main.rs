@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use sqlx::postgres::PgPool;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{
@@ -34,8 +34,7 @@ use tokio_tungstenite::{
     tungstenite::{
         client::IntoClientRequest,
         handshake::server::{ErrorResponse, Request, Response},
-        http,
-        Message,
+        http, Message,
     },
 };
 
@@ -94,9 +93,14 @@ impl ChatDb {
                      (connection_id, sid, q_id, text, time_in, status, attachment_paths)
                      VALUES (?, ?, ?, ?, ?, 'pending', ?)",
                 )
-                .bind(connection_id).bind(sid).bind(q_id).bind(text).bind(time_in)
+                .bind(connection_id)
+                .bind(sid)
+                .bind(q_id)
+                .bind(text)
+                .bind(time_in)
                 .bind(attachment_paths_json)
-                .execute(p).await?;
+                .execute(p)
+                .await?;
                 Ok(r.last_insert_rowid())
             }
             ChatDb::Postgres(p) => {
@@ -105,9 +109,14 @@ impl ChatDb {
                      (connection_id, sid, q_id, text, time_in, status, attachment_paths)
                      VALUES ($1, $2, $3, $4, $5, 'pending', $6) RETURNING seq",
                 )
-                .bind(connection_id).bind(sid).bind(q_id).bind(text).bind(time_in)
+                .bind(connection_id)
+                .bind(sid)
+                .bind(q_id)
+                .bind(text)
+                .bind(time_in)
                 .bind(attachment_paths_json)
-                .fetch_one(p).await?;
+                .fetch_one(p)
+                .await?;
                 Ok(row.0)
             }
         }
@@ -118,11 +127,17 @@ impl ChatDb {
         match self {
             ChatDb::Sqlite(p) => {
                 sqlx::query("UPDATE chat_question SET status = ? WHERE seq = ?")
-                    .bind(status).bind(seq).execute(p).await?;
+                    .bind(status)
+                    .bind(seq)
+                    .execute(p)
+                    .await?;
             }
             ChatDb::Postgres(p) => {
                 sqlx::query("UPDATE chat_question SET status = $1 WHERE seq = $2")
-                    .bind(status).bind(seq).execute(p).await?;
+                    .bind(status)
+                    .bind(seq)
+                    .execute(p)
+                    .await?;
             }
         }
         Ok(())
@@ -141,7 +156,9 @@ impl ChatDb {
                      WHERE connection_id = ? AND status = 'sent'
                      ORDER BY seq ASC LIMIT 1",
                 )
-                .bind(connection_id).fetch_optional(p).await
+                .bind(connection_id)
+                .fetch_optional(p)
+                .await
             }
             ChatDb::Postgres(p) => {
                 sqlx::query_as(
@@ -149,7 +166,9 @@ impl ChatDb {
                      WHERE connection_id = $1 AND status = 'sent'
                      ORDER BY seq ASC LIMIT 1",
                 )
-                .bind(connection_id).fetch_optional(p).await
+                .bind(connection_id)
+                .fetch_optional(p)
+                .await
             }
         }
     }
@@ -165,12 +184,20 @@ impl ChatDb {
                 "UPDATE chat_question SET status = 'confirmed', time_confirmed = ?
                  WHERE seq = ? AND status = 'answered'",
             )
-            .bind(time_confirmed).bind(seq).execute(p).await?.rows_affected(),
+            .bind(time_confirmed)
+            .bind(seq)
+            .execute(p)
+            .await?
+            .rows_affected(),
             ChatDb::Postgres(p) => sqlx::query(
                 "UPDATE chat_question SET status = 'confirmed', time_confirmed = $1
                  WHERE seq = $2 AND status = 'answered'",
             )
-            .bind(time_confirmed).bind(seq).execute(p).await?.rows_affected(),
+            .bind(time_confirmed)
+            .bind(seq)
+            .execute(p)
+            .await?
+            .rows_affected(),
         };
         Ok(affected > 0)
     }
@@ -188,14 +215,22 @@ impl ChatDb {
                     "UPDATE chat_question SET answer_text = ?, status = 'answered',
                      time_out = ? WHERE seq = ?",
                 )
-                .bind(answer_text).bind(time_out).bind(seq).execute(p).await?;
+                .bind(answer_text)
+                .bind(time_out)
+                .bind(seq)
+                .execute(p)
+                .await?;
             }
             ChatDb::Postgres(p) => {
                 sqlx::query(
                     "UPDATE chat_question SET answer_text = $1, status = 'answered',
                      time_out = $2 WHERE seq = $3",
                 )
-                .bind(answer_text).bind(time_out).bind(seq).execute(p).await?;
+                .bind(answer_text)
+                .bind(time_out)
+                .bind(seq)
+                .execute(p)
+                .await?;
             }
         }
         Ok(())
@@ -275,12 +310,16 @@ async fn init_schema_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     // errors. These migrations run once per startup and are idempotent
     // either way (the column either exists already or we just added it).
     let _ = sqlx::query("ALTER TABLE chat_question ADD COLUMN time_confirmed TEXT;")
-        .execute(pool).await;
-    let _ = sqlx::query("ALTER TABLE chat_question ADD COLUMN attachment_paths TEXT;")
-        .execute(pool).await;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);")
         .execute(pool)
-        .await?;
+        .await;
+    let _ = sqlx::query("ALTER TABLE chat_question ADD COLUMN attachment_paths TEXT;")
+        .execute(pool)
+        .await;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -305,12 +344,16 @@ async fn init_schema_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     sqlx::query("ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS time_confirmed TEXT;")
-        .execute(pool).await?;
-    sqlx::query("ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS attachment_paths TEXT;")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);")
         .execute(pool)
         .await?;
+    sqlx::query("ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS attachment_paths TEXT;")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -331,21 +374,44 @@ async fn query_chat_queue(
     status: Option<&str>,
     limit: i64,
 ) -> Result<Vec<serde_json::Value>, sqlx::Error> {
-    type Row = (i64, String, String, String, String, String, String, Option<String>, Option<String>, Option<String>);
+    type Row = (
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let rows: Vec<Row> = match db {
         ChatDb::Sqlite(pool) => {
             let mut sql = String::from(
                 "SELECT seq, connection_id, sid, q_id, text, time_in, status, answer_text, time_out, attachment_paths
                  FROM chat_question WHERE 1=1",
             );
-            if connection_id.is_some() { sql.push_str(" AND connection_id = ?"); }
-            if sid.is_some() { sql.push_str(" AND sid = ?"); }
-            if status.is_some() { sql.push_str(" AND status = ?"); }
+            if connection_id.is_some() {
+                sql.push_str(" AND connection_id = ?");
+            }
+            if sid.is_some() {
+                sql.push_str(" AND sid = ?");
+            }
+            if status.is_some() {
+                sql.push_str(" AND status = ?");
+            }
             sql.push_str(" ORDER BY seq DESC LIMIT ?");
             let mut q = sqlx::query_as::<_, Row>(&sql);
-            if let Some(c) = connection_id { q = q.bind(c); }
-            if let Some(s) = sid { q = q.bind(s); }
-            if let Some(s) = status { q = q.bind(s); }
+            if let Some(c) = connection_id {
+                q = q.bind(c);
+            }
+            if let Some(s) = sid {
+                q = q.bind(s);
+            }
+            if let Some(s) = status {
+                q = q.bind(s);
+            }
             q.bind(limit).fetch_all(pool).await?
         }
         ChatDb::Postgres(pool) => {
@@ -354,14 +420,29 @@ async fn query_chat_queue(
                  FROM chat_question WHERE 1=1",
             );
             let mut idx = 1;
-            if connection_id.is_some() { sql.push_str(&format!(" AND connection_id = ${}", idx)); idx += 1; }
-            if sid.is_some() { sql.push_str(&format!(" AND sid = ${}", idx)); idx += 1; }
-            if status.is_some() { sql.push_str(&format!(" AND status = ${}", idx)); idx += 1; }
+            if connection_id.is_some() {
+                sql.push_str(&format!(" AND connection_id = ${}", idx));
+                idx += 1;
+            }
+            if sid.is_some() {
+                sql.push_str(&format!(" AND sid = ${}", idx));
+                idx += 1;
+            }
+            if status.is_some() {
+                sql.push_str(&format!(" AND status = ${}", idx));
+                idx += 1;
+            }
             sql.push_str(&format!(" ORDER BY seq DESC LIMIT ${}", idx));
             let mut q = sqlx::query_as::<_, Row>(&sql);
-            if let Some(c) = connection_id { q = q.bind(c); }
-            if let Some(s) = sid { q = q.bind(s); }
-            if let Some(s) = status { q = q.bind(s); }
+            if let Some(c) = connection_id {
+                q = q.bind(c);
+            }
+            if let Some(s) = sid {
+                q = q.bind(s);
+            }
+            if let Some(s) = status {
+                q = q.bind(s);
+            }
             q.bind(limit).fetch_all(pool).await?
         }
     };
@@ -422,7 +503,9 @@ fn auth_token_path() -> std::path::PathBuf {
     {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share")));
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/share"))
+            });
         if let Some(base) = base {
             let dir = base.join("com.llm-chat.app");
             if std::fs::create_dir_all(&dir).is_ok() {
@@ -547,9 +630,11 @@ type SharedState = Arc<Mutex<ManagerState>>;
 /// aggregation pipelines.
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    let json = matches!(std::env::var("LOG_JSON").ok().as_deref(), Some("1") | Some("true"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let json = matches!(
+        std::env::var("LOG_JSON").ok().as_deref(),
+        Some("1") | Some("true")
+    );
     if json {
         tracing_subscriber::fmt()
             .json()
@@ -579,10 +664,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         // Default backend lives at sibling crate's target dir. We're usually
         // built in release, but fall back to debug if release isn't present.
-        let backend_name = if cfg!(windows) { "llm-chat.exe" } else { "llm-chat" };
+        let backend_name = if cfg!(windows) {
+            "llm-chat.exe"
+        } else {
+            "llm-chat"
+        };
         let project_root = exe_dir.join("..").join("..").join("..");
-        let release = project_root.join("worker").join("target").join("release").join(backend_name);
-        let debug = project_root.join("worker").join("target").join("debug").join(backend_name);
+        let release = project_root
+            .join("worker")
+            .join("target")
+            .join("release")
+            .join(backend_name);
+        let debug = project_root
+            .join("worker")
+            .join("target")
+            .join("debug")
+            .join(backend_name);
         let chosen = if release.exists() { release } else { debug };
         chosen.to_string_lossy().into_owned()
     });
@@ -721,8 +818,8 @@ fn spawn_instance(exe: &str, port: u16, auth_token: &str, stealth: bool) -> std:
     // so headless boxes Just Work for the manager use case.
     #[cfg(unix)]
     let xvfb_wrap = {
-        let no_display = std::env::var_os("DISPLAY").is_none()
-            && std::env::var_os("WAYLAND_DISPLAY").is_none();
+        let no_display =
+            std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
         no_display && which_on_path("xvfb-run").is_some()
     };
     #[cfg(not(unix))]
@@ -914,17 +1011,15 @@ async fn handle_control(
                 let ports = st.instance_ports.clone();
                 let mut counts = serde_json::Map::new();
                 for p in &ports {
-                    let c = st
-                        .session_to_port
-                        .values()
-                        .filter(|x| **x == *p)
-                        .count();
+                    let c = st.session_to_port.values().filter(|x| **x == *p).count();
                     counts.insert(p.to_string(), serde_json::json!(c));
                 }
                 serde_json::json!({"ok":true,"ports":ports,"sessionsPerPort":counts})
             }
             "open" => match cmd_open(&state).await {
-                Ok((sid, port)) => serde_json::json!({"ok":true,"sessionId":sid,"backendPort":port}),
+                Ok((sid, port)) => {
+                    serde_json::json!({"ok":true,"sessionId":sid,"backendPort":port})
+                }
                 Err(e) => serde_json::json!({"ok":false,"error":e.to_string()}),
             },
             "close" => {
@@ -956,7 +1051,8 @@ async fn handle_control(
                             }
                         }
                         Err(e) => {
-                            per_backend.insert(p.to_string(), serde_json::json!({"error":e.to_string()}));
+                            per_backend
+                                .insert(p.to_string(), serde_json::json!({"error":e.to_string()}));
                         }
                     }
                 }
@@ -989,7 +1085,8 @@ async fn handle_control(
                     let ports = state.lock().await.instance_ports.clone();
                     let mut all = serde_json::Map::new();
                     for p in &ports {
-                        if let Ok(v) = call_backend(*p, serde_json::json!({"cmd":"history"})).await {
+                        if let Ok(v) = call_backend(*p, serde_json::json!({"cmd":"history"})).await
+                        {
                             if let Some(map) = v.get("histories").and_then(|x| x.as_object()) {
                                 for (k, val) in map {
                                     all.insert(k.clone(), val.clone());
@@ -1012,12 +1109,33 @@ async fn handle_control(
             "queue" => {
                 // Inspect the manager's OWN /chat queue (chat_question table
                 // in manager.sqlite). Filters: connectionId, sid, status, limit.
-                let connection_id = req.get("connectionId").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let sid_filter = req.get("sid").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let status_filter = req.get("status").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let limit = req.get("limit").and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+                let connection_id = req
+                    .get("connectionId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let sid_filter = req
+                    .get("sid")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let status_filter = req
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let limit = req
+                    .get("limit")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(100)
+                    .clamp(1, 1000);
                 let db = state.lock().await.chat_db.clone();
-                match query_chat_queue(&db, connection_id.as_deref(), sid_filter.as_deref(), status_filter.as_deref(), limit).await {
+                match query_chat_queue(
+                    &db,
+                    connection_id.as_deref(),
+                    sid_filter.as_deref(),
+                    status_filter.as_deref(),
+                    limit,
+                )
+                .await
+                {
                     Ok(rows) => serde_json::json!({"ok":true,"count":rows.len(),"rows":rows}),
                     Err(e) => serde_json::json!({"ok":false,"error":format!("queue query: {}", e)}),
                 }
@@ -1049,8 +1167,9 @@ async fn handle_control(
                     let ports = state.lock().await.instance_ports.clone();
                     let mut by_backend = serde_json::Map::new();
                     for p in &ports {
-                        let r = call_backend(*p, backend_req.clone()).await
-                            .unwrap_or_else(|e| serde_json::json!({"ok":false,"error":e.to_string()}));
+                        let r = call_backend(*p, backend_req.clone()).await.unwrap_or_else(
+                            |e| serde_json::json!({"ok":false,"error":e.to_string()}),
+                        );
                         by_backend.insert(p.to_string(), r);
                     }
                     serde_json::json!({"ok":true,"byBackend":by_backend})
@@ -1083,7 +1202,10 @@ async fn handle_control(
                 serde_json::json!({"ok":true,"byPort":shots})
             }
             "switch" | "clear" | "current" | "log" => {
-                let sid = req.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let sid = req
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let port_opt = match &sid {
                     Some(s) => lookup_port(&state, s).await,
                     None => state.lock().await.instance_ports.first().copied(),
@@ -1111,11 +1233,7 @@ async fn lookup_port(state: &SharedState, sid: &str) -> Option<u16> {
 
 async fn pick_least_loaded_port(state: &SharedState) -> Option<u16> {
     let st = state.lock().await;
-    let mut counts: HashMap<u16, usize> = st
-        .instance_ports
-        .iter()
-        .map(|p| (*p, 0usize))
-        .collect();
+    let mut counts: HashMap<u16, usize> = st.instance_ports.iter().map(|p| (*p, 0usize)).collect();
     for &p in st.session_to_port.values() {
         *counts.entry(p).or_insert(0) += 1;
     }
@@ -1143,11 +1261,7 @@ async fn cmd_close(
     sid: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port = lookup_port(state, sid).await.ok_or("unknown sessionId")?;
-    let _ = call_backend(
-        port,
-        serde_json::json!({"cmd":"close","sessionId":sid}),
-    )
-    .await?;
+    let _ = call_backend(port, serde_json::json!({"cmd":"close","sessionId":sid})).await?;
     state.lock().await.session_to_port.remove(sid);
     Ok(())
 }
@@ -1156,8 +1270,10 @@ async fn cmd_close(
 fn auth_request(
     url: &str,
     token: &str,
-) -> Result<tokio_tungstenite::tungstenite::handshake::client::Request, Box<dyn std::error::Error + Send + Sync>>
-{
+) -> Result<
+    tokio_tungstenite::tungstenite::handshake::client::Request,
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     let mut req = url.into_client_request()?;
     req.headers_mut()
         .insert("Authorization", format!("Bearer {}", token).parse()?);
@@ -1295,8 +1411,7 @@ async fn bridge_session_auto(
 
 /// Current UTC time in RFC 3339 / ISO 8601 with ms precision.
 fn now_iso() -> String {
-    chrono::Utc::now()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 async fn handle_chat(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
@@ -1463,13 +1578,18 @@ async fn handle_chat(
                         .send(serde_json::json!({
                             "type":"err","text":"confirm without seq",
                             "timeIn": time_in,"timeOut": now_iso(),
-                        })).await;
+                        }))
+                        .await;
                     continue;
                 }
                 match db_for_in.mark_confirmed(seq, &time_in).await {
                     Ok(true) => tracing::debug!(target:"manager::chat", seq, "confirmed"),
-                    Ok(false) => tracing::warn!(target:"manager::chat", seq, "confirm for non-answered or unknown seq"),
-                    Err(e) => tracing::error!(target:"manager::chat::db", error=%e, seq, "mark_confirmed failed"),
+                    Ok(false) => {
+                        tracing::warn!(target:"manager::chat", seq, "confirm for non-answered or unknown seq")
+                    }
+                    Err(e) => {
+                        tracing::error!(target:"manager::chat::db", error=%e, seq, "mark_confirmed failed")
+                    }
                 }
                 continue;
             }
@@ -1484,8 +1604,16 @@ async fn handle_chat(
                     .await;
                 continue;
             }
-            let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let q_text = v.get("text").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let id = v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let q_text = v
+                .get("text")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             if q_text.is_empty() {
                 let _ = answer_tx_for_in
                     .send(serde_json::json!({
@@ -1504,9 +1632,21 @@ async fn handle_chat(
             if let Some(arr) = attachments {
                 let mut hard_err: Option<String> = None;
                 for att in arr {
-                    let name = att.get("name").and_then(|x| x.as_str()).unwrap_or("attachment").to_string();
-                    let mime = att.get("mime").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let data = att.get("data").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let name = att
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("attachment")
+                        .to_string();
+                    let mime = att
+                        .get("mime")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let data = att
+                        .get("data")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if mime.is_empty() || data.is_empty() {
                         hard_err = Some(format!("attachment '{}' missing mime or data", name));
                         break;
@@ -1524,12 +1664,16 @@ async fn handle_chat(
                                 if let Some(p) = reply.get("path").and_then(|v| v.as_str()) {
                                     saved_paths.push(p.to_string());
                                 } else {
-                                    hard_err = Some("backend save_attachment returned no path".into());
+                                    hard_err =
+                                        Some("backend save_attachment returned no path".into());
                                     break;
                                 }
                             } else {
-                                let err = reply.get("error").and_then(|v| v.as_str())
-                                    .unwrap_or("unknown error").to_string();
+                                let err = reply
+                                    .get("error")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown error")
+                                    .to_string();
                                 hard_err = Some(format!("backend save_attachment: {}", err));
                                 break;
                             }
@@ -1545,7 +1689,8 @@ async fn handle_chat(
                         .send(serde_json::json!({
                             "type":"err","id":id,"text":err,
                             "timeIn":time_in,"timeOut":now_iso(),
-                        })).await;
+                        }))
+                        .await;
                     continue;
                 }
             }
@@ -1560,7 +1705,8 @@ async fn handle_chat(
             let final_text = if saved_paths.is_empty() {
                 q_text.clone()
             } else {
-                let prefix = saved_paths.iter()
+                let prefix = saved_paths
+                    .iter()
                     .map(|p| format!("Read the file at {}.", p))
                     .collect::<Vec<_>>()
                     .join(" ");
@@ -1576,7 +1722,11 @@ async fn handle_chat(
             // AND the server-assigned receipt id we return in `ack` and `a`.
             let seq = match db_for_in
                 .insert_pending(
-                    &connection_id_for_in, &sid_for_in, &id, &final_text, &time_in,
+                    &connection_id_for_in,
+                    &sid_for_in,
+                    &id,
+                    &final_text,
+                    &time_in,
                     attachment_paths_json.as_deref(),
                 )
                 .await
@@ -1588,7 +1738,8 @@ async fn handle_chat(
                         .send(serde_json::json!({
                             "type":"err","id":id,"text":format!("db insert: {}", e),
                             "timeIn": time_in,"timeOut": now_iso(),
-                        })).await;
+                        }))
+                        .await;
                     continue;
                 }
             };
@@ -1609,13 +1760,18 @@ async fn handle_chat(
             // sometimes fails to submit when text + \r arrive in a single
             // write (especially long prompts that wrap to multiple visual
             // lines) — the human-typing pattern works reliably.
-            if s_sink.send(Message::Text(final_text.clone())).await.is_err() {
+            if s_sink
+                .send(Message::Text(final_text.clone()))
+                .await
+                .is_err()
+            {
                 let _ = db_for_in.update_status(seq, "error").await;
                 let _ = answer_tx_for_in
                     .send(serde_json::json!({
                         "type":"err","id":id,"seq":seq,"text":"backend PTY closed",
                         "timeIn": time_in,"timeOut": now_iso(),
-                    })).await;
+                    }))
+                    .await;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1625,7 +1781,8 @@ async fn handle_chat(
                     .send(serde_json::json!({
                         "type":"err","id":id,"seq":seq,"text":"backend PTY closed (enter)",
                         "timeIn": time_in,"timeOut": now_iso(),
-                    })).await;
+                    }))
+                    .await;
                 break;
             }
             let _ = db_for_in.update_status(seq, "sent").await;
@@ -1660,29 +1817,37 @@ async fn handle_chat(
             let text = match msg {
                 Ok(Message::Text(t)) => t,
                 Ok(Message::Binary(b)) => match String::from_utf8(b) {
-                    Ok(s) => s, Err(_) => continue,
+                    Ok(s) => s,
+                    Err(_) => continue,
                 },
                 Ok(Message::Close(_)) => break,
                 Ok(_) => continue,
                 Err(_) => break,
             };
             let v: serde_json::Value = match serde_json::from_str(&text) {
-                Ok(x) => x, Err(_) => continue,
+                Ok(x) => x,
+                Err(_) => continue,
             };
             if v.get("type").and_then(|x| x.as_str()) == Some("subscribed") {
                 continue;
             }
             let num = match v.get("num").and_then(|x| x.as_u64()) {
-                Some(n) => n as u32, None => continue,
+                Some(n) => n as u32,
+                None => continue,
             };
-            let raw = v.get("answer").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let raw = v
+                .get("answer")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             // The backend (llm-chat) cleans TUI noise before broadcasting on
             // /qa/<sid>, so this stream is already normalized. Pass through.
             pending_text.lock().await.insert(num, raw);
             let new_version = {
                 let mut versions = versions.lock().await;
                 let v = versions.entry(num).or_insert(0);
-                *v += 1; *v
+                *v += 1;
+                *v
             };
 
             let pending_text_for_flush = pending_text.clone();
@@ -1696,7 +1861,9 @@ async fn handle_chat(
                     let versions = versions_for_flush.lock().await;
                     versions.get(&num).copied() == Some(new_version)
                 };
-                if !still_latest { return; }
+                if !still_latest {
+                    return;
+                }
                 let final_text = match pending_text_for_flush.lock().await.remove(&num) {
                     Some(t) if !t.is_empty() => t,
                     _ => return,
@@ -1863,7 +2030,9 @@ async fn handle_root(
         }
     }
     let _ = sink
-        .send(Message::Text(serde_json::to_string(&all).unwrap_or_default()))
+        .send(Message::Text(
+            serde_json::to_string(&all).unwrap_or_default(),
+        ))
         .await;
     Ok(())
 }

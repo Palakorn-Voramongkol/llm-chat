@@ -50,12 +50,12 @@ pub enum AuthError {
 impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AuthError::Missing       => write!(f, "missing Authorization header"),
-            AuthError::Malformed     => write!(f, "malformed Authorization header"),
+            AuthError::Missing => write!(f, "missing Authorization header"),
+            AuthError::Malformed => write!(f, "malformed Authorization header"),
             AuthError::UnknownKey(k) => write!(f, "unknown signing key: {}", k),
-            AuthError::Invalid(e)    => write!(f, "token validation failed: {}", e),
-            AuthError::JwksFetch(e)  => write!(f, "JWKS fetch failed: {}", e),
-            AuthError::Forbidden(s)  => write!(f, "forbidden: {}", s),
+            AuthError::Invalid(e) => write!(f, "token validation failed: {}", e),
+            AuthError::JwksFetch(e) => write!(f, "JWKS fetch failed: {}", e),
+            AuthError::Forbidden(s) => write!(f, "forbidden: {}", s),
         }
     }
 }
@@ -88,15 +88,26 @@ impl ZitadelConfig {
         let project_id = std::env::var("ZITADEL_PROJECT_ID")
             .map_err(|_| "ZITADEL_PROJECT_ID not set".to_string())?;
         let jwks_uri = format!("{}/oauth/v2/keys", issuer);
-        Ok(Self { issuer, audience, jwks_uri, project_id })
+        Ok(Self {
+            issuer,
+            audience,
+            jwks_uri,
+            project_id,
+        })
     }
 }
 
 #[derive(Deserialize)]
-struct Jwks { keys: Vec<JwkInner> }
+struct Jwks {
+    keys: Vec<JwkInner>,
+}
 
 #[derive(Deserialize)]
-struct JwkInner { kid: String, n: String, e: String }
+struct JwkInner {
+    kid: String,
+    n: String,
+    e: String,
+}
 
 struct CacheInner {
     keys: HashMap<String, DecodingKey>,
@@ -112,10 +123,15 @@ pub struct JwksCache {
 
 impl JwksCache {
     pub fn new(cfg: ZitadelConfig) -> Self {
-        Self { cfg, inner: Arc::new(RwLock::new(None)) }
+        Self {
+            cfg,
+            inner: Arc::new(RwLock::new(None)),
+        }
     }
 
-    pub fn cfg(&self) -> &ZitadelConfig { &self.cfg }
+    pub fn cfg(&self) -> &ZitadelConfig {
+        &self.cfg
+    }
 
     /// Fetch JWKS from Zitadel and replace the cache atomically.
     pub async fn refresh(&self) -> Result<usize, AuthError> {
@@ -132,7 +148,10 @@ impl JwksCache {
             keys.insert(k.kid, dk);
         }
         let n = keys.len();
-        *self.inner.write().unwrap() = Some(CacheInner { keys, fetched_at: Instant::now() });
+        *self.inner.write().unwrap() = Some(CacheInner {
+            keys,
+            fetched_at: Instant::now(),
+        });
         Ok(n)
     }
 
@@ -141,12 +160,20 @@ impl JwksCache {
     /// any further authorization (role checks, scope, etc).
     pub fn verify_sync(&self, token: &str) -> Result<Principal, AuthError> {
         let header = decode_header(token).map_err(|e| AuthError::Invalid(e.to_string()))?;
-        let kid = header.kid.ok_or_else(|| AuthError::Invalid("missing kid".into()))?;
+        let kid = header
+            .kid
+            .ok_or_else(|| AuthError::Invalid("missing kid".into()))?;
 
         let key = {
             let guard = self.inner.read().unwrap();
-            let inner = guard.as_ref().ok_or_else(|| AuthError::JwksFetch("cache empty".into()))?;
-            inner.keys.get(&kid).cloned().ok_or_else(|| AuthError::UnknownKey(kid.clone()))?
+            let inner = guard
+                .as_ref()
+                .ok_or_else(|| AuthError::JwksFetch("cache empty".into()))?;
+            inner
+                .keys
+                .get(&kid)
+                .cloned()
+                .ok_or_else(|| AuthError::UnknownKey(kid.clone()))?
         };
 
         let mut validation = Validation::new(Algorithm::RS256);
@@ -154,17 +181,24 @@ impl JwksCache {
         let aud_refs: Vec<&str> = self.cfg.audience.iter().map(|s| s.as_str()).collect();
         validation.set_audience(&aud_refs);
 
-        let data: jsonwebtoken::TokenData<serde_json::Value> = decode(token, &key, &validation)
-            .map_err(|e| AuthError::Invalid(e.to_string()))?;
+        let data: jsonwebtoken::TokenData<serde_json::Value> =
+            decode(token, &key, &validation).map_err(|e| AuthError::Invalid(e.to_string()))?;
         let claims = data.claims;
 
-        let user_id = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let user_id = claims
+            .get("sub")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let org_id = claims
             .get("urn:zitadel:iam:user:resourceowner:id")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        let email = claims.get("email").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let email = claims
+            .get("email")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Zitadel encodes project roles under
         //   urn:zitadel:iam:org:project:<projectid>:roles
@@ -175,7 +209,12 @@ impl JwksCache {
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
 
-        Ok(Principal { user_id, org_id, roles, email })
+        Ok(Principal {
+            user_id,
+            org_id,
+            roles,
+            email,
+        })
     }
 }
 

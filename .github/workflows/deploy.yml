@@ -83,10 +83,19 @@ jobs:
 
       - name: Set up SSH key
         run: |
+          set -x
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          # printf preserves the trailing newline that OpenSSH requires
+          printf '%s\n' "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
-          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          ls -la ~/.ssh/
+          # First few bytes of the key (for shape sanity, not the whole secret)
+          head -c 40 ~/.ssh/id_deploy ; echo
+          ssh-keyscan -t ed25519,rsa "${{ secrets.SSH_HOST }}" 2>&1 | tee -a ~/.ssh/known_hosts || true
+          # Probe SSH reach (don't fail the step if probe is slow; the next step will)
+          timeout 8 ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+              -i ~/.ssh/id_deploy "deploy@${{ secrets.SSH_HOST }}" \
+              echo ssh-ok 2>&1 || true
 
       - name: Inspect downloaded artifacts
         run: |
