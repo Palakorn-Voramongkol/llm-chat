@@ -18,8 +18,11 @@
 //                            "../src-tauri/target/debug/llm-chat.exe"
 //                            relative to manager.exe location)
 
+mod auth_zitadel;
+
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
@@ -519,8 +522,13 @@ struct ManagerState {
     instance_ports: Vec<u16>,
     /// sessionId -> backend port that owns it.
     session_to_port: HashMap<String, u16>,
-    /// Shared auth token used for both manager↔client and manager↔backend.
+    /// Internal shared secret used for the manager↔backend hop only
+    /// (loopback). Inbound client auth is now Zitadel JWT — see `jwks`.
     auth_token: String,
+    /// Zitadel JWKS cache for verifying inbound client JWTs. Refreshed in
+    /// the background. None means external auth is not configured (the
+    /// manager will then refuse all inbound requests).
+    jwks: Option<auth_zitadel::JwksCache>,
     /// FIFO of /chat questions, backed by SQLite OR Postgres depending on
     /// $MANAGER_DB_URL. Source of truth for the queue; outlives any single
     /// connection so a crash mid-question is recoverable.
@@ -629,10 +637,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "chat queue DB opened"
     );
 
+    // Zitadel JWT auth — optional. If ZITADEL_ISSUER is unset, fall back to the
+    // legacy shared-token check (handle_client decides based on `jwks`).
+    let jwks = match auth_zitadel::ZitadelConfig::from_env() {
+        Ok(cfg) => {
+            tracing::info!(target: "manager::auth",
+                issuer = %cfg.issuer,
+                audience = ?cfg.audience,
+                project_id = %cfg.project_id,
+                "Zitadel auth enabled");
+            let cache = auth_zitadel::JwksCache::new(cfg);
+            match cache.refresh().await {
+                Ok(n) => tracing::info!(target: "manager::auth", keys = n, "JWKS preloaded"),
+                Err(e) => {
+                    tracing::error!(target: "manager::auth", error = %e,
+                        "JWKS preload failed — clients will be rejected until refresh succeeds");
+                }
+            }
+            // Background refresher every hour.
+            let bg = cache.clone();
+            tokio::spawn(async move {
+                let mut t = tokio::time::interval(Duration::from_secs(3600));
+                t.tick().await; // skip the immediate tick
+                loop {
+                    t.tick().await;
+                    if let Err(e) = bg.refresh().await {
+                        tracing::warn!(target: "manager::auth", error = %e, "JWKS refresh failed");
+                    } else {
+                        tracing::debug!(target: "manager::auth", "JWKS refreshed");
+                    }
+                }
+            });
+            Some(cache)
+        }
+        Err(reason) => {
+            tracing::warn!(target: "manager::auth",
+                reason = %reason,
+                "Zitadel auth NOT configured — falling back to shared-token auth");
+            None
+        }
+    };
+
     let state: SharedState = Arc::new(Mutex::new(ManagerState {
         instance_ports: ports.clone(),
         session_to_port: HashMap::new(),
         auth_token: auth_token.clone(),
+        jwks,
         chat_db,
         clients: HashMap::new(),
     }));
@@ -735,7 +785,10 @@ async fn handle_client(
     stream: TcpStream,
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let expected_token = state.lock().await.auth_token.clone();
+    let (expected_token, jwks) = {
+        let st = state.lock().await;
+        (st.auth_token.clone(), st.jwks.clone())
+    };
     let path_holder = Arc::new(std::sync::Mutex::new(String::new()));
     let path_capture = path_holder.clone();
     let cb = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
@@ -749,6 +802,42 @@ async fn handle_client(
                     .unwrap());
             }
         }
+
+        // External auth: prefer Zitadel JWT when configured. Fall back to the
+        // legacy shared-token check only if Zitadel isn't set up.
+        if let Some(jwks) = &jwks {
+            let token = match auth_zitadel::extract_bearer(req) {
+                Ok(t) => t,
+                Err(e) => {
+                    return Err(http::Response::builder()
+                        .status(http::StatusCode::UNAUTHORIZED)
+                        .body(Some(format!("auth: {}", e)))
+                        .unwrap());
+                }
+            };
+            let principal = match jwks.verify_sync(&token) {
+                Ok(p) => p,
+                Err(e) => {
+                    return Err(http::Response::builder()
+                        .status(http::StatusCode::UNAUTHORIZED)
+                        .body(Some(format!("auth: {}", e)))
+                        .unwrap());
+                }
+            };
+            // Authorization: every endpoint on the manager requires `chat.user`
+            // (admin operations would gate on `chat.admin` later if needed).
+            if !principal.has("chat.user") {
+                return Err(http::Response::builder()
+                    .status(http::StatusCode::FORBIDDEN)
+                    .body(Some(format!(
+                        "missing role chat.user (principal {} has roles {:?})",
+                        principal.user_id, principal.roles
+                    )))
+                    .unwrap());
+            }
+            return Ok(resp);
+        }
+
         let provided = match extract_token(req) {
             Some(t) => t,
             None => {
@@ -1311,6 +1400,22 @@ async fn handle_chat(
         }
     };
     let (_qa_sink_unused, mut qa_stream) = qa_ws.split();
+
+    // Cold-start grace period: claude CLI takes ~5–8 s to reach its prompt
+    // after PTY spawn, AND the JS parser needs to register an onData hook on
+    // the new xterm tab before PTY traffic starts. Without this delay, the
+    // first q gets typed while claude is still showing its welcome screen
+    // (no `>` / `●` markers ever emit on /qa). 0 disables the wait for tests
+    // that have already warmed up the session another way.
+    let warmup = std::env::var("MANAGER_CHAT_WARMUP_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(8);
+    if warmup > 0 {
+        tracing::debug!(target: "manager::chat", sid = %sid, warmup_secs = warmup,
+            "warming up newly-spawned session before processing first q");
+        tokio::time::sleep(Duration::from_secs(warmup)).await;
+    }
 
     // 4. Channel that carries finalized answers/errors from the qa+reader tasks
     //    to the writer task that flushes to the client WS.

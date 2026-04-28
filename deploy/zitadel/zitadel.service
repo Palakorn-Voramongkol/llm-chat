@@ -1,0 +1,40 @@
+[Unit]
+Description=Zitadel identity server
+Documentation=https://zitadel.com/docs/self-hosting
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=zitadel
+Group=zitadel
+
+# All ZITADEL_* configuration goes into this file. Mode 0600.
+EnvironmentFile=/etc/zitadel/zitadel.env
+
+# Bootstraps the schema on first run, then `start` on subsequent runs. Reading
+# the masterkey from EnvironmentFile (ZITADEL_MASTERKEY) keeps it out of the
+# unit file.
+ExecStart=/usr/local/bin/zitadel start-from-init --masterkey ${ZITADEL_MASTERKEY} --tlsMode disabled
+
+# Hardening — Zitadel only needs network and its own data dir.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/zitadel
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
