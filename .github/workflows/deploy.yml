@@ -101,7 +101,9 @@ jobs:
 
       - name: Upload binaries → staging
         env:
-          SCP: "scp -P 2222 -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new"
+          # -O forces legacy SCP1 protocol; modern scp defaults to SFTP-over-SSH
+          # which doesn't play nicely with our forced-command setup.
+          SCP: "scp -O -P 2222 -i ~/.ssh/id_deploy -o StrictHostKeyChecking=accept-new"
         run: |
           # The forced command on the server allows scp into the staging dirs.
           $SCP manager/target/release/llm-chat-manager \
