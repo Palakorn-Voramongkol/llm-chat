@@ -6,25 +6,29 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=llm-chat
-Group=llm-chat
-WorkingDirectory=/var/lib/llm-chat
+# Run as the human `llm` user — needed because the worker spawns the
+# claude CLI which reads ~/.claude state (credentials, history, projects).
+# Replicating that under a system user requires more wiring than payoff.
+User=llm
+Group=llm
+WorkingDirectory=/home/llm
 EnvironmentFile=/etc/llm-chat/manager.env
 ExecStart=/usr/local/bin/llm-chat-manager
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=65536
 
-# Hardening — manager only needs network and its own data dir.
+# Hardening — manager + worker need writable /tmp (xvfb temp dir) and
+# the user's home (claude state, sqlite). PrivateTmp gives a private
+# writable /tmp; ProtectHome=read-only would block the claude state.
 ProtectSystem=strict
-ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/llm-chat
+ReadWritePaths=/home/llm
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 LockPersonality=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
