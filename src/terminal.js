@@ -531,9 +531,14 @@ Promise.all([
   extClearTermReady,
 ])
   .then(() => tauriInvoke('terminal_ready', { cols: 120, rows: 30 }))
-  .then(() => {
+  .then(async () => {
     if (dbg) dbg.textContent = 'JS+Rust ready';
-    addSession();
+    // Backends spawned by the manager skip their default session — every
+    // session in that mode comes from a /control "open" request so the
+    // manager can track + route it.
+    let managed = false;
+    try { managed = await tauriInvoke('is_managed_mode'); } catch (e) {}
+    if (!managed) addSession();
   })
   .catch((e) => {
     if (dbg) dbg.textContent = 'ERROR: ' + e;
