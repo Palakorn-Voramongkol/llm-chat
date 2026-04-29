@@ -7,6 +7,58 @@ problem, add it here when you find the fix — future-you will thank you.
 
 ---
 
+## Provisioning a new machine-user account in Zitadel
+
+**Use case:** a new app/team needs its own credential to talk to the
+manager (rather than sharing the kabytech one). Five Zitadel resources
+need to line up:
+
+  1. **Org** (e.g. `corridraw.com`) — its own tenant.
+  2. **Machine user** in that org with `accessTokenType=ACCESS_TOKEN_TYPE_JWT`.
+     **This step is the gotcha.** The default for a freshly-created machine
+     user is `ACCESS_TOKEN_TYPE_BEARER`, which produces opaque/JWE access
+     tokens. The manager validates incoming tokens locally against
+     Zitadel's JWKS — that only works for real JWTs, so JWE tokens come
+     back as 401. Symptoms include the access_token having 5 dot-separated
+     segments instead of 3 and the Python decoder choking on UTF-8 in the
+     middle segment.
+  3. **JSON key** for the user, downloaded once and saved to
+     `~/.config/llm-chat/<user>-key.json` mode 0600.
+  4. **Project grant** — the `llm-chat` project (owned by `kabytech.com`)
+     is granted to the new org with role `chat.user`. Without this, a
+     UserGrant in the new org pointing at the cross-org project will be
+     refused.
+  5. **User grant** — the new machine user gets `chat.user` on the granted
+     project. Tokens minted by this user then carry
+     `urn:zitadel:iam:org:project:<id>:roles.chat.user.<orgid>` — the
+     manager checks for `chat.user` and lets the WS upgrade through.
+
+**Provisioning script:** `deploy/zitadel/provision_machine_user.py` does
+all five steps idempotently (re-running rotates the key but reuses the
+existing org/user/grants). Example:
+
+```bash
+python3 deploy/zitadel/provision_machine_user.py \
+    --org  corridraw.com \
+    --user corridraw \
+    --out  ~/.config/llm-chat/corridraw-key.json
+```
+
+**Side note about `/v2beta/organizations`:** the org-creation path uses
+`POST /v2beta/organizations`, not `/management/v1/orgs`. The latter
+fails with `User could not be found (COMMAND-uXHNj)` when called as a
+system user (sysadmin) because Zitadel tries to record the org's "human"
+admin from the user table and sysadmin isn't a row there. The v2beta
+endpoint accepts system-user callers without that lookup.
+
+**Verify:** mint a token via the saved key and decode the middle JWT
+segment. The claims should include
+`urn:zitadel:iam:org:project:370627061150121985:roles` mapping
+`chat.user` to the new org's id. Then `chat --account <user>` should
+round-trip cleanly through the manager.
+
+---
+
 ## Per-session working directory (`?cwd=…` on `/chat`)
 
 **Feature**, not a bug-fix — but worth recording so it isn't reinvented.
