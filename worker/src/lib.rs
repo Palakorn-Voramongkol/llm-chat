@@ -243,7 +243,7 @@ async fn pty_input_mark(seq: i64, ok: bool) {
 pub(crate) mod pty {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use windows::core::PWSTR;
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::*;
     use windows::Win32::Security::SECURITY_ATTRIBUTES;
     use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
@@ -273,7 +273,12 @@ pub(crate) mod pty {
     }
 
     impl PtySession {
-        pub fn create(command: &str, cols: i16, rows: i16) -> Result<Self, String> {
+        pub fn create(
+            command: &str,
+            cols: i16,
+            rows: i16,
+            cwd_override: Option<&str>,
+        ) -> Result<Self, String> {
             unsafe {
                 let mut stdin_read = HANDLE::default();
                 let mut stdin_write = HANDLE::default();
@@ -338,6 +343,15 @@ pub(crate) mod pty {
                 let mut cmd_wide: Vec<u16> =
                     cmd_line.encode_utf16().chain(std::iter::once(0)).collect();
 
+                // CWD override: build an owned wide buffer kept alive for
+                // the duration of the CreateProcessW call.
+                let mut cwd_wide: Option<Vec<u16>> = cwd_override
+                    .map(|p| p.encode_utf16().chain(std::iter::once(0)).collect());
+                let cwd_ptr = cwd_wide
+                    .as_mut()
+                    .map(|v| PCWSTR(v.as_ptr()))
+                    .unwrap_or(PCWSTR::null());
+
                 CreateProcessW(
                     None,
                     PWSTR(cmd_wide.as_mut_ptr()),
@@ -346,7 +360,7 @@ pub(crate) mod pty {
                     false,
                     EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
                     None,
-                    None,
+                    cwd_ptr,
                     &si.StartupInfo,
                     &mut pi,
                 )
@@ -468,7 +482,12 @@ pub(crate) mod pty {
     }
 
     impl PtySession {
-        pub fn create(command: &str, cols: i16, rows: i16) -> Result<Self, String> {
+        pub fn create(
+            command: &str,
+            cols: i16,
+            rows: i16,
+            cwd_override: Option<&str>,
+        ) -> Result<Self, String> {
             let size = PtySize {
                 rows: rows.max(1) as u16,
                 cols: cols.max(1) as u16,
@@ -508,8 +527,17 @@ pub(crate) mod pty {
                     cb.env(var, v);
                 }
             }
-            // CWD = parent's CWD (matches Windows ConPTY behavior).
-            if let Ok(cwd) = std::env::current_dir() {
+            // CWD: caller-supplied override → claude runs there. Otherwise
+            // inherit the parent's CWD (matches Windows ConPTY behavior).
+            // The override path must already exist; we don't attempt to
+            // create it. Trust: if the path isn't yet in claude's trusted
+            // list (~/.claude.json projects[<cwd>].hasTrustDialogAccepted),
+            // claude will show its "trust this folder?" dialog and eat the
+            // first user input. The manager calls `auto_trust_cwd` before
+            // spawning to avoid that.
+            if let Some(p) = cwd_override {
+                cb.cwd(p);
+            } else if let Ok(cwd) = std::env::current_dir() {
                 cb.cwd(cwd);
             }
 
@@ -836,6 +864,58 @@ fn find_claude_path() -> Option<String> {
     None
 }
 
+/// Make sure `~/.claude.json` records the given path as trusted, so the
+/// claude TUI skips its first-launch "Yes, I trust this folder?" dialog.
+///
+/// Read-modify-write of the JSON file; preserves all other fields.
+/// Idempotent — if the path is already trusted we don't touch the file.
+fn ensure_claude_trusts(cwd: &str) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".claude.json");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let mut doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("parse {}: {}", path.display(), e))?;
+
+    let projects = doc
+        .as_object_mut()
+        .ok_or_else(|| "claude.json root is not an object".to_string())?
+        .entry("projects")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "claude.json projects is not an object".to_string())?;
+
+    let entry = projects
+        .entry(cwd.to_string())
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "claude.json project entry is not an object".to_string())?;
+
+    if entry
+        .get("hasTrustDialogAccepted")
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    {
+        return Ok(()); // already trusted, no write
+    }
+    entry.insert("hasTrustDialogAccepted".into(), serde_json::Value::Bool(true));
+
+    // Atomic write: write to <path>.tmp then rename. Don't drop perms below
+    // the original (claude.json is normally 0600).
+    let tmp = path.with_extension("json.tmp");
+    let pretty = serde_json::to_vec_pretty(&doc)
+        .map_err(|e| format!("serialize claude.json: {}", e))?;
+    std::fs::write(&tmp, &pretty).map_err(|e| format!("write tmp: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {}", e))?;
+    tracing::info!(target: "backend::session", cwd = %cwd, "auto-trusted in ~/.claude.json");
+    Ok(())
+}
+
 // ========== Tauri Commands ==========
 
 #[cfg(any(unix, windows))]
@@ -843,6 +923,7 @@ fn do_spawn_session(
     session_id: String,
     cols: u16,
     rows: u16,
+    cwd: Option<String>,
     state: &AppState,
     app_handle: &tauri::AppHandle,
 ) -> Result<String, String> {
@@ -876,19 +957,42 @@ fn do_spawn_session(
     };
     let c = if cols == 0 { 120i16 } else { cols as i16 };
     let r = if rows == 0 { 30i16 } else { rows as i16 };
+    // If the caller asked for a specific working directory, validate it
+    // and pre-trust it in ~/.claude.json so claude skips its
+    // "trust this folder?" startup dialog. Without this, claude's TUI
+    // would block on the dialog and eat the user's first question.
+    let cwd_clean: Option<String> = match cwd.as_deref() {
+        Some(p) if !p.is_empty() => {
+            let resolved = std::path::Path::new(p)
+                .canonicalize()
+                .map_err(|e| format!("cwd {:?} invalid: {}", p, e))?;
+            if !resolved.is_dir() {
+                return Err(format!("cwd {:?} is not a directory", resolved));
+            }
+            let s = resolved.to_string_lossy().into_owned();
+            if let Err(e) = ensure_claude_trusts(&s) {
+                tracing::warn!(target: "backend::session",
+                    cwd = %s, error = %e,
+                    "could not auto-trust cwd; claude may show its trust dialog");
+            }
+            Some(s)
+        }
+        _ => None,
+    };
     tracing::info!(
         target: "backend::session",
         sid = %session_id,
         cols = c,
         rows = r,
         cmd = %cmd,
+        cwd = cwd_clean.as_deref().unwrap_or("(inherited)"),
         "spawning PTY session"
     );
     let _ = app_handle.emit(
         "new-pty-session",
         serde_json::json!({"sessionId": session_id}),
     );
-    let session = pty::PtySession::create(&cmd, c, r)?;
+    let session = pty::PtySession::create(&cmd, c, r, cwd_clean.as_deref())?;
     let (ws_tx, _ws_rx) = broadcast::channel::<Vec<u8>>(256);
     let (qa_tx, _qa_rx) = broadcast::channel::<String>(256);
     state
@@ -925,7 +1029,7 @@ fn spawn_session(
 ) -> Result<String, String> {
     #[cfg(any(unix, windows))]
     {
-        return do_spawn_session(session_id, cols, rows, &state, &app_handle);
+        return do_spawn_session(session_id, cols, rows, None, &state, &app_handle);
     }
     #[allow(unreachable_code)]
     Err("Unsupported platform".into())
@@ -1930,10 +2034,15 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                         .map(|d| d.as_micros())
                                         .unwrap_or(0)
                                 );
+                                let cwd = req
+                                    .get("cwd")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
                                 let res = do_spawn_session(
                                     id.clone(),
                                     120,
                                     30,
+                                    cwd,
                                     &*st_handle,
                                     &app_handle_ctrl,
                                 );

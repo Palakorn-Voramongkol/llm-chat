@@ -563,6 +563,45 @@ fn check_token_eq(provided: &str, expected: &str) -> bool {
     provided.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
+/// Pull `key=value` out of a `&`-separated query string and percent-decode
+/// the value. Returns None if the key is absent or the value is empty.
+/// Tolerant of malformed percent escapes — those bytes pass through as-is.
+fn parse_query_param(query: &str, key: &str) -> Option<String> {
+    let prefix = format!("{}=", key);
+    for kv in query.split('&') {
+        if let Some(v) = kv.strip_prefix(&prefix) {
+            if v.is_empty() {
+                return None;
+            }
+            return Some(percent_decode(v));
+        }
+    }
+    None
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn extract_token(req: &Request) -> Option<String> {
     if let Some(auth) = req.headers().get("authorization") {
         if let Ok(s) = auth.to_str() {
@@ -887,9 +926,12 @@ async fn handle_client(
         (st.auth_token.clone(), st.jwks.clone())
     };
     let path_holder = Arc::new(std::sync::Mutex::new(String::new()));
+    let query_holder = Arc::new(std::sync::Mutex::new(String::new()));
     let path_capture = path_holder.clone();
+    let query_capture = query_holder.clone();
     let cb = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         *path_capture.lock().unwrap() = req.uri().path().to_string();
+        *query_capture.lock().unwrap() = req.uri().query().unwrap_or("").to_string();
         if let Some(origin) = req.headers().get("origin") {
             let s = origin.to_str().unwrap_or("");
             if s.starts_with("http://") || s.starts_with("https://") {
@@ -954,12 +996,17 @@ async fn handle_client(
     };
     let ws = tokio_tungstenite::accept_hdr_async(stream, cb).await?;
     let req_path = path_holder.lock().unwrap().clone();
+    let req_query = query_holder.lock().unwrap().clone();
 
     if req_path == "/control" {
         return handle_control(ws, state).await;
     }
     if req_path == "/chat" {
-        return handle_chat(ws, state).await;
+        // /chat accepts an optional `?cwd=<urlencoded-path>` so the client
+        // can ask claude to run in a specific directory. The worker
+        // canonicalizes and trust-marks the path before spawn.
+        let cwd = parse_query_param(&req_query, "cwd");
+        return handle_chat(ws, state, cwd).await;
     }
     if req_path == "/s/new" {
         return bridge_session_auto(ws, state).await;
@@ -1016,7 +1063,7 @@ async fn handle_control(
                 }
                 serde_json::json!({"ok":true,"ports":ports,"sessionsPerPort":counts})
             }
-            "open" => match cmd_open(&state).await {
+            "open" => match cmd_open(&state, None).await {
                 Ok((sid, port)) => {
                     serde_json::json!({"ok":true,"sessionId":sid,"backendPort":port})
                 }
@@ -1242,11 +1289,16 @@ async fn pick_least_loaded_port(state: &SharedState) -> Option<u16> {
 
 async fn cmd_open(
     state: &SharedState,
+    cwd: Option<&str>,
 ) -> Result<(String, u16), Box<dyn std::error::Error + Send + Sync>> {
     let port = pick_least_loaded_port(state)
         .await
         .ok_or("no backends configured")?;
-    let resp = call_backend(port, serde_json::json!({"cmd":"open"})).await?;
+    let mut body = serde_json::json!({"cmd":"open"});
+    if let Some(p) = cwd {
+        body["cwd"] = serde_json::Value::String(p.to_string());
+    }
+    let resp = call_backend(port, body).await?;
     let sid = resp
         .get("sessionId")
         .and_then(|v| v.as_str())
@@ -1337,7 +1389,7 @@ async fn bridge_session_auto(
     mut ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (sid, port) = match cmd_open(&state).await {
+    let (sid, port) = match cmd_open(&state, None).await {
         Ok(x) => x,
         Err(e) => {
             let _ = ws
@@ -1416,12 +1468,15 @@ fn now_iso() -> String {
 async fn handle_chat(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
+    cwd: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Duration;
     use tokio::sync::mpsc;
 
-    // 1. Spawn a fresh session in the least-loaded backend.
-    let (sid, port) = match cmd_open(&state).await {
+    // 1. Spawn a fresh session in the least-loaded backend. If the client
+    //    asked for a specific working directory via `?cwd=…`, the worker
+    //    canonicalizes + trust-marks it and runs claude there.
+    let (sid, port) = match cmd_open(&state, cwd.as_deref()).await {
         Ok(x) => x,
         Err(e) => {
             let mut ws = ws;
