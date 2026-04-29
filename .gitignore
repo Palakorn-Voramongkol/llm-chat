@@ -5,3 +5,6 @@ manager/target/
 *.log
 *.env
 .claude/
+.venv/
+__pycache__/
+*.pyc

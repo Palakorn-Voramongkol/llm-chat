@@ -1,0 +1,4 @@
+websockets>=12,<14
+PyJWT>=2.8
+cryptography>=41
+requests>=2.31
