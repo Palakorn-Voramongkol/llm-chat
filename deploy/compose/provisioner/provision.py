@@ -28,6 +28,15 @@ PROJECT_NAME = "llm-chat"
 ROLE_KEY = "chat.user"
 MACHINE_USERNAME = "kabytech"
 
+# Interactive human-login path (OIDC Auth Code + PKCE). The OIDC public app the
+# CLI logs in through, plus a ready demo human user with the same chat.user role.
+OIDC_APP_NAME = "llm-chat-cli"
+OIDC_REDIRECT_URI = os.environ.get("OIDC_REDIRECT_URI", "http://localhost:8477/callback")
+OIDC_POST_LOGOUT_URI = os.environ.get("OIDC_POST_LOGOUT_URI", "http://localhost:8477/")
+DEMO_USERNAME = "demo"
+DEMO_EMAIL = "demo@llm-chat.local"
+DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "Demo-Passw0rd!")
+
 MAX_ATTEMPTS = 10
 BACKOFF_SECONDS = 3
 REQUEST_TIMEOUT = 15
@@ -236,6 +245,64 @@ def grant_role(token: str, headers: dict, user_id: str, project_id: str) -> None
         resp.raise_for_status()
 
 
+def create_oidc_app(token: str, headers: dict, project_id: str) -> str:
+    """Register the public OIDC native app the interactive CLI logs in through.
+
+    NATIVE + auth method NONE = a public client using PKCE (no client secret).
+    accessTokenType JWT so the manager validates tokens locally via JWKS — a
+    BEARER/opaque token would be rejected 401 (same lesson as the machine user).
+    devMode allows the http loopback redirect in this local-dev stack.
+    """
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/projects/{project_id}/apps/oidc",
+        headers=headers,
+        json_body={
+            "name": OIDC_APP_NAME,
+            "redirectUris": [OIDC_REDIRECT_URI],
+            "postLogoutRedirectUris": [OIDC_POST_LOGOUT_URI],
+            "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
+            "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE",
+                           "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
+            "appType": "OIDC_APP_TYPE_NATIVE",
+            "authMethodType": "OIDC_AUTH_METHOD_TYPE_NONE",
+            "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
+            "devMode": True,
+            "accessTokenRoleAssertion": True,
+            "idTokenRoleAssertion": True,
+        },
+    )
+    if resp.status_code == 200:
+        return resp.json()["clientId"]
+    if resp.status_code == 409:
+        raise SystemExit(
+            "OIDC app already exists (409): clean-boot contract — run "
+            "`docker compose down -v` AND delete ./secrets.")
+    resp.raise_for_status()
+    raise RuntimeError(f"create_oidc_app unexpected status {resp.status_code}")
+
+
+def create_human_user(token: str, headers: dict) -> str:
+    """Create the demo human user (verified email, permanent password) so a
+    person can sign in interactively via the browser Auth Code flow."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/users/human", headers=headers,
+        json_body={
+            "userName": DEMO_USERNAME,
+            "profile": {"firstName": "Demo", "lastName": "User"},
+            "email": {"email": DEMO_EMAIL, "isEmailVerified": True},
+            "password": {"password": DEMO_PASSWORD, "changeRequired": False},
+        },
+    )
+    if resp.status_code == 200:
+        return resp.json()["userId"]
+    if resp.status_code == 409:
+        raise SystemExit(
+            "demo user already exists (409): clean-boot contract — run "
+            "`docker compose down -v` AND delete ./secrets.")
+    resp.raise_for_status()
+    raise RuntimeError(f"create_human_user unexpected status {resp.status_code}")
+
+
 def read_existing_user_id() -> str | None:
     path = os.path.join(SECRETS_DIR, "kabytech_user_id")
     if not os.path.exists(os.path.join(SECRETS_DIR, "kabytech-key.json")):
@@ -285,10 +352,21 @@ def main() -> int:
 
     grant_role(token, headers, user_id, project_id)
 
+    # Interactive human-login path: an OIDC public app (PKCE) + a demo human
+    # user with the same chat.user role. The kabytech machine path above is for
+    # M2M callers; this is for a person logging in through the browser.
+    client_id = create_oidc_app(token, headers, project_id)
+    demo_user_id = create_human_user(token, headers)
+    grant_role(token, headers, demo_user_id, project_id)
+    write_secret("oidc_client_id", client_id)
+    write_secret("demo_user", DEMO_USERNAME)
+    write_secret("demo_password", DEMO_PASSWORD)
+
     write_secret("project_id", project_id)
     write_secret("kabytech_user_id", user_id)
     write_generated_env(project_id)
-    print(f"[provision] done: project_id={project_id} userId={user_id}")
+    print(f"[provision] done: project_id={project_id} userId={user_id} "
+          f"oidc_client_id={client_id} demo_user={DEMO_USERNAME}")
     return 0
 
 

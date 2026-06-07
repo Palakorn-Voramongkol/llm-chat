@@ -78,3 +78,71 @@ def test_write_generated_env_writes_project_id_and_equal_audience(tmp_path):
         provision.write_generated_env("PROJ-999")
     # §10.4: both keys defined, equal, and non-empty; exact two-line content.
     assert out.read_text() == "ZITADEL_PROJECT_ID=PROJ-999\nZITADEL_AUDIENCE=PROJ-999\n"
+
+
+# ---------- OIDC app + demo human user (human-login path) ----------
+
+class _FakeResp:
+    def __init__(self, status_code, body=None):
+        self.status_code = status_code
+        self._body = body or {}
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+def test_create_oidc_app_posts_native_pkce_jwt():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"clientId": "client-abc"})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        cid = provision.create_oidc_app("tok", {"h": "1"}, "proj-1")
+    assert cid == "client-abc"
+    assert captured["url"].endswith("/management/v1/projects/proj-1/apps/oidc")
+    b = captured["body"]
+    assert b["appType"] == "OIDC_APP_TYPE_NATIVE"
+    assert b["authMethodType"] == "OIDC_AUTH_METHOD_TYPE_NONE"   # public client / PKCE
+    assert b["accessTokenType"] == "OIDC_TOKEN_TYPE_JWT"         # JWKS-validatable
+    assert provision.OIDC_REDIRECT_URI in b["redirectUris"]
+    assert "OIDC_GRANT_TYPE_REFRESH_TOKEN" in b["grantTypes"]
+
+
+def test_create_oidc_app_409_is_systemexit():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        with pytest.raises(SystemExit):
+            provision.create_oidc_app("tok", {}, "p")
+
+
+def test_create_human_user_posts_verified_permanent_password():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"userId": "user-xyz"})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        uid = provision.create_human_user("tok", {})
+    assert uid == "user-xyz"
+    assert captured["url"].endswith("/management/v1/users/human")
+    b = captured["body"]
+    assert b["userName"] == provision.DEMO_USERNAME
+    assert b["email"]["isEmailVerified"] is True
+    assert b["password"]["changeRequired"] is False
+    assert b["password"]["password"] == provision.DEMO_PASSWORD
+
+
+def test_create_human_user_409_is_systemexit():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        with pytest.raises(SystemExit):
+            provision.create_human_user("tok", {})
