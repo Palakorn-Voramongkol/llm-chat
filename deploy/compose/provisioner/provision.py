@@ -281,19 +281,27 @@ def create_oidc_app(token: str, headers: dict, project_id: str) -> str:
     raise RuntimeError(f"create_oidc_app unexpected status {resp.status_code}")
 
 
-def create_human_user(token: str, headers: dict) -> str:
-    """Create the demo human user (verified email, permanent password) so a
-    person can sign in interactively via the browser Auth Code flow."""
+def create_human_user(token: str, headers: dict, org_id) -> str:
+    """Create the demo human user via the v2 user API.
+
+    The v1 management /users/human endpoint silently ignored the password and
+    left the user in the "initial" state (Zitadel's "Activate User / set your
+    password" screen blocks login). The v2 endpoint takes a real password object
+    with changeRequired=False, and a verified email, so the user is immediately
+    active and can sign in with the known demo password.
+    """
+    body = {
+        "username": DEMO_USERNAME,
+        "profile": {"givenName": "Demo", "familyName": "User"},
+        "email": {"email": DEMO_EMAIL, "isVerified": True},
+        "password": {"password": DEMO_PASSWORD, "changeRequired": False},
+    }
+    if org_id:
+        body["organization"] = {"orgId": org_id}
     resp = request_with_retry(
-        "POST", f"{ISSUER}/management/v1/users/human", headers=headers,
-        json_body={
-            "userName": DEMO_USERNAME,
-            "profile": {"firstName": "Demo", "lastName": "User"},
-            "email": {"email": DEMO_EMAIL, "isEmailVerified": True},
-            "password": {"password": DEMO_PASSWORD, "changeRequired": False},
-        },
+        "POST", f"{ISSUER}/v2/users/human", headers=headers, json_body=body,
     )
-    if resp.status_code == 200:
+    if resp.status_code in (200, 201):
         return resp.json()["userId"]
     if resp.status_code == 409:
         raise SystemExit(
@@ -356,7 +364,7 @@ def main() -> int:
     # user with the same chat.user role. The kabytech machine path above is for
     # M2M callers; this is for a person logging in through the browser.
     client_id = create_oidc_app(token, headers, project_id)
-    demo_user_id = create_human_user(token, headers)
+    demo_user_id = create_human_user(token, headers, org_id)
     grant_role(token, headers, demo_user_id, project_id)
     write_secret("oidc_client_id", client_id)
     write_secret("demo_user", DEMO_USERNAME)
