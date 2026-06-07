@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  zitadel:
+    # PINNED, TO BE CONFIRMED (§4.2/§12): verify this tag exposes the v1
+    # Management-API endpoints provision.py calls; never use :latest.
+    image: ghcr.io/zitadel/zitadel:v3.4.10
+    command: 'start-from-init --masterkeyFromEnv --tlsMode disabled'
+    environment:
+      ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY}
+      ZITADEL_EXTERNALDOMAIN: host.docker.internal
+      ZITADEL_EXTERNALPORT: 8080
+      ZITADEL_EXTERNALSECURE: "false"
+      # Postgres wiring (B) — discrete admin+user split (§4.1; fallback to (A)).
+      ZITADEL_DATABASE_POSTGRES_HOST: postgres
+      ZITADEL_DATABASE_POSTGRES_PORT: 5432
+      ZITADEL_DATABASE_POSTGRES_DATABASE: zitadel
+      ZITADEL_DATABASE_POSTGRES_USER_USERNAME: zitadel_user
+      ZITADEL_DATABASE_POSTGRES_USER_PASSWORD: ${POSTGRES_PASSWORD}
+      ZITADEL_DATABASE_POSTGRES_USER_SSL_MODE: disable
+      ZITADEL_DATABASE_POSTGRES_ADMIN_USERNAME: postgres
+      ZITADEL_DATABASE_POSTGRES_ADMIN_PASSWORD: ${POSTGRES_PASSWORD}
+      ZITADEL_DATABASE_POSTGRES_ADMIN_SSL_MODE: disable
+      # Bootstrap admin SA — JSON key written once to the machinekey volume.
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_USERNAME: zitadel-admin-sa
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Admin
+      ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINEKEY_TYPE: 1
+      ZITADEL_FIRSTINSTANCE_MACHINEKEYPATH: /machinekey/zitadel-admin-sa.json
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /debug/healthz is fixed by the approved design; the TOOL is the only
+      # open variable (§4.2/§11/§12). If the pinned image ships neither wget
+      # nor curl, fall back to ["CMD","/app/zitadel","ready"] and verify it
+      # empirically (issue #9495: `ready` has attempted HTTPS even with TLS off).
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/debug/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    volumes:
+      - machinekey:/machinekey
+    restart: unless-stopped
+
+  zitadel-init:
+    build:
+      context: ./deploy/compose/provisioner
+      dockerfile: Dockerfile
+    environment:
+      PROVISION_ISSUER: http://host.docker.internal:8080
+    depends_on:
+      zitadel:
+        condition: service_healthy
+    volumes:
+      - machinekey:/machinekey:ro
+      - ./secrets:/secrets
+      - genenv:/out
+    restart: "no"
+
+  manager:
+    build:
+      context: .
+      dockerfile: deploy/compose/manager.Dockerfile
+    environment:
+      ZITADEL_ISSUER: http://host.docker.internal:8080
+      LLM_CHAT_AUTH_TOKEN: ${LLM_CHAT_AUTH_TOKEN}
+      MANAGER_BIND: 0.0.0.0
+      MANAGER_BACKEND_HOST: host.docker.internal
+      MANAGER_BACKEND_PORTS: "7878"
+    ports:
+      - "7777:7777"
+    depends_on:
+      zitadel-init:
+        condition: service_completed_successfully
+    volumes:
+      - genenv:/out:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  machinekey:
+  genenv:
