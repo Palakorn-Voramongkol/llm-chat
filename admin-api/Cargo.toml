@@ -1,0 +1,32 @@
+[package]
+name = "llm-chat-admin-api"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "llm-chat-admin-api"
+path = "src/main.rs"
+
+[dependencies]
+# Shared workspace deps (root Cargo.toml [workspace.dependencies], Phase A).
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+jsonwebtoken = { workspace = true }
+tracing = { workspace = true }
+
+# Reused verbatim from the manager — JWKS verify + Principal.has("chat.admin").
+zitadel-auth = { path = "../crates/zitadel-auth" }
+
+# admin-api-specific stack (appendix §4.3).
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tower-sessions = "0.15"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+url = "2"
+time = "0.3"
