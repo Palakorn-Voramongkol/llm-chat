@@ -63,6 +63,20 @@ def _read_line(prompt: str) -> str | None:
         return None
 
 
+def format_answer(text: str, indent_len: int) -> str:
+    """Indent continuation logical lines so a multi-line answer aligns under the
+    first line (the text after a "Claude: "-style label). Newlines preserved by
+    the worker parser are honored; the terminal soft-wraps any over-long line."""
+    lines = text.split("\n")
+    if len(lines) <= 1:
+        return text
+    indent = " " * indent_len
+    out = lines[0]
+    for ln in lines[1:]:
+        out += "\n" + (indent + ln if ln else "")
+    return out
+
+
 async def _read_multiline(c: _Ansi) -> str | None:
     print(c.dim("(multi-line: end with a single '.' on its own line)"))
     lines: list[str] = []
@@ -157,10 +171,11 @@ async def run_repl(client: ChatClient, timeout: float) -> int:
         await asyncio.gather(spin, return_exceptions=True)
 
         history.append((user, answer.text))
-        suffix = ""
+        body = format_answer(answer.text, len("Claude: "))
+        line = f"{c.claude('Claude:')} {body}"
         if answer.latency_s is not None:
-            suffix = c.dim(f"  ({answer.latency_s:0.1f}s)")
-        print(f"{c.claude('Claude:')} {answer.text}{suffix}\n")
+            line += c.dim(f"  ({answer.latency_s:0.1f}s)")
+        print(line + "\n")
 
     print(c.dim("bye"))
     return 0

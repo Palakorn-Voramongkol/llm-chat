@@ -64,6 +64,30 @@ function createClaudeCliParser(term, fitAddon) {
       return false;
     },
 
+    // Reconstruct logical lines from scraped xterm visual rows. A row that
+    // filled (near) the full terminal width is a soft-wrap of the previous
+    // logical line → join with a space; a shorter row begins a NEW logical
+    // line → join with a newline. Blank rows ({text:''}) are paragraph breaks.
+    // Restores list/code/paragraph structure that plain space-joining flattened.
+    joinAnswer(rows) {
+      let out = '';
+      let prevFull = false;
+      let afterBreak = true; // start of answer or just after a blank row
+      for (const r of rows) {
+        if (r.text === '') {
+          if (out) { out += '\n'; afterBreak = true; prevFull = false; }
+          continue;
+        }
+        if (!out) out = r.text;
+        else if (afterBreak) out += '\n' + r.text;
+        else if (prevFull) out += ' ' + r.text;
+        else out += '\n' + r.text;
+        prevFull = r.full;
+        afterBreak = false;
+      }
+      return out.replace(/\n{3,}/g, '\n\n').trim();
+    },
+
     scan() {
       if (!this.enabled) return;
       const lines = this.getBufferLines();
@@ -73,23 +97,28 @@ function createClaudeCliParser(term, fitAddon) {
         nonEmpty: lines.filter((l) => l.trim() !== ''),
       });
 
+      // Rows at/above this width are soft-wraps; shorter rows = new logical line.
+      const wrapWidth = Math.max(40, Math.floor((term.cols || 80) * 0.82));
+
       let currentQ = '';
-      let currentALines = [];
+      let currentALines = []; // [{text, full}]; {text:''} = blank/paragraph break
       const pairs = [];
 
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
+        const raw = lines[i]; // trailing-trimmed already
+        const line = raw.trim();
+        if (!line) {
+          // Blank line inside an answer = paragraph break; otherwise ignore.
+          if (currentQ && currentALines.length > 0) {
+            currentALines.push({ text: '', full: false });
+          }
+          continue;
+        }
 
         const qMatch = line.match(/^[>\u276F]\s+(.+)/);
         if (qMatch) {
           if (currentQ && currentALines.length > 0) {
-            // Join with a single space — the captured "lines" are xterm
-            // visual rows where claude wrapped at the terminal width, NOT
-            // logical paragraph breaks. Joining with \n would freeze the
-            // wrap into the answer text and surface as escaped \n on the
-            // wire.
-            pairs.push({ q: currentQ, a: currentALines.join(' ') });
+            pairs.push({ q: currentQ, a: this.joinAnswer(currentALines) });
           }
           currentQ = qMatch[1].trim();
           currentALines = [];
@@ -104,7 +133,7 @@ function createClaudeCliParser(term, fitAddon) {
           // status line. isChrome() catches the status line (and other chrome
           // that happens to start with ●); skip it so it is never the answer.
           if (this.isChrome(line)) continue;
-          currentALines.push(aMatch[1].trim());
+          currentALines.push({ text: aMatch[1].trim(), full: raw.length >= wrapWidth });
           continue;
         }
 
@@ -114,11 +143,11 @@ function createClaudeCliParser(term, fitAddon) {
           // If welcome/status chrome (e.g. "high · /effort") slips past
           // isChrome(), it shows up here — the leak point for that bug.
           this.flog('debug', 'parser::a-push', 'append non-chrome line to answer', { row: i, line });
-          currentALines.push(line);
+          currentALines.push({ text: line, full: raw.length >= wrapWidth });
         }
       }
       if (currentQ && currentALines.length > 0) {
-        pairs.push({ q: currentQ, a: currentALines.join(' ') });
+        pairs.push({ q: currentQ, a: this.joinAnswer(currentALines) });
       }
 
       this.flog('debug', 'parser::pairs', 'extracted Q&A pairs', {

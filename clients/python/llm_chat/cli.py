@@ -42,7 +42,8 @@ async def _run_ask(creds: Credentials, manager_url: str, send: str, timeout: flo
     async with ChatClient(manager_url, _token_provider(creds)) as client:
         answer = await client.ask(send, timeout=timeout)
         print(f"Q: {send}")
-        print(f"A: {answer.text}")
+        # Align continuation lines under "A: " so multi-line answers stay tidy.
+        print(f"A: {answer.text.replace(chr(10), chr(10) + '   ')}")
     return EXIT_OK
 
 
