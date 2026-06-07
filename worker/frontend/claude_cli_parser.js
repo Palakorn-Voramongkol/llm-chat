@@ -56,6 +56,17 @@ function createClaudeCliParser(term, fitAddon) {
       // / "high · /effort". Must be filtered explicitly or it is captured as
       // the answer — and, scraped during warmup, pre-empts claude's real reply.
       if (/·\s*\/effort\b/.test(line)) return true;
+      // Agentic tool-use chrome: the ⎿ tool-result connector and the
+      // "… +N lines (ctrl+o to expand)" truncation hint are TUI furniture,
+      // not part of the answer.
+      if (/^⎿/.test(line)) return true;
+      if (/\(ctrl\+o to expand\)/.test(line)) return true;
+      if (/^…?\s*\+\s*\d+\s+lines?\b/.test(line)) return true;
+      // Tool-call invocation lines, e.g. "Bash(curl …)", "Web Search(…)",
+      // optionally still carrying a leading ●/⏺ bullet from the scrape.
+      if (/^[●◉⏺]?\s*(Bash|Read|Edit|MultiEdit|Write|Glob|Grep|Task|WebSearch|Web Search|WebFetch|Web Fetch|NotebookEdit|TodoWrite|BashOutput)\(/.test(line)) {
+        return true;
+      }
       if (/^\s*Claude Code/.test(line)) return true;
       if (/Welcome back|Tips for getting|Recent activity|No recent activity|Run \/init|CLAUDE\.md/.test(line)) return true;
       if (/Opus|Claude Max|Organization/.test(line)) return true;
@@ -70,19 +81,27 @@ function createClaudeCliParser(term, fitAddon) {
     // line → join with a newline. Blank rows ({text:''}) are paragraph breaks.
     // Restores list/code/paragraph structure that plain space-joining flattened.
     joinAnswer(rows) {
+      // Box-drawing / table rows (and code-fence rows) are never soft-wraps —
+      // each is its own logical line, so a rendered table keeps its shape
+      // instead of collapsing into one space-joined line.
+      const isStructural = (t) => /[│├┼┤┌┐└┘┬┴╭╮╰╯─━┃║═╬╠╣╦╩]/.test(t) || /^```/.test(t);
       let out = '';
       let prevFull = false;
+      let prevStruct = false;
       let afterBreak = true; // start of answer or just after a blank row
       for (const r of rows) {
         if (r.text === '') {
-          if (out) { out += '\n'; afterBreak = true; prevFull = false; }
+          if (out) { out += '\n'; afterBreak = true; prevFull = false; prevStruct = false; }
           continue;
         }
+        const struct = isStructural(r.text);
         if (!out) out = r.text;
         else if (afterBreak) out += '\n' + r.text;
+        else if (struct || prevStruct) out += '\n' + r.text; // table/code rows
         else if (prevFull) out += ' ' + r.text;
         else out += '\n' + r.text;
         prevFull = r.full;
+        prevStruct = struct;
         afterBreak = false;
       }
       return out.replace(/\n{3,}/g, '\n\n').trim();
