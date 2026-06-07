@@ -93,3 +93,29 @@ exact symptom is already documented with a one-paragraph fix.
 **When you debug a new config problem to a clean fix, append it to
 `config.md`** in the same format (Symptom / Why / Fix / Verify). New
 entries go at the top. Future-you and future Claudes will save hours.
+
+## Don't guess — verify
+
+Do **not** guess values, APIs, behaviors, or appearances and ship them as if
+you know. If you don't know something, find it out from the real source before
+acting:
+
+- an exact color/shape/layout (e.g. "what does a LINE chat bubble look like")
+  → look it up from a reference and, for anything visual, **render it and look
+  at the result** (a screenshot, a preview page) before claiming it's right —
+  don't hand-derive CSS you never see
+- an API signature, a config key, a flag, a return shape → read the docs or the
+  actual code/types, don't assume
+- a runtime behavior → run it and observe, don't predict
+- a magic constant (port, path, role name, hex) → read it from the source of
+  truth, don't invent a plausible one
+
+**Why:** a confident guess that's wrong wastes more time than admitting "I need
+to check," and it erodes trust — the user can't tell which of your claims are
+verified and which are invented. This is the same failure as rule 2 (scraping a
+view and reconstructing it): substituting a guess for the real thing.
+
+**How to apply:** when you catch yourself about to write "this should be…",
+stop and get the real answer. If you genuinely can't verify (no access, can't
+see the pixels), say so explicitly and flag the part that's unverified — never
+present a guess as fact.
