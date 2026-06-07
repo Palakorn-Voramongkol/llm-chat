@@ -18,8 +18,6 @@
 //                            "../worker/target/debug/llm-chat.exe"
 //                            relative to manager.exe location)
 
-mod auth_zitadel;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -709,7 +707,7 @@ struct ManagerState {
     /// Zitadel JWKS cache for verifying inbound client JWTs. Refreshed in
     /// the background. None means external auth is not configured (the
     /// manager will then refuse all inbound requests).
-    jwks: Option<auth_zitadel::JwksCache>,
+    jwks: Option<zitadel_auth::JwksCache>,
     /// FIFO of /chat questions, backed by SQLite OR Postgres depending on
     /// $MANAGER_DB_URL. Source of truth for the queue; outlives any single
     /// connection so a crash mid-question is recoverable.
@@ -865,14 +863,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Zitadel JWT auth — optional. If ZITADEL_ISSUER is unset, fall back to the
     // legacy shared-token check (handle_client decides based on `jwks`).
-    let jwks = match auth_zitadel::ZitadelConfig::from_env() {
+    let jwks = match zitadel_auth::ZitadelConfig::from_env() {
         Ok(cfg) => {
             tracing::info!(target: "manager::auth",
                 issuer = %cfg.issuer,
                 audience = ?cfg.audience,
                 project_id = %cfg.project_id,
                 "Zitadel auth enabled");
-            let cache = auth_zitadel::JwksCache::new(cfg);
+            let cache = zitadel_auth::JwksCache::new(cfg);
             match cache.refresh().await {
                 Ok(n) => tracing::info!(target: "manager::auth", keys = n, "JWKS preloaded"),
                 Err(e) => {
@@ -1040,7 +1038,7 @@ async fn handle_client(
         // External auth: prefer Zitadel JWT when configured. Fall back to the
         // legacy shared-token check only if Zitadel isn't set up.
         if let Some(jwks) = &jwks {
-            let token = match auth_zitadel::extract_bearer(req) {
+            let token = match zitadel_auth::extract_bearer(req) {
                 Ok(t) => t,
                 Err(e) => {
                     return Err(http::Response::builder()

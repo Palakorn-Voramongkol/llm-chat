@@ -2011,6 +2011,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zitadel-auth",
 ]
 
 [[package]]
@@ -6125,6 +6126,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "zitadel-auth"
+version = "0.1.0"
+dependencies = [
+ "jsonwebtoken",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio-tungstenite",
 ]
 
 [[package]]

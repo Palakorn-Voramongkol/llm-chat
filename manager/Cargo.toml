@@ -38,3 +38,4 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
+zitadel-auth = { path = "../crates/zitadel-auth" }

@@ -239,3 +239,30 @@ pub fn extract_bearer(req: &Request) -> Result<String, AuthError> {
     }
     Err(AuthError::Missing)
 }
+
+#[cfg(test)]
+mod surface_tests {
+    use super::{AuthError, JwksCache, Principal, ZitadelConfig};
+
+    #[test]
+    fn public_items_are_exported_and_principal_has_works() {
+        let p = Principal {
+            user_id: "u1".into(),
+            org_id: "o1".into(),
+            roles: vec!["chat.user".into()],
+            email: None,
+        };
+        assert!(p.has("chat.user"));
+        assert!(!p.has("chat.admin"));
+
+        let cfg = ZitadelConfig {
+            issuer: "https://id.example.com".into(),
+            audience: vec!["proj-1".into()],
+            jwks_uri: "https://id.example.com/oauth/v2/keys".into(),
+            project_id: "proj-1".into(),
+        };
+        let _cache = JwksCache::new(cfg);
+
+        assert_eq!(AuthError::Missing.to_string(), "missing Authorization header");
+    }
+}

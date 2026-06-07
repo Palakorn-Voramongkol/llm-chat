@@ -1,0 +1,15 @@
+[package]
+name = "zitadel-auth"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "zitadel_auth"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
+tokio-tungstenite = "0.21"
