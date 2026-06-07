@@ -1,0 +1,116 @@
+# llm-chat compose stack (local-dev only)
+
+Server-side stack: **postgres + Zitadel + provisioner + manager** in Docker,
+with the **worker running natively on Windows** (real `claude`, `~/.claude`,
+webview). LOCAL DEV ONLY — the issuer is plain HTTP, cookies are non-Secure.
+**Never expose this beyond your machine.**
+
+The whole thing hinges on one literal issuer string,
+`http://host.docker.internal:8080`, that resolves the same from the host
+(Python client) and from inside containers (manager). Don't change it.
+
+## Prerequisites
+- Docker Desktop for Windows.
+- The worker built: `cargo build --release` in `worker/` (produces
+  `worker/target/release/llm-chat.exe`).
+- Python 3 with `pyjwt[crypto]`, `requests`, `websockets` for the client.
+
+## Run (§9)
+
+```powershell
+# 0. From repo root D:\projects\llm-chat.
+
+# 1. Pre-flight: the three host ports must be FREE (a dual-listener 7777
+#    collision has bitten this environment before).
+Get-NetTCPConnection -LocalPort 7777,7878,8080 -State Listen -ErrorAction SilentlyContinue
+
+# 2. Env file.
+cp .env.example .env
+#   ZITADEL_MASTERKEY   -> openssl rand -hex 16   (exactly 32 hex chars; one-shot)
+#   POSTGRES_PASSWORD   -> a strong password
+#   LLM_CHAT_AUTH_TOKEN -> openssl rand -hex 32   (shared by manager + worker)
+
+# 3. Start the worker FIRST (before compose — the manager's :7878 probe is fatal).
+#    Approve the Windows Firewall prompt for the 0.0.0.0 bind if it appears.
+.\deploy\compose\run-worker.ps1
+
+# 4. Bring up the server side.
+docker compose up -d
+#    Wait until `docker compose ps` shows zitadel healthy + zitadel-init Exited(0),
+#    and .\secrets\kabytech-key.json + .\secrets\project_id exist.
+
+# 5. Round-trip with the Python client.
+python clients/python/llm_chat_client.py `
+  --issuer  http://host.docker.internal:8080 `
+  --project (Get-Content -Raw .\secrets\project_id).Trim() `
+  --key-file .\secrets\kabytech-key.json `
+  --manager ws://127.0.0.1:7777/chat `
+  --send "hello"
+#    Expect an 'a' frame and exit code 0.
+```
+
+### Clean reset
+Wipe Zitadel state AND host secrets together, or the stale kabytech key won't
+match the fresh instance:
+```powershell
+docker compose down -v
+Remove-Item -Recurse -Force .\secrets
+```
+
+## Client env-var names (footgun)
+The client reads DIFFERENT env names than the manager. If driving by env
+instead of flags:
+
+| Client flag | Client env var | NOT |
+|---|---|---|
+| `--issuer`   | `ZITADEL_ISSUER` | — |
+| `--project`  | `PROJECT_ID`     | not `ZITADEL_PROJECT_ID` |
+| `--key-file` | `KABYTECH_KEY`   | — |
+| `--manager`  | `MANAGER_WS`     | — |
+
+## Two scopes — do not swap (spec §7.2)
+- Provisioner (Management API): `openid profile urn:zitadel:iam:org:project:id:zitadel:aud` (literal `zitadel`).
+- Client (token the manager validates): `openid profile urn:zitadel:iam:org:project:id:<project>:aud urn:zitadel:iam:org:projects:roles` (numeric project id + plural `projects:roles`). This is already fixed in the Python client.
+
+## host.docker.internal fallback (§8)
+Container-side resolution is automatic under Docker Desktop. If HOST-side
+resolution fails (e.g. WSL2 engine with the Win32-hosts setting off), verify
+first:
+```powershell
+Resolve-DnsName host.docker.internal
+curl http://host.docker.internal:8080/.well-known/openid-configuration
+```
+Only if Docker is NOT already managing the entry, append as Administrator to
+`C:\Windows\System32\drivers\etc\hosts`:
+```
+127.0.0.1 host.docker.internal
+```
+Do NOT duplicate it if Docker manages it (duplicates cause flaky resolution).
+Publish Zitadel `8080:8080` (all interfaces), never `127.0.0.1:8080:8080`.
+
+## Verification (§10)
+- `docker compose config --quiet` exits 0.
+- `docker compose logs manager` shows **"Zitadel auth enabled"**, NOT
+  "Zitadel auth NOT configured — falling back to shared-token auth".
+- `.\secrets\kabytech-key.json` is valid JSON with `"type":"serviceaccount"`,
+  `keyId`, `key` (PEM), `userId`.
+- The client round-trip returns `a` and exits 0.
+
+## Risks (§11)
+- **Management-API drift:** the v1 endpoints are deprecated; the Zitadel tag is
+  pinned (to-confirm). Never `:latest`. Re-verify the provisioner call surface
+  on any bump.
+- **`_search` 409-recovery is UNVERIFIED:** provision.py raises on a 409 instead
+  of guessing the endpoint. Clean reset (down -v + delete secrets) avoids it.
+- **Port collisions:** free 7777/7878/8080 first (see pre-flight).
+- **Clock skew:** JWT iat/exp windows fail if host/container clocks drift.
+- **HTTP-only issuer:** no TLS, cleartext tokens — local-dev only.
+- **Required address vars:** the manager and worker fail fast if MANAGER_BIND,
+  MANAGER_BACKEND_HOST, or LLM_CHAT_WS_BIND is unset — compose/run-worker.ps1
+  set them all, so this only bites if you launch a binary by hand without them.
+- **Secrets:** `.\secrets\kabytech-key.json` is a live RSA key; `secrets/` is
+  gitignored. Never commit it.
+- **Firewall prompt:** approve the worker's 0.0.0.0 bind (private networks).
+- **Manager probe is fatal:** start the worker before `docker compose up`;
+  `restart: unless-stopped` heals transient windows.
+- **Masterkey irreversible:** exactly 32 chars, never change after first init.
