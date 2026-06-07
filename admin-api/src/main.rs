@@ -7,6 +7,7 @@
 // is a real workspace member and `cargo test -p llm-chat-admin-api` runs.
 
 mod config;
+mod zitadel;
 
 fn main() {
     eprintln!("llm-chat-admin-api: not yet wired (see Task 13)");
