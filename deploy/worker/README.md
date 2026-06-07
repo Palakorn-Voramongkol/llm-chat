@@ -17,32 +17,27 @@ There are two binaries (same crate):
 Claude sessions without ever creating a window, so **no X11/Wayland display
 server is required**.
 
-One caveat: the binary still *links* `libwebkit2gtk` (a Tauri dependency), so
-that shared library must be **installed** — but it is never used to open a
-window, so no display is needed:
+Build it with **`--no-default-features`** and it links **no Tauri / no
+WebKitGTK at all** — nothing GUI-related to install:
 
 ```bash
-sudo apt-get install -y libwebkit2gtk-4.1-0   # the lib, NOT a desktop
+cd worker
+cargo build --release --no-default-features --bin llm-chat-headless
+# -> worker/target/release/llm-chat-headless   (no tauri, no webkit, no display)
 ```
 
-(Removing the WebKitGTK link entirely — for a smaller image with no GTK at all —
-is a planned follow-up via Cargo feature-gating.)
+The `gui` feature (on by default) is what pulls in Tauri; turning it off drops
+the entire GUI toolchain. A default `cargo build` still produces both the GUI
+binary and the headless one (the latter then links libwebkit2gtk but never
+opens a window) — use `--no-default-features` for the clean server build.
 
 ## Prerequisites on the Linux box
 
 - **Node.js + the `claude` CLI** on `PATH`, logged in (the worker shells out to
   `claude`). `~/.claude` holds the auth/session state — the worker uses the real
   CLI, there is no API key.
-- `libwebkit2gtk-4.1-0` (see above).
 - A Rust toolchain to build (or copy a prebuilt binary).
-
-## Build
-
-```bash
-cd worker
-cargo build --release --bin llm-chat-headless
-# -> worker/target/release/llm-chat-headless
-```
+- Nothing GUI-related for the `--no-default-features` build.
 
 ## Run
 

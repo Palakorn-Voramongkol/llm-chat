@@ -9,19 +9,31 @@ edition = "2021"
 name = "llm_chat_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# Default GUI binary (Tauri window) — src/main.rs (implicit).
-# Headless server binary: WebSocket relay + stream-json Claude sessions with NO
-# window created, so it runs without a display server (X11/Wayland). On Linux it
-# still links libwebkit2gtk (a package install), but never opens a window.
+# GUI binary (Tauri window). Built only with the `gui` feature; a
+# `--no-default-features` build skips it (required-features unmet) and produces
+# ONLY the headless binary — with no tauri / WebKitGTK linked at all.
+[[bin]]
+name = "llm-chat"
+path = "src/main.rs"
+required-features = ["gui"]
+
+# Headless server binary: WebSocket relay + stream-json Claude sessions, no
+# window. With --no-default-features it links no GUI toolkit, so it needs
+# neither a display server nor libwebkit2gtk.
 [[bin]]
 name = "llm-chat-headless"
 path = "src/bin/headless.rs"
 
+[features]
+default = ["gui"]
+# `gui` enables the Tauri window + in-app commands. Off → headless server only.
+gui = ["dep:tauri", "dep:tauri-build"]
+
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = [], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"

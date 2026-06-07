@@ -848,7 +848,9 @@ impl EventSink for NoopSink {
     fn emit(&self, _event: &str, _payload: serde_json::Value) {}
 }
 
+#[cfg(feature = "gui")]
 pub struct TauriSink(pub tauri::AppHandle);
+#[cfg(feature = "gui")]
 impl EventSink for TauriSink {
     fn emit(&self, event: &str, payload: serde_json::Value) {
         use tauri::Emitter;
@@ -921,7 +923,7 @@ fn find_git_bash_path() -> Option<String> {
 // Captures the main webview window as a PNG so the manager (or any /control
 // client) can fetch the visual state of an instance — used both as a feature
 // and as a diagnostic for rendering bugs that only manifest in spawned mode.
-#[cfg(windows)]
+#[cfg(all(windows, feature = "gui"))]
 fn capture_main_window_to_png(
     app_handle: &tauri::AppHandle,
     out_path: &std::path::Path,
@@ -1173,6 +1175,7 @@ fn do_spawn_session(
     Ok(cmd)
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn spawn_session(
     session_id: String,
@@ -1190,6 +1193,7 @@ fn spawn_session(
     Err("Unsupported platform".into())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn close_session(session_id: String, state: tauri::State<'_, std::sync::Arc<AppState>>) -> Result<(), String> {
     #[cfg(any(unix, windows))]
@@ -1228,11 +1232,13 @@ fn close_session(session_id: String, state: tauri::State<'_, std::sync::Arc<AppS
     Ok(())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn list_sessions(state: tauri::State<'_, std::sync::Arc<AppState>>) -> Vec<String> {
     state.session_order.lock().unwrap().clone()
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn set_active_session(session_id: String, state: tauri::State<'_, std::sync::Arc<AppState>>) -> Result<(), String> {
     *state.active_session_id.lock().unwrap() = Some(session_id);
@@ -1271,6 +1277,7 @@ const MAX_SESSIONS: usize = 50;
 
 // ========== QA log commands (verbatim from onscreen-kbd) ==========
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn get_qa_log_path(session_id: Option<String>) -> Result<String, String> {
     let dir = std::env::temp_dir().join("llm-chat-qa");
@@ -1331,6 +1338,7 @@ fn get_qa_log_path(session_id: Option<String>) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn append_qa_log(content: String, path: String) -> Result<(), String> {
     if !is_safe_qa_path(&path) {
@@ -1347,6 +1355,7 @@ fn append_qa_log(content: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn write_qa_log(content: String, path: String) -> Result<(), String> {
     if !is_safe_qa_path(&path) {
@@ -1357,6 +1366,7 @@ fn write_qa_log(content: String, path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn open_qa_log(path: String) -> Result<(), String> {
     if !is_safe_qa_path(&path) {
@@ -1464,6 +1474,7 @@ fn clean_answer(text: &str) -> String {
     }
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn broadcast_qa(
     num: u32,
@@ -1537,6 +1548,7 @@ fn broadcast_qa(
     Ok(())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn save_terminal_output(content: String) -> Result<String, String> {
     let dir = std::env::temp_dir().join("llm-chat-output");
@@ -1550,6 +1562,7 @@ fn save_terminal_output(content: String) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn terminal_ready(
     _cols: u16,
@@ -1566,6 +1579,7 @@ fn terminal_ready(
 /// `invoke('frontend_log', { level, source, message, data })`. `tracing`'s
 /// `target:` must be a literal, so the JS sub-channel (e.g. "parser::buffer")
 /// rides along as the `source` field rather than the target.
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn frontend_log(level: String, source: String, message: String, data: Option<String>) {
     let data = data.unwrap_or_default();
@@ -1578,6 +1592,7 @@ fn frontend_log(level: String, source: String, message: String, data: Option<Str
     }
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn pty_write(
     session_id: String,
@@ -1612,6 +1627,7 @@ fn pty_write(
     Ok(())
 }
 
+#[cfg(feature = "gui")]
 #[tauri::command]
 fn pty_resize(
     session_id: String,
@@ -1947,8 +1963,10 @@ fn extract_token_from_request(
 // Every connection must present the auth token, either via
 // `Authorization: Bearer <token>` header or `?token=<token>` query string.
 // Browser-style http(s) Origin headers are rejected outright.
+// The accept loop. Runtime-agnostic (no tauri): the GUI spawns it on tauri's
+// async runtime; the headless binary runs it on a plain tokio runtime.
 #[cfg(any(unix, windows))]
-fn start_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16) {
+async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16) {
     use futures_util::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -1958,7 +1976,7 @@ fn start_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16) {
     let auth_token = load_or_generate_auth_token();
     tracing::debug!(target: "backend::auth", token_len = auth_token.len(), "auth token loaded");
 
-    tauri::async_runtime::spawn(async move {
+    {
         // Initialize SQLite-backed PTY input FIFO before binding the WS port,
         // so first writes after bind always land in the durable queue.
         let db_path = pty_db_path();
@@ -2610,7 +2628,7 @@ fn start_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16) {
                 }
             });
         }
-    });
+    }
 }
 
 /// Init the backend's tracing subscriber. Mirrors the manager's setup so the
@@ -2691,13 +2709,16 @@ pub fn run_headless() {
     );
     let state = std::sync::Arc::new(new_app_state());
     let sink: std::sync::Arc<dyn EventSink> = std::sync::Arc::new(NoopSink);
-    start_ws_server(state, sink, port);
-    // start_ws_server spawns its work on the async runtime; keep the process alive.
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-    }
+    // Drive the server on a plain tokio runtime — no tauri. The accept loop
+    // runs forever, so block_on keeps the process alive.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(run_ws_server(state, sink, port));
 }
 
+#[cfg(feature = "gui")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_backend_tracing();
@@ -2742,7 +2763,9 @@ pub fn run() {
                     app.state::<std::sync::Arc<AppState>>().inner().clone();
                 let sink: std::sync::Arc<dyn EventSink> =
                     std::sync::Arc::new(TauriSink(app.handle().clone()));
-                start_ws_server(st, sink, port);
+                tauri::async_runtime::spawn(async move {
+                    run_ws_server(st, sink, port).await;
+                });
             }
             // Stealth mode: hide the main window at startup. The Rust process
             // and WS server keep running normally; just no visible UI / no
