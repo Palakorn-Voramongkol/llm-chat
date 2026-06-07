@@ -3,6 +3,7 @@
 //! users, grants, keys. Task 12 lands `error`.
 
 pub mod error;
+pub mod model;
 pub mod token;
 
 use crate::config::AdminConfig;
