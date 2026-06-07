@@ -126,10 +126,13 @@ services:
       ADMIN_SA_KEY_PATH: /secrets/admin-api-key.json
       ADMIN_OIDC_CLIENT_ID_FILE: /secrets/admin_oidc_client_id
       ADMIN_OIDC_CLIENT_SECRET_FILE: /secrets/admin_oidc_client_secret
-      # OIDC redirect must match the app registered by provision.py
-      # (create_admin_oidc_app: http://localhost:7676/callback). This is the
-      # admin-api's OWN origin (public_origin), distinct from the web origin.
-      ADMIN_PUBLIC_ORIGIN: http://localhost:7676
+      # public_origin is the proxy/web origin (:3000), NOT the BFF's own port:
+      # admin-web same-origin-proxies the OIDC nav (/login,/callback,/logout) to
+      # the BFF, so the OIDC redirect_uri must stay on :3000 or Zitadel 302s the
+      # browser straight to :7676, bypassing the proxy and dropping the pre-auth
+      # cookie (scoped to :3000) -> permanent "state mismatch" 403 at /callback.
+      # Must equal create_admin_oidc_app's registered redirect (:3000/callback).
+      ADMIN_PUBLIC_ORIGIN: http://localhost:3000
       ADMIN_ALLOWED_ORIGIN: http://localhost:3000
       ADMIN_SESSION_KEY: ${ADMIN_SESSION_KEY}
       RUST_LOG: ${RUST_LOG:-info}

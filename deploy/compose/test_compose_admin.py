@@ -30,7 +30,7 @@ def test_admin_api_service() -> None:
     assert env["ZITADEL_ISSUER"] == "http://host.docker.internal:8080"
     assert env["ADMIN_SA_KEY_PATH"] == "/secrets/admin-api-key.json"
     assert env["ADMIN_SESSION_KEY"] == "${ADMIN_SESSION_KEY}"
-    assert env["ADMIN_PUBLIC_ORIGIN"] == "http://localhost:7676"
+    assert env["ADMIN_PUBLIC_ORIGIN"] == "http://localhost:3000"
     assert env["ADMIN_ALLOWED_ORIGIN"] == "http://localhost:3000"
     # generated env (project_id / audience) + the secrets dir are mounted in
     mounts = svc["volumes"]

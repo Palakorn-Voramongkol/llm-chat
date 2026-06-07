@@ -64,6 +64,9 @@ pub async fn login(State(st): State<AppState>, session: Session) -> Response {
     let seed = b64url(&rand::random::<[u8; 16]>());
     let (verifier, challenge) = pkce_pair(&seed);
     let state = b64url(&rand::random::<[u8; 16]>());
+    // nonce is sent per OIDC convention; replay protection via the id_token nonce
+    // is not enforced because authz uses the access-token JWKS path (CSRF is
+    // enforced via `state`).
     let nonce = b64url(&rand::random::<[u8; 16]>());
     // pre-auth session: persist verifier+state+nonce across /login -> /callback (§1.6)
     let _ = session.insert("pkce_verifier", &verifier).await;

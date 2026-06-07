@@ -43,7 +43,7 @@ DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "Demo-Passw0rd!")
 # CLI's public NATIVE app above. Captures BOTH clientId and clientSecret (once).
 ADMIN_OIDC_APP_NAME = "chat-admin-api"
 ADMIN_OIDC_REDIRECT_URI = os.environ.get(
-    "ADMIN_OIDC_REDIRECT_URI", "http://localhost:7676/callback")
+    "ADMIN_OIDC_REDIRECT_URI", "http://localhost:3000/callback")
 ADMIN_OIDC_POST_LOGOUT_URI = os.environ.get(
     "ADMIN_OIDC_POST_LOGOUT_URI", "http://localhost:3000/")
 ADMIN_SA_ROLE = "ORG_USER_MANAGER"  # least privilege; bump to ORG_OWNER per §6.2 gate
@@ -349,9 +349,11 @@ def create_admin_oidc_app(token: str, headers: dict, project_id: str):
     enum is OIDC_TOKEN_TYPE_JWT — NOT the machine ACCESS_TOKEN_TYPE_JWT (§7
     enum trap). accessTokenRoleAssertion=true so chat.admin rides in the
     ACCESS-token JWT even though the project has projectRoleAssertion=false
-    (§6.1 gate). redirectUris uses the admin-api's OWN origin (ADMIN_PUBLIC_ORIGIN
-    / public_origin), not the web origin. Returns (clientId, clientSecret);
-    the secret is shown ONCE.
+    (§6.1 gate). redirectUris uses the same-origin proxy / web origin
+    (http://localhost:3000/callback == ADMIN_PUBLIC_ORIGIN): admin-web proxies
+    the OIDC nav to the BFF, so the redirect must land on :3000 (the BFF's own
+    :7676 is never browser-facing — going there drops the :3000 pre-auth
+    cookie). Returns (clientId, clientSecret); the secret is shown ONCE.
     """
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/projects/{project_id}/apps/oidc",

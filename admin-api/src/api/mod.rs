@@ -22,7 +22,7 @@ pub fn router(state: AppState) -> Router {
         // operator OIDC (full-page nav) — no Operator extractor on these.
         .route("/login", get(auth::login))
         .route("/callback", get(auth::callback))
-        .route("/logout", post(auth::logout))
+        .route("/logout", get(auth::logout))
         // gated /api surface
         .route("/api/me", get(me))
         .route("/api/users", get(list_users))
