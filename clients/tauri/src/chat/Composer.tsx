@@ -10,8 +10,8 @@ export function Composer({ onSend, disabled }: { onSend: (t: string) => void; di
     }
   };
   return (
-    <div className="border-t border-slate-200 bg-white/70 p-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60">
-      <div className="mx-auto flex max-w-3xl items-end gap-2">
+    <div className="border-t border-slate-200 bg-white/70 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/60 sm:px-6 lg:px-10 xl:px-16">
+      <div className="flex w-full items-end gap-2">
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}

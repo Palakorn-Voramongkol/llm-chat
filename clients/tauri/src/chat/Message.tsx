@@ -16,10 +16,10 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
         {isUser ? <User size={16} /> : <Sparkles size={16} />}
       </div>
       <div
-        className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${
+        className={`min-w-0 rounded-2xl px-4 py-2.5 ${
           isUser
-            ? "bg-brand-600 text-white"
-            : "border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900"
+            ? "max-w-[80%] bg-brand-600 text-white"
+            : "max-w-[94%] border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900"
         } ${msg.error ? "ring-1 ring-red-400" : ""}`}
       >
         {isUser ? (

@@ -43,7 +43,7 @@ export function ChatView() {
       </header>
 
       <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-5 p-4">
+        <div className="flex w-full flex-col gap-5 px-4 py-5 sm:px-6 lg:px-10 xl:px-16">
           {connError && (
             <div className="rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-600 dark:bg-red-950/40 dark:text-red-400">
               {connError}
