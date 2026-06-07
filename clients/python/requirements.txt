@@ -5,3 +5,4 @@ requests>=2.31
 websockets>=12
 keyring>=24
 platformdirs>=4
+rich>=13

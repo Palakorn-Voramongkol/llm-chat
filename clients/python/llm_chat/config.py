@@ -31,6 +31,14 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
                    help="OIDC client id (default: $OIDC_CLIENT_ID or secrets/oidc_client_id)")
     g.add_argument("--oidc-port", type=int, default=8477,
                    help="loopback port for the browser login redirect (default: 8477)")
+
+    d = p.add_argument_group("display")
+    d.add_argument("--plain", action="store_true",
+                   help="render markdown as plain text (no ANSI color/styling) — "
+                        "good for dumb terminals, logs, copy-paste")
+    d.add_argument("--raw", action="store_true",
+                   help="print claude's literal markdown without rendering")
+
     p.add_argument("-v", "--verbose", action="count", default=0,
                    help="-v for INFO, -vv for DEBUG diagnostics on stderr")
 

@@ -86,20 +86,38 @@ Each value falls back to an env var, then the `secrets/` dir:
 | `--manager` | `MANAGER_WS` | `ws://127.0.0.1:7777/chat` |
 | `--auth` | — | `chat`→`user`, `ask`→`machine` |
 | `--timeout` | — | `120` (seconds per answer) |
+| `--plain` | — | render markdown as plain text (no ANSI/color) |
+| `--raw` | — | print claude's literal markdown (no rendering) |
 | `-v` / `-vv` | — | INFO / DEBUG logs on stderr |
 
 `LLM_CHAT_SECRETS_DIR` overrides where `secrets/` is looked up;
 `LLM_CHAT_CONFIG_DIR` overrides where the token cache is stored.
 
+### Markdown display
+
+Claude answers in markdown. The client renders it for the terminal so you see
+formatting instead of raw `##` / `**` / `|` characters — like a browser renders
+markdown to HTML, but to ANSI/plain text. The raw markdown is always received
+unchanged; this only affects display.
+
+- **auto** (default): styled (color, bold, tables) on a capable terminal;
+  automatically falls back to **plain text** when output is piped, `NO_COLOR`
+  is set, or `TERM=dumb`. This is plain text + ANSI — **not** a GUI — so it runs
+  on a headless Linux CLI and over SSH.
+- **`--plain`**: markdown obeyed but zero ANSI — good for dumb terminals, logs,
+  and copy-paste.
+- **`--raw`**: the literal markdown as received.
+
 ### REPL slash-commands
 
 ```
-/help      /history     /session
+/help      /history     /session     /render MODE
 /reset     /multi       /quit (/exit)
 ```
 
 `/reset` starts a fresh backend session (clears claude's context); `/multi`
-sends a multi-line message (end with a single `.`).
+sends a multi-line message (end with a single `.`); `/render auto|plain|raw`
+switches the markdown display mode live.
 
 ## Exit codes
 

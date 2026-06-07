@@ -33,6 +33,7 @@ from .errors import (
     ProtocolError,
 )
 from .protocol import ChatClient
+from .render import render_markdown, resolve_mode
 from .repl import run_repl
 from .tokens import TokenStore
 
@@ -129,18 +130,24 @@ def _print_whoami(ts: oidc.TokenSet) -> None:
 
 # ---------------- run loops ----------------
 
-async def _run_ask(provider, manager_url: str, send: str, timeout: float) -> int:
+async def _run_ask(provider, manager_url: str, send: str, timeout: float,
+                   render_mode: str) -> int:
     async with ChatClient(manager_url, provider) as client:
         answer = await client.ask(send, timeout=timeout)
         print(f"Q: {send}")
-        print(f"A: {answer.text.replace(chr(10), chr(10) + '   ')}")
+        if render_mode == "raw":
+            print(f"A: {answer.text}")
+        else:
+            print("A:")
+            render_markdown(answer.text, render_mode)
     return EXIT_OK
 
 
-async def _run_chat(provider, manager_url: str, timeout: float) -> int:
+async def _run_chat(provider, manager_url: str, timeout: float,
+                    render_mode: str) -> int:
     client = ChatClient(manager_url, provider)
     try:
-        return await run_repl(client, timeout)
+        return await run_repl(client, timeout, render_mode)
     finally:
         await client.close()
 
@@ -191,9 +198,10 @@ def _cmd_chat_or_ask(args) -> int:
             print("Not logged in — starting browser login…")
             _login_and_store(issuer, client_id, project, store, args.oidc_port)
         provider = _user_provider(issuer, client_id, store, endpoints)
+    render_mode = resolve_mode(plain=args.plain, raw=args.raw)
     if args.command == "ask":
-        return asyncio.run(_run_ask(provider, manager_url, args.send, args.timeout))
-    return asyncio.run(_run_chat(provider, manager_url, args.timeout))
+        return asyncio.run(_run_ask(provider, manager_url, args.send, args.timeout, render_mode))
+    return asyncio.run(_run_chat(provider, manager_url, args.timeout, render_mode))
 
 
 # ---------------- dispatch ----------------

@@ -15,6 +15,7 @@ dependencies = [
     "websockets>=12",
     "keyring>=24",
     "platformdirs>=4",
+    "rich>=13",
 ]
 
 [project.optional-dependencies]
