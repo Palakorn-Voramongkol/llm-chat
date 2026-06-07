@@ -24,3 +24,27 @@ theater.
 away," pause and ask "what's actually broken here?" Trace the failure to its
 source before editing. If the real fix is large, propose it explicitly rather
 than shipping the band-aid; let the user decide.
+
+## Use the source of truth — don't scrape-and-reconstruct
+
+When you need data another program produces (its output, its state, its
+structure), consume that program's **real, structured output** — not a
+rendered/derived view of it that you then try to reverse-engineer.
+
+- do **not** scrape a rendered terminal/TUI/HTML view and guess back the
+  original structure with heuristics (width thresholds to "unwrap" lines,
+  regexes to strip chrome, inserting blank lines to fake layout)
+- do **not** stack pattern-matches to paper over a lossy capture
+- **do** find the program's machine-readable mode (JSON/stream-json/`--print`,
+  an API, an event stream) and use that as the single source of truth
+
+**Why:** a rendered view has already lost information (wrapping, chrome,
+truncation). Every heuristic to undo that is a guess that is fragile, never
+exact, and accumulates as exactly the "dirty fixes" rule 1 forbids. Example
+from this project: the worker scraped claude's xterm grid and reconstructed
+answers with width/blank/chrome heuristics; the root-cause fix was to drive
+claude with `--output-format stream-json` and read its actual answer text.
+
+**How to apply:** when output "looks wrong," don't add another rule to the
+parser — ask "is there a structured source I should be reading instead?" If the
+current design forces reconstruction, treat that as the bug to fix.
