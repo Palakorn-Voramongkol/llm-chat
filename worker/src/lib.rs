@@ -1551,10 +1551,17 @@ fn lock_token_file_acl(path: &std::path::Path) {
 }
 
 /// Pure: format the worker's WS bind address. `bind` is the raw value of
-/// LLM_CHAT_WS_BIND; None/empty -> loopback (today's behavior).
-fn worker_bind_addr(bind: Option<String>, port: u16) -> String {
-    let host = bind.filter(|s| !s.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string());
-    format!("{}:{}", host, port)
+/// LLM_CHAT_WS_BIND. This var is REQUIRED — there is no default. None/empty
+/// yields an Err naming the var so the caller can fail fast; otherwise
+/// Ok("<host>:<port>").
+fn worker_bind_addr(bind: Option<String>, port: u16) -> Result<String, String> {
+    match bind.filter(|s| !s.is_empty()) {
+        Some(host) => Ok(format!("{}:{}", host, port)),
+        None => Err(
+            "LLM_CHAT_WS_BIND must be set (no default) — e.g. 0.0.0.0 or 127.0.0.1"
+                .to_string(),
+        ),
+    }
 }
 
 fn load_or_generate_auth_token() -> String {
@@ -1657,7 +1664,15 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
             }
         }
 
-        let addr = worker_bind_addr(std::env::var("LLM_CHAT_WS_BIND").ok(), port);
+        let addr = match worker_bind_addr(std::env::var("LLM_CHAT_WS_BIND").ok(), port) {
+                Ok(addr) => addr,
+                Err(msg) => {
+                    // The WS server is core; there is no default bind. Fail fast.
+                    tracing::error!(target: "worker", error = %msg, "cannot start WS server");
+                    eprintln!("{}", msg);
+                    std::process::exit(1);
+                }
+            };
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -2374,19 +2389,23 @@ mod ws_bind_tests {
     use super::worker_bind_addr;
 
     #[test]
-    fn defaults_to_loopback_when_none() {
-        assert_eq!(worker_bind_addr(None, 7878), "127.0.0.1:7878");
+    fn errors_when_none() {
+        let err = worker_bind_addr(None, 7878).unwrap_err();
+        assert!(err.contains("LLM_CHAT_WS_BIND"), "err names the var: {err}");
     }
     #[test]
-    fn defaults_to_loopback_when_empty() {
-        assert_eq!(worker_bind_addr(Some(String::new()), 7878), "127.0.0.1:7878");
+    fn errors_when_empty() {
+        let err = worker_bind_addr(Some(String::new()), 7878).unwrap_err();
+        assert!(err.contains("LLM_CHAT_WS_BIND"), "err names the var: {err}");
     }
     #[test]
     fn honors_all_interfaces() {
-        assert_eq!(worker_bind_addr(Some("0.0.0.0".to_string()), 7878), "0.0.0.0:7878");
+        assert_eq!(worker_bind_addr(Some("0.0.0.0".to_string()), 7878).unwrap(),
+                   "0.0.0.0:7878");
     }
     #[test]
-    fn honors_specific_ip_and_port() {
-        assert_eq!(worker_bind_addr(Some("10.0.0.5".to_string()), 9000), "10.0.0.5:9000");
+    fn honors_loopback() {
+        assert_eq!(worker_bind_addr(Some("127.0.0.1".to_string()), 7878).unwrap(),
+                   "127.0.0.1:7878");
     }
 }

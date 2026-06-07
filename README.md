@@ -49,13 +49,13 @@ That's it. No on-screen keyboard, no auth, no web server, no NATS — just a ter
 ```bash
 cd worker
 npm install
-npm run tauri dev
+npm run dev
 ```
 
 Build a bundle:
 
 ```bash
-npm run tauri build
+npm run build
 ```
 
 If `claude` isn't found, the terminal will show an `echo` message instead of crashing — install Claude Code (`npm i -g @anthropic-ai/claude-code`) or place `claude.exe` somewhere on `PATH` and relaunch.
