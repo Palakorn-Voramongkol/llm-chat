@@ -19,12 +19,25 @@ services:
     # PINNED, TO BE CONFIRMED (§4.2/§12): verify this tag exposes the v1
     # Management-API endpoints provision.py calls; never use :latest.
     image: ghcr.io/zitadel/zitadel:v3.4.10
+    # Run as root (local-dev only): the FIRSTINSTANCE setup writes the admin-SA
+    # JSON key into the shared `machinekey` named volume, which Docker creates
+    # root-owned (0755). The image's default `zitadel` user is non-root and
+    # cannot create a file there, so the 03_default_instance migration fails
+    # with "permission denied" (and every restart then masks it as the instance
+    # domain "AlreadyExists"). Running as root lets setup write the key; the
+    # provisioner mounts the volume read-only and reads it back.
+    user: root
     command: 'start-from-init --masterkeyFromEnv --tlsMode disabled'
     environment:
       ZITADEL_MASTERKEY: ${ZITADEL_MASTERKEY}
       ZITADEL_EXTERNALDOMAIN: host.docker.internal
       ZITADEL_EXTERNALPORT: 8080
       ZITADEL_EXTERNALSECURE: "false"
+      # Required by the `zitadel ready` healthcheck below: without it the ready
+      # subcommand probes https://localhost:8080 and fails against our HTTP
+      # server (upstream issue #9495). EXTERNALSECURE=false alone does NOT fix
+      # the ready check — TLS_ENABLED=false is what flips it to http.
+      ZITADEL_TLS_ENABLED: "false"
       # Postgres wiring (B) — discrete admin+user split (§4.1; fallback to (A)).
       ZITADEL_DATABASE_POSTGRES_HOST: postgres
       ZITADEL_DATABASE_POSTGRES_PORT: 5432
@@ -46,11 +59,11 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      # /debug/healthz is fixed by the approved design; the TOOL is the only
-      # open variable (§4.2/§11/§12). If the pinned image ships neither wget
-      # nor curl, fall back to ["CMD","/app/zitadel","ready"] and verify it
-      # empirically (issue #9495: `ready` has attempted HTTPS even with TLS off).
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/debug/healthz || exit 1"]
+      # The v3.4.10 image is distroless — no shell, no wget, no curl — so the
+      # only usable probe is the bundled binary's own `ready` subcommand (exec
+      # form, no shell). It hits /debug/ready; ZITADEL_TLS_ENABLED=false above
+      # makes it use http instead of https (issue #9495).
+      test: ["CMD", "/app/zitadel", "ready"]
       interval: 5s
       timeout: 5s
       retries: 30
