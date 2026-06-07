@@ -770,14 +770,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Token itself only at DEBUG — INFO log shouldn't leak credentials.
     tracing::debug!(target: "manager::auth", token = %auth_token, "auth token");
 
-    // Resolve the backend dial host once, at startup, and FAIL FAST if it is
-    // missing — there is no code default. This same String is threaded into
-    // the spawn_instance forwarding, wait_for_tcp, and the spawn-skip log so
-    // every site observes the one validated host.
+    // Resolve BOTH required addresses up front and FAIL FAST if either is
+    // missing — there is no code default. This must happen BEFORE any side
+    // effect (spawning worker instances, launching claude, opening the DB):
+    // a missing required var should abort cleanly, not after we've already
+    // started backend processes. backend_host is threaded into the
+    // spawn_instance forwarding, wait_for_tcp, and the spawn-skip log; bind_host
+    // is used for the listen socket far below. Both are validated here so every
+    // site observes one validated value and the failure surfaces immediately.
     let backend_host = require_addr(
         "MANAGER_BACKEND_HOST",
         std::env::var("MANAGER_BACKEND_HOST").ok(),
     )?;
+    let bind_host = require_addr("MANAGER_BIND", std::env::var("MANAGER_BIND").ok())?;
 
     let stealth: bool = matches!(
         std::env::var("MANAGER_STEALTH").ok().as_deref(),
@@ -869,7 +874,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         clients: HashMap::new(),
     }));
 
-    let bind_host = require_addr("MANAGER_BIND", std::env::var("MANAGER_BIND").ok())?;
+    // bind_host was resolved+validated up front (before any spawning).
     let listener = TcpListener::bind((bind_host.as_str(), manager_port)).await?;
     tracing::info!(
         target: "manager",
