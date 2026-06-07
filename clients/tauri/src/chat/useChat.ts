@@ -5,6 +5,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  time?: number; // epoch ms when the bubble settled
   pending?: boolean;
   error?: boolean;
   latencyMs?: number | null;
@@ -33,7 +34,13 @@ export function useChat() {
           setMessages((m) =>
             m.map((msg) =>
               msg.id === frame.id
-                ? { ...msg, text: frame.text ?? "", pending: false, latencyMs: frame.latencyMs }
+                ? {
+                    ...msg,
+                    text: frame.text ?? "",
+                    pending: false,
+                    latencyMs: frame.latencyMs,
+                    time: Date.now(),
+                  }
                 : msg,
             ),
           );
@@ -73,7 +80,7 @@ export function useChat() {
     const id = `m${counter.current}`;
     setMessages((m) => [
       ...m,
-      { id: `u-${id}`, role: "user", text: t },
+      { id: `u-${id}`, role: "user", text: t, time: Date.now() },
       { id, role: "assistant", text: "", pending: true },
     ]);
     setThinking(true);

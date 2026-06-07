@@ -8,11 +8,37 @@ import { Composer } from "./Composer";
 export function ChatView() {
   const { config, identity, signOut } = useAuth();
   const { messages, connected, thinking, connError, send } = useChat();
-  const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
 
+  const scrollToBottom = () => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  };
+  // Track whether the user is parked at the bottom (so we don't yank them up
+  // while they scroll back to read).
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (el) pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
+
+  // Re-pin when messages change…
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (pinnedRef.current) requestAnimationFrame(scrollToBottom);
   }, [messages]);
+
+  // …and stay pinned as late-rendering content (markdown, code, diagrams) grows
+  // — this is what keeps the newest line visible instead of cut off.
+  useEffect(() => {
+    const c = contentRef.current;
+    if (!c) return;
+    const ro = new ResizeObserver(() => {
+      if (pinnedRef.current) scrollToBottom();
+    });
+    ro.observe(c);
+    return () => ro.disconnect();
+  }, []);
 
   const plantuml = config?.plantuml_server ?? "https://www.plantuml.com/plantuml";
   const name = config?.app_name ?? "Lumina";
@@ -42,8 +68,8 @@ export function ChatView() {
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="flex w-full flex-col gap-5 px-4 py-5 sm:px-6 lg:px-10 xl:px-16">
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
+        <div ref={contentRef} className="flex w-full flex-col gap-3 px-4 py-5 sm:px-6 lg:px-10 xl:px-16">
           {connError && (
             <div className="rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-600 dark:bg-red-950/40 dark:text-red-400">
               {connError}
@@ -63,7 +89,6 @@ export function ChatView() {
               <Message msg={m} plantumlServer={plantuml} />
             </div>
           ))}
-          <div ref={endRef} />
         </div>
       </div>
 
