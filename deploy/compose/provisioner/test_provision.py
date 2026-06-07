@@ -180,3 +180,42 @@ def test_create_admin_role_raises_on_hard_error():
                            lambda *a, **k: _FakeResp(400)):
         with pytest.raises(RuntimeError):
             provision.create_admin_role("tok", {}, "p")
+
+
+def test_create_admin_sa_posts_machine_user_jwt_token_type():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"userId": "sa-123"})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        uid = provision.create_admin_sa("tok", {"h": "1"})
+    assert uid == "sa-123"
+    assert captured["url"].endswith("/management/v1/users/machine")
+    b = captured["body"]
+    assert b["userName"] == "chat-admin-api"
+    assert b["name"] == "chat-admin-api"
+    assert b["accessTokenType"] == "ACCESS_TOKEN_TYPE_JWT"
+
+
+def test_create_admin_sa_409_is_systemexit_clean_boot():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        with pytest.raises(SystemExit):
+            provision.create_admin_sa("tok", {})
+
+
+def test_generate_admin_key_decodes_keydetails():
+    sa = {"type": "serviceaccount", "keyId": "k9", "key": "PEM", "userId": "sa-123"}
+    kd_b64 = base64.b64encode(json.dumps(sa).encode()).decode()
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        assert url.endswith("/management/v1/users/sa-123/keys")
+        assert json_body == {"type": "KEY_TYPE_JSON"}
+        return _FakeResp(200, {"keyId": "k9", "keyDetails": kd_b64})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        out = provision.generate_admin_key("tok", {}, "sa-123")
+    assert out == sa

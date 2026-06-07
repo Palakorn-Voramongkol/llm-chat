@@ -28,6 +28,7 @@ PROJECT_NAME = "llm-chat"
 ROLE_KEY = "chat.user"
 ADMIN_ROLE_KEY = "chat.admin"
 MACHINE_USERNAME = "kabytech"
+ADMIN_SA_USERNAME = "chat-admin-api"
 
 # Interactive human-login path (OIDC Auth Code + PKCE). The OIDC public app the
 # CLI logs in through, plus a ready demo human user with the same chat.user role.
@@ -243,7 +244,41 @@ def create_machine_user(token: str, headers: dict) -> str:
     raise RuntimeError(f"create_machine_user unexpected status {resp.status_code}")
 
 
+def create_admin_sa(token: str, headers: dict) -> str:
+    """Create the dedicated least-privilege admin-api machine user (appendix
+    §2.1). Distinct from the bootstrap IAM_OWNER SA and from kabytech.
+    ACCESS_TOKEN_TYPE_JWT (machine-user enum) — do NOT use the OIDC app enum
+    OIDC_TOKEN_TYPE_JWT here (§7 enum trap). Clean-boot contract like
+    create_machine_user: 409 -> SystemExit (UNVERIFIED _search recovery, §12)."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/users/machine", headers=headers,
+        json_body={"userName": ADMIN_SA_USERNAME, "name": ADMIN_SA_USERNAME,
+                   "description": "admin-api least-privilege management SA",
+                   "accessTokenType": "ACCESS_TOKEN_TYPE_JWT"},
+    )
+    if resp.status_code == 200:
+        return resp.json()["userId"]
+    if resp.status_code == 409:
+        raise SystemExit(
+            "chat-admin-api SA already exists (409): _search recovery is "
+            "UNVERIFIED (§12). On a clean reset run `docker compose down -v` "
+            "AND delete ./secrets.")
+    resp.raise_for_status()
+    raise RuntimeError(f"create_admin_sa unexpected status {resp.status_code}")
+
+
 def generate_json_key(token: str, headers: dict, user_id: str) -> dict:
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/users/{user_id}/keys", headers=headers,
+        json_body={"type": "KEY_TYPE_JSON"},
+    )
+    resp.raise_for_status()
+    return decode_key_details(resp.json()["keyDetails"])
+
+
+def generate_admin_key(token: str, headers: dict, user_id: str) -> dict:
+    """Mint the admin SA's JSON key; keyDetails (base64 serviceaccount JSON) is
+    returned ONCE (appendix §2.2). Same shape as generate_json_key for kabytech."""
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/users/{user_id}/keys", headers=headers,
         json_body={"type": "KEY_TYPE_JSON"},
