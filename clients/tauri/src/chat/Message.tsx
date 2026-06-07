@@ -37,10 +37,10 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
 
   const widthCls = isUser ? "max-w-[78%]" : "max-w-[88%]";
   // LINE-style: green sent bubble (tail top-right), white/dark received bubble
-  // (tail top-left).
+  // (tail top-left) — tails are CSS pseudo-elements (see styles.css).
   const bubbleCls = isUser
-    ? "rounded-2xl rounded-tr-sm bg-[#06c755] text-white"
-    : "rounded-2xl rounded-tl-sm border border-slate-200 bg-white text-slate-900 shadow-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100";
+    ? "lumina-bubble lumina-bubble-sent"
+    : "lumina-bubble lumina-bubble-received text-slate-900 dark:text-slate-100";
 
   const TimeLabel = () =>
     time ? (
@@ -52,7 +52,7 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
   return (
     <div className={`flex items-end gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
-        <div className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center self-start rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
           <Sparkles size={15} />
         </div>
       )}
