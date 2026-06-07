@@ -819,10 +819,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         clients: HashMap::new(),
     }));
 
-    let listener = TcpListener::bind(("127.0.0.1", manager_port)).await?;
+    let bind_host = require_addr("MANAGER_BIND", std::env::var("MANAGER_BIND").ok())?;
+    let listener = TcpListener::bind((bind_host.as_str(), manager_port)).await?;
     tracing::info!(
         target: "manager",
-        addr = %format!("ws://127.0.0.1:{}", manager_port),
+        addr = %format!("ws://{}:{}", bind_host, manager_port),
         "manager listening"
     );
 
@@ -2105,5 +2106,20 @@ mod tests {
         assert_eq!(require_addr("MANAGER_BACKEND_HOST",
                                 Some("host.docker.internal".to_string())).unwrap(),
                    "host.docker.internal");
+    }
+    #[test]
+    fn require_addr_bind_errors_when_none() {
+        let err = require_addr("MANAGER_BIND", None).unwrap_err();
+        assert!(err.contains("MANAGER_BIND"), "names the var: {err}");
+    }
+    #[test]
+    fn require_addr_bind_errors_when_empty() {
+        let err = require_addr("MANAGER_BIND", Some(String::new())).unwrap_err();
+        assert!(err.contains("MANAGER_BIND"), "names the var: {err}");
+    }
+    #[test]
+    fn require_addr_bind_honors_all_interfaces() {
+        assert_eq!(require_addr("MANAGER_BIND", Some("0.0.0.0".to_string())).unwrap(),
+                   "0.0.0.0");
     }
 }
