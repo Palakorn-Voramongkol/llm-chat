@@ -4,8 +4,10 @@
 
 pub mod error;
 pub mod grants;
+pub mod keys;
 pub mod model;
 pub mod token;
+pub mod users;
 
 use crate::config::AdminConfig;
 use token::CachedToken;
