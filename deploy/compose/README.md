@@ -73,20 +73,40 @@ instead of flags:
 - Client (token the manager validates): `openid profile urn:zitadel:iam:org:project:id:<project>:aud urn:zitadel:iam:org:projects:roles` (numeric project id + plural `projects:roles`). This is already fixed in the Python client.
 
 ## host.docker.internal fallback (§8)
-Container-side resolution is automatic under Docker Desktop. If HOST-side
-resolution fails (e.g. WSL2 engine with the Win32-hosts setting off), verify
-first:
+Container-side resolution is automatic under Docker Desktop (the manager reaches
+the issuer fine). The **host-side** Python client is the one that can break,
+because it must reach the SAME issuer URL `http://host.docker.internal:8080` to
+fetch its token. Verify first:
 ```powershell
 Resolve-DnsName host.docker.internal
-curl http://host.docker.internal:8080/.well-known/openid-configuration
+curl http://host.docker.internal:8080/debug/healthz   # want 200
 ```
-Only if Docker is NOT already managing the entry, append as Administrator to
-`C:\Windows\System32\drivers\etc\hosts`:
-```
-127.0.0.1 host.docker.internal
-```
-Do NOT duplicate it if Docker manages it (duplicates cause flaky resolution).
-Publish Zitadel `8080:8080` (all interfaces), never `127.0.0.1:8080:8080`.
+Two distinct failure modes have been seen:
+
+1. **No entry at all** (e.g. WSL2 engine with the Win32-hosts setting off) —
+   resolution fails outright. Append as Administrator to
+   `C:\Windows\System32\drivers\etc\hosts`:
+   ```
+   127.0.0.1 host.docker.internal
+   ```
+
+2. **Docker manages the entry but points it at the host's LAN IP**
+   (e.g. `192.168.1.106 host.docker.internal`). Resolution *succeeds* but the
+   client still can't connect: Docker Desktop publishes the port reachable only
+   on **loopback** (`127.0.0.1`/`::1` work, the LAN IP is firewall-blocked from
+   the host). Confirm with `curl http://127.0.0.1:8080/debug/healthz` (200) vs
+   the LAN IP (times out). Fix: repoint the Docker-managed line to loopback as
+   Administrator (host-side only — containers use their own injected entry and
+   are unaffected):
+   ```
+   127.0.0.1 host.docker.internal
+   ```
+   `ipconfig /flushdns` after editing. (Docker Desktop may rewrite its managed
+   block on restart; re-apply if the client starts failing again.)
+
+Do NOT leave two conflicting `host.docker.internal` lines (duplicates cause
+flaky resolution) — edit the existing one in place. Always publish Zitadel
+`8080:8080` (all interfaces), never `127.0.0.1:8080:8080`.
 
 ## Verification (§10)
 - `docker compose config --quiet` exits 0.
