@@ -536,6 +536,14 @@ fn external_backend_ports() -> Option<Vec<u16>> {
     parse_backend_ports(std::env::var("MANAGER_BACKEND_PORTS").ok())
 }
 
+/// Pure: choose the auth token — env value if non-empty, else `gen()`.
+/// PRESENCE is the toggle (unchanged semantics, NOT an address value, NOT made
+/// required): absent/empty -> generate a random token (today's behavior);
+/// present -> use it. `gen` is injected so the parser is testable without RNG.
+fn resolve_auth_token(env: Option<String>, gen: &dyn Fn() -> String) -> String {
+    env.filter(|t| !t.is_empty()).unwrap_or_else(gen)
+}
+
 fn auth_token_path() -> std::path::PathBuf {
     // Prefer %LOCALAPPDATA%\com.llm-chat.app\ on Windows — per-user, not swept
     // by temp cleaners. On unix, the XDG equivalent is $XDG_DATA_HOME (or
@@ -747,7 +755,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate a single per-process auth token used for every WS connection
     // (manager↔backend and client↔manager). Persist it so local clients can
     // read it from a known file.
-    let auth_token = random_token();
+    let auth_token = resolve_auth_token(
+        std::env::var("LLM_CHAT_AUTH_TOKEN").ok(),
+        &random_token,
+    );
     let token_path = auth_token_path();
     std::fs::write(&token_path, &auth_token)?;
     lock_token_acl(&token_path);
@@ -2188,5 +2199,21 @@ mod tests {
     #[test]
     fn parse_ports_all_bad_is_none() {
         assert_eq!(parse_backend_ports(Some("bad,nope".to_string())), None);
+    }
+
+    #[test]
+    fn auth_token_uses_env_when_set() {
+        let gen = || "GENERATED".to_string();
+        assert_eq!(resolve_auth_token(Some("envtok".to_string()), &gen), "envtok");
+    }
+    #[test]
+    fn auth_token_generates_when_none() {
+        let gen = || "GENERATED".to_string();
+        assert_eq!(resolve_auth_token(None, &gen), "GENERATED");
+    }
+    #[test]
+    fn auth_token_generates_when_empty() {
+        let gen = || "GENERATED".to_string();
+        assert_eq!(resolve_auth_token(Some(String::new()), &gen), "GENERATED");
     }
 }
