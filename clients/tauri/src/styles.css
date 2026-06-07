@@ -51,16 +51,22 @@ body {
 }
 .lumina-prose hr { @apply my-5 border-slate-200 dark:border-slate-800; }
 
-/* ---- LINE-style talk bubbles — curved SVG tail at the top corner, traced
-   from the user's real LINE screenshot and verified by screenshot diff ---- */
+/* ---- LINE-style talk bubbles ---------------------------------------------
+   The body is a normal rounded rectangle so it grows with the text (no fixed
+   size, never clips). The tail is a small SVG "horn" anchored at the top
+   corner — its shape (up-right pointed tip + concave underside scoop) was
+   traced from the pixels of the user's real LINE screenshot and tuned against
+   it by screenshot diff. The tail-side top corner is squared so the body fills
+   under the horn seamlessly (same colour); the horn only adds the protrusion
+   and scoop outside the body. ------------------------------------------------ */
 .lumina-bubble {
   position: relative;
-  border-radius: 16px;
+  border-radius: 18px;
 }
 .lumina-bubble-sent {
   background: #06c755;
   color: #fff;
-  border-top-right-radius: 0; /* the tail mask supplies this corner */
+  border-top-right-radius: 0; /* squared so the horn sits flush, no gap */
 }
 .lumina-bubble-received {
   --bubble-bg: #ffffff;
@@ -72,26 +78,31 @@ body {
   --bubble-bg: #1e293b; /* slate-800 */
   box-shadow: none;
 }
-/* the curved tail — the bubble corner+tail silhouette extracted from the real
-   LINE screenshot (public/line-tail.png), used as a mask and recolored to the
-   bubble color so it works in green / white / slate */
 .lumina-tail {
   position: absolute;
-  top: -6px;
-  width: 35px;
-  height: 32px;
+  top: -4px;
+  width: 28px;
+  height: 22px;
   pointer-events: none;
-  -webkit-mask: url("/line-tail.png") no-repeat;
-  mask: url("/line-tail.png") no-repeat;
-  -webkit-mask-size: 35px 32px;
-  mask-size: 35px 32px;
+}
+.lumina-tail svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 .lumina-tail-sent {
-  right: -16px;
-  background: #06c755;
+  right: -14px;
 }
+.lumina-tail-sent svg {
+  fill: #06c755;
+}
+/* received tail is the same horn mirrored to the top-left, recoloured to the
+   received bubble background (white in light mode, slate-800 in dark) */
 .lumina-tail-recv {
-  left: -16px;
-  background: var(--bubble-bg);
+  left: -14px;
   transform: scaleX(-1);
+}
+.lumina-tail-recv svg {
+  fill: var(--bubble-bg);
 }
