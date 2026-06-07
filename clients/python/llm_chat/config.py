@@ -25,6 +25,12 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
                    help="manager /chat WebSocket URL (default: $MANAGER_WS or ws://127.0.0.1:7777/chat)")
     g.add_argument("--timeout", type=float, default=120.0,
                    help="per-answer timeout in seconds (default: 120; high effort is slow)")
+    g.add_argument("--auth", choices=["user", "machine"], default=None,
+                   help="credential type (default: chat→user, ask→machine)")
+    g.add_argument("--oidc-client-id", default=None,
+                   help="OIDC client id (default: $OIDC_CLIENT_ID or secrets/oidc_client_id)")
+    g.add_argument("--oidc-port", type=int, default=8477,
+                   help="loopback port for the browser login redirect (default: 8477)")
     p.add_argument("-v", "--verbose", action="count", default=0,
                    help="-v for INFO, -vv for DEBUG diagnostics on stderr")
 
