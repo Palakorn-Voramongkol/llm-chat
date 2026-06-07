@@ -129,9 +129,17 @@ fn print_styled(md: &str) {
     }
 }
 
+fn term_width() -> usize {
+    termimad::crossterm::terminal::size()
+        .map(|(c, _)| c as usize)
+        .unwrap_or(80)
+        .max(1)
+}
+
 fn print_code(ss: &SyntaxSet, theme: &Theme, lang: &str, code: &str) {
     use syntect::easy::HighlightLines;
-    use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+    use syntect::highlighting::Color;
+    use syntect::util::LinesWithEndings;
 
     // Match the fence's info string to a syntax by token (e.g. "rust", "py")
     // or extension; fall back to plain text for unknown/absent languages.
@@ -140,13 +148,31 @@ fn print_code(ss: &SyntaxSet, theme: &Theme, lang: &str, code: &str) {
         .or_else(|| ss.find_syntax_by_extension(lang))
         .unwrap_or_else(|| ss.find_syntax_plain_text());
     let mut h = HighlightLines::new(syntax, theme);
+
+    // Filled background panel (like rich): set the theme's background, color
+    // each token's foreground, and pad every line to the terminal width so the
+    // block reads as a distinct shaded box rather than ragged colored text.
+    let bg = theme
+        .settings
+        .background
+        .unwrap_or(Color { r: 43, g: 48, b: 59, a: 255 });
+    let width = term_width();
     let mut out = std::io::stdout();
     for line in LinesWithEndings::from(code) {
         let ranges = h.highlight_line(line, ss).unwrap_or_default();
-        let _ = write!(out, "{}", as_24_bit_terminal_escaped(&ranges[..], false));
+        let _ = write!(out, "\x1b[48;2;{};{};{}m", bg.r, bg.g, bg.b); // line background
+        let mut col = 0usize;
+        for (style, text) in &ranges {
+            let t = text.trim_end_matches('\n');
+            let fg = style.foreground;
+            let _ = write!(out, "\x1b[38;2;{};{};{}m{}", fg.r, fg.g, fg.b, t);
+            col += t.chars().count();
+        }
+        if width > col {
+            let _ = write!(out, "{}", " ".repeat(width - col)); // pad on the bg
+        }
+        let _ = writeln!(out, "\x1b[0m"); // reset per line (bg + fg)
     }
-    let _ = write!(out, "\x1b[0m"); // reset so following prose isn't tinted
-    let _ = writeln!(out);
     let _ = out.flush();
 }
 
