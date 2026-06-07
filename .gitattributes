@@ -1,0 +1,5 @@
+# Shell scripts run under /bin/sh inside Linux containers — they MUST keep LF
+# endings even when checked out on Windows (core.autocrlf=true would otherwise
+# rewrite them to CRLF and break the shebang / `set -e` parsing).
+*.sh text eol=lf
+deploy/compose/entrypoint.sh text eol=lf
