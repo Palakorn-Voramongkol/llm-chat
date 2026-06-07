@@ -202,12 +202,7 @@ impl JwksCache {
 
         // Zitadel encodes project roles under
         //   urn:zitadel:iam:org:project:<projectid>:roles
-        let roles_key = format!("urn:zitadel:iam:org:project:{}:roles", self.cfg.project_id);
-        let roles: Vec<String> = claims
-            .get(&roles_key)
-            .and_then(|v| v.as_object())
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
+        let roles: Vec<String> = roles_from_claims(&claims, &self.cfg.project_id);
 
         Ok(Principal {
             user_id,
@@ -238,6 +233,57 @@ pub fn extract_bearer(req: &Request) -> Result<String, AuthError> {
         }
     }
     Err(AuthError::Missing)
+}
+
+/// Pure: pull the project-role names out of a verified claims object.
+///
+/// Zitadel encodes project roles under
+/// `urn:zitadel:iam:org:project:<project_id>:roles` as a JSON object whose
+/// KEYS are the role names (each value is an orgId→primaryDomain map we
+/// ignore). Returns the role names; empty when the claim is absent or not an
+/// object. No I/O — unit-testable without a signed token.
+pub fn roles_from_claims(claims: &serde_json::Value, project_id: &str) -> Vec<String> {
+    let roles_key = format!("urn:zitadel:iam:org:project:{}:roles", project_id);
+    claims
+        .get(&roles_key)
+        .and_then(|v| v.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod role_extraction_tests {
+    use super::roles_from_claims;
+    use serde_json::json;
+
+    #[test]
+    fn extracts_chat_admin_from_project_roles_object() {
+        let pid = "311867081814147073";
+        let claims = json!({
+            "sub": "u-1",
+            format!("urn:zitadel:iam:org:project:{pid}:roles"): {
+                "chat.user":  { "o-1": "example.localhost" },
+                "chat.admin": { "o-1": "example.localhost" }
+            }
+        });
+        let mut roles = roles_from_claims(&claims, pid);
+        roles.sort();
+        assert_eq!(roles, vec!["chat.admin".to_string(), "chat.user".to_string()]);
+    }
+
+    #[test]
+    fn missing_roles_claim_yields_empty() {
+        let claims = json!({ "sub": "u-2" });
+        assert!(roles_from_claims(&claims, "311867081814147073").is_empty());
+    }
+
+    #[test]
+    fn wrong_project_id_yields_empty() {
+        let claims = json!({
+            "urn:zitadel:iam:org:project:OTHER:roles": { "chat.admin": {} }
+        });
+        assert!(roles_from_claims(&claims, "311867081814147073").is_empty());
+    }
 }
 
 #[cfg(test)]
