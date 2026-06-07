@@ -1508,6 +1508,19 @@ async fn bridge_session_auto(
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
+
+/// Single-line, length-bounded rendering of arbitrary text for logs. Collapses
+/// newlines/CR to visible escapes so a multi-line PTY payload stays on one log
+/// line, and truncates to `max` chars with an explicit ellipsis so we never
+/// dump an unbounded prompt/answer into the trace.
+fn log_preview(s: &str, max: usize) -> String {
+    let flat = s.replace('\\', "\\\\").replace('\r', "\\r").replace('\n', "\\n");
+    let mut out: String = flat.chars().take(max).collect();
+    if flat.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
 async fn handle_chat(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
@@ -1626,6 +1639,8 @@ async fn handle_chat(
             "warming up newly-spawned session before processing first q");
         tokio::time::sleep(Duration::from_secs(warmup)).await;
     }
+    tracing::info!(target: "manager::chat", sid = %sid, warmup_secs = warmup,
+        "warmup complete — ready to process first q");
 
     // 4. Channel that carries finalized answers/errors from the qa+reader tasks
     //    to the writer task that flushes to the client WS.
@@ -1709,6 +1724,15 @@ async fn handle_chat(
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
+            tracing::info!(
+                target: "manager::chat",
+                sid = %sid_for_in,
+                id = %id,
+                q_len = q_text.len(),
+                q = %log_preview(&q_text, 120),
+                has_attachments = v.get("attachments").is_some(),
+                "q received from client"
+            );
             if q_text.is_empty() {
                 let _ = answer_tx_for_in
                     .send(serde_json::json!({
@@ -1855,6 +1879,15 @@ async fn handle_chat(
             // sometimes fails to submit when text + \r arrive in a single
             // write (especially long prompts that wrap to multiple visual
             // lines) — the human-typing pattern works reliably.
+            tracing::info!(
+                target: "manager::chat",
+                sid = %sid_for_in,
+                id = %id,
+                seq,
+                len = final_text.len(),
+                text = %log_preview(&final_text, 160),
+                "typing question into backend PTY (body frame)"
+            );
             if s_sink
                 .send(Message::Text(final_text.clone()))
                 .await
@@ -1870,6 +1903,8 @@ async fn handle_chat(
                 break;
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
+            tracing::debug!(target: "manager::chat", sid = %sid_for_in, id = %id, seq,
+                "sending Enter (\\r) to submit");
             if s_sink.send(Message::Text("\r".to_string())).await.is_err() {
                 let _ = db_for_in.update_status(seq, "error").await;
                 let _ = answer_tx_for_in
@@ -1889,7 +1924,8 @@ async fn handle_chat(
                     info.questions_sent += 1;
                 }
             }
-            tracing::debug!(target: "manager::chat", id=%id, seq, "queued + sent");
+            tracing::debug!(target: "manager::chat", id=%id, seq, len=final_text.len(),
+                text=%log_preview(&final_text, 80), "queued + sent");
         }
     });
 
@@ -1935,6 +1971,14 @@ async fn handle_chat(
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
+            tracing::info!(
+                target: "manager::chat::qa",
+                num,
+                raw_len = raw.len(),
+                raw = %log_preview(&raw, 160),
+                question = %log_preview(v.get("question").and_then(|x| x.as_str()).unwrap_or(""), 120),
+                "raw answer received from backend /qa stream"
+            );
             // The backend (llm-chat) cleans TUI noise before broadcasting on
             // /qa/<sid>, so this stream is already normalized. Pass through.
             pending_text.lock().await.insert(num, raw);
@@ -1978,6 +2022,15 @@ async fn handle_chat(
                     }
                 };
                 let time_out = now_iso();
+                tracing::info!(
+                    target: "manager::chat::qa",
+                    num,
+                    seq,
+                    id = %q_id,
+                    len = final_text.len(),
+                    text = %log_preview(&final_text, 160),
+                    "answer paired with question (FIFO) — forwarding to client"
+                );
                 let _ = db.mark_answered(seq, &final_text, &time_out).await;
                 let out = serde_json::json!({
                     "type": "a",
@@ -1995,6 +2048,14 @@ async fn handle_chat(
     // ---- Writer task: drain answer channel, send to client as JSON frames ----
     let writer = tokio::spawn(async move {
         while let Some(msg) = answer_rx.recv().await {
+            tracing::debug!(
+                target: "manager::chat",
+                kind = %msg.get("type").and_then(|x| x.as_str()).unwrap_or("?"),
+                seq = msg.get("seq").and_then(|x| x.as_i64()).unwrap_or(-1),
+                id = %msg.get("id").and_then(|x| x.as_str()).unwrap_or(""),
+                text = %log_preview(msg.get("text").and_then(|x| x.as_str()).unwrap_or(""), 120),
+                "frame → client"
+            );
             if ws_sink.send(Message::Text(msg.to_string())).await.is_err() {
                 break;
             }

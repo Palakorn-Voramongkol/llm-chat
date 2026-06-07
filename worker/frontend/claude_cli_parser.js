@@ -15,6 +15,21 @@ function createClaudeCliParser(term, fitAddon) {
     lastHour: 0,
     startTime: '',
 
+    // Route a diagnostic into the Rust `tracing` sink via the frontend_log
+    // Tauri command, so parser/PTY-scrape logs share the backend log stream
+    // (filter with RUST_LOG=frontend=debug). Best-effort: never throws.
+    flog(level, source, message, data) {
+      try {
+        invoke('frontend_log', {
+          level,
+          source,
+          message,
+          data: data === undefined ? null
+            : (typeof data === 'string' ? data : JSON.stringify(data)),
+        }).catch(() => {});
+      } catch (_) { /* invoke unavailable — ignore */ }
+    },
+
     // Read rendered lines from the terminal buffer (clean, no escape codes)
     getBufferLines() {
       const lines = [];
@@ -47,6 +62,11 @@ function createClaudeCliParser(term, fitAddon) {
     scan() {
       if (!this.enabled) return;
       const lines = this.getBufferLines();
+      this.flog('trace', 'parser::buffer', 'scan: raw xterm buffer', {
+        sid: this.sessionId || null,
+        rows: lines.length,
+        nonEmpty: lines.filter((l) => l.trim() !== ''),
+      });
 
       let currentQ = '';
       let currentALines = [];
@@ -81,12 +101,22 @@ function createClaudeCliParser(term, fitAddon) {
 
         if (currentALines.length > 0 && currentQ) {
           if (this.isChrome(line)) continue;
+          // Diagnostic: this is where a non-chrome line becomes answer text.
+          // If welcome/status chrome (e.g. "high · /effort") slips past
+          // isChrome(), it shows up here — the leak point for that bug.
+          this.flog('debug', 'parser::a-push', 'append non-chrome line to answer', { row: i, line });
           currentALines.push(line);
         }
       }
       if (currentQ && currentALines.length > 0) {
         pairs.push({ q: currentQ, a: currentALines.join(' ') });
       }
+
+      this.flog('debug', 'parser::pairs', 'extracted Q&A pairs', {
+        sid: this.sessionId || null,
+        count: pairs.length,
+        pairs: pairs.map((p) => ({ q: p.q.slice(0, 80), a: p.a.slice(0, 120) })),
+      });
 
       for (const pair of pairs) {
         const qKey = pair.q.substring(0, 80);
@@ -109,6 +139,13 @@ function createClaudeCliParser(term, fitAddon) {
           }
           // Update live panel
           this.renderToPanel(this.qaCount, pair.q, pair.a, isNew);
+          this.flog('info', 'parser::broadcast', 'broadcasting Q&A pair to backend', {
+            num: this.qaCount,
+            isNew,
+            q: pair.q.slice(0, 120),
+            a: pair.a,
+            aLen: pair.a.length,
+          });
           // Broadcast to WebSocket clients. sessionId+isNew are required —
           // without sessionId, broadcast_qa can't fan out to /qa/<sid>.
           invoke('broadcast_qa', {

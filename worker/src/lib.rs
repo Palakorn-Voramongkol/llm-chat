@@ -1135,6 +1135,18 @@ fn open_qa_log(path: String) -> Result<(), String> {
 ///      can't see them. The glyphs below (spinners, mode/model indicators)
 ///      never appear in normal prose, so truncating at the first occurrence
 ///      reliably cuts the footer without harming legitimate text.
+/// Single-line, length-bounded rendering of arbitrary text for tracing logs.
+/// Collapses CR/LF to visible escapes and truncates with an ellipsis so a
+/// multi-line PTY payload or answer never floods the log with raw output.
+fn log_preview(s: &str, max: usize) -> String {
+    let flat = s.replace('\\', "\\\\").replace('\r', "\\r").replace('\n', "\\n");
+    let mut out: String = flat.chars().take(max).collect();
+    if flat.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
 fn clean_answer(text: &str) -> String {
     let line_filtered = text
         .lines()
@@ -1194,7 +1206,24 @@ fn broadcast_qa(
     // the manager bridge) receives the same cleaned text. The JS parser
     // already drops most chrome line-by-line, but anything that slipped
     // through and got space-joined into the answer is scrubbed here.
+    tracing::debug!(
+        target: "backend::qa",
+        num,
+        sid = %session_id.as_deref().unwrap_or("?"),
+        is_new = is_new.unwrap_or(false),
+        q = %log_preview(&question, 120),
+        raw_len = answer.len(),
+        raw = %log_preview(&answer, 160),
+        "broadcast_qa: raw Q&A from frontend parser (pre-clean)"
+    );
     let answer = clean_answer(&answer);
+    tracing::debug!(
+        target: "backend::qa",
+        num,
+        clean_len = answer.len(),
+        clean = %log_preview(&answer, 160),
+        "broadcast_qa: answer after clean_answer"
+    );
     let payload = serde_json::json!({
         "num": num,
         "question": question,
@@ -1255,6 +1284,24 @@ fn terminal_ready(
 ) -> Result<String, String> {
     state.terminal_ready.store(true, Ordering::Relaxed);
     Ok("ready".into())
+}
+
+/// Bridge frontend (webview JS) diagnostics into the backend's `tracing` sink,
+/// so parser / PTY-scrape logs land in the same stream as the Rust logs and are
+/// filterable with `RUST_LOG=frontend=debug`. The JS side calls
+/// `invoke('frontend_log', { level, source, message, data })`. `tracing`'s
+/// `target:` must be a literal, so the JS sub-channel (e.g. "parser::buffer")
+/// rides along as the `source` field rather than the target.
+#[tauri::command]
+fn frontend_log(level: String, source: String, message: String, data: Option<String>) {
+    let data = data.unwrap_or_default();
+    match level.as_str() {
+        "error" => tracing::error!(target: "frontend", source = %source, data = %data, "{message}"),
+        "warn" => tracing::warn!(target: "frontend", source = %source, data = %data, "{message}"),
+        "debug" => tracing::debug!(target: "frontend", source = %source, data = %data, "{message}"),
+        "trace" => tracing::trace!(target: "frontend", source = %source, data = %data, "{message}"),
+        _ => tracing::info!(target: "frontend", source = %source, data = %data, "{message}"),
+    }
 }
 
 #[tauri::command]
@@ -2236,21 +2283,42 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                         Message::Close(_) => break,
                         _ => continue,
                     };
+                    let ends_with_submit =
+                        matches!(bytes.last(), Some(b'\r') | Some(b'\n'));
+                    tracing::debug!(
+                        target: "backend::chat",
+                        sid = %session_for_write,
+                        len = bytes.len(),
+                        ends_with_submit,
+                        text = %log_preview(&String::from_utf8_lossy(&bytes), 160),
+                        "/s frame received from manager → about to write to PTY"
+                    );
                     // Record the write into the SQLite FIFO BEFORE doing the
                     // PTY write, so a crash mid-write leaves a 'pending' row
                     // we can audit/replay later. Then write to PTY and mark.
                     let seq = pty_input_record(&session_for_write, &bytes).await;
                     // Scope the std::sync::Mutex guard so it's dropped before
                     // the next iteration's `.await` (not Send across await).
-                    let write_ok = {
+                    let outcome: &str = {
                         use tauri::Manager;
                         let st = app_handle_inner.state::<AppState>();
                         let map = st.pty_sessions.lock().unwrap();
                         match map.get(&session_for_write) {
-                            Some(sess) => sess.write(&bytes).is_ok(),
-                            None => false,
+                            Some(sess) => match sess.write(&bytes) {
+                                Ok(()) => "ok",
+                                Err(_) => "write_error",
+                            },
+                            None => "session_missing",
                         }
                     };
+                    let write_ok = outcome == "ok";
+                    tracing::debug!(
+                        target: "backend::chat",
+                        sid = %session_for_write,
+                        len = bytes.len(),
+                        outcome,
+                        "/s frame PTY write result"
+                    );
                     if let Some(seq) = seq {
                         pty_input_mark(seq, write_ok).await;
                     }
@@ -2358,6 +2426,7 @@ pub fn run() {
             open_qa_log,
             broadcast_qa,
             save_terminal_output,
+            frontend_log,
         ])
         .setup(|app| {
             #[cfg(any(unix, windows))]

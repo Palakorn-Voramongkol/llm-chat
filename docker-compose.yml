@@ -97,6 +97,10 @@ services:
       MANAGER_BIND: 0.0.0.0
       MANAGER_BACKEND_HOST: host.docker.internal
       MANAGER_BACKEND_PORTS: "7878"
+      # Operator-tunable log verbosity (tracing EnvFilter). Default info; set
+      # e.g. RUST_LOG=manager::chat=debug,manager::chat::qa=debug in .env to
+      # trace the full chat data path.
+      RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "7777:7777"
     depends_on:
