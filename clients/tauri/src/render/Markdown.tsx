@@ -9,6 +9,7 @@ import { Mermaid } from "./Mermaid";
 import { PlantUml } from "./PlantUml";
 import { Pdf } from "./Pdf";
 import { api } from "../lib/tauri";
+import { safeOpenUrl } from "../lib/url";
 
 // Sanitize runs LAST (on claude's raw HTML + the katex/highlight output we
 // trust). Allow className/style/aria-hidden so KaTeX (output:"html") survives;
@@ -49,14 +50,16 @@ export function Markdown({ content, plantumlServer }: { content: string; plantum
       return <CodeBlock code={raw} lang={lang} />;
     },
     a(props: any) {
-      const url: string = props.href ?? "";
-      if (url.toLowerCase().endsWith(".pdf")) return <Pdf url={url} />;
+      const raw: string = props.href ?? "";
+      if (raw.toLowerCase().endsWith(".pdf")) return <Pdf url={raw} />;
+      const safe = safeOpenUrl(raw); // http/https/mailto only
+      if (!safe) return <span className="text-slate-400">{props.children}</span>;
       return (
         <a
-          href={url}
+          href={safe}
           onClick={(e) => {
             e.preventDefault();
-            if (url) void api.openExternal(url);
+            void api.openExternal(safe);
           }}
         >
           {props.children}
