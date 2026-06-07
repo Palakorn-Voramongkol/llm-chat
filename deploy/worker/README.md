@@ -35,7 +35,8 @@ opens a window) — use `--no-default-features` for the clean server build.
 
 - **Node.js + the `claude` CLI** on `PATH`, logged in (the worker shells out to
   `claude`). `~/.claude` holds the auth/session state — the worker uses the real
-  CLI, there is no API key.
+  CLI, there is no API key. For a long-running/headless box, prefer a long-lived
+  login (see **Claude login** below) over the interactive `~/.claude` session.
 - A Rust toolchain to build (or copy a prebuilt binary).
 - Nothing GUI-related for the `--no-default-features` build.
 
@@ -54,11 +55,32 @@ LLM_CHAT_AUTH_TOKEN=<shared-token-the-manager-also-has> \
 | `LLM_CHAT_WS_PORT` | listen port (default 7878) |
 | `LLM_CHAT_AUTH_TOKEN` | shared token for the manager↔worker WS auth |
 | `LLM_CHAT_TRANSPORT` | `stream-json` (default) or `pty` (legacy TUI scrape) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | long-lived Claude login (see below); inherited by the spawned `claude` |
 | `RUST_LOG` | e.g. `info,backend::qa=debug` |
 
 The default **stream-json** transport reads claude's real structured output —
 the worker needs no terminal/TUI and produces clean answers. (`pty` mode exists
 for the legacy desktop TUI and is the only mode that needs the webview.)
+
+## Claude login (avoid silent auth loss)
+
+The worker drives the real `claude` CLI, which needs a valid Claude login. Two
+options:
+
+- **Interactive (`~/.claude`)** — run `claude` once and log in. The short-lived
+  access token auto-refreshes, but the subscription-OAuth session length is
+  undocumented and the refresh can be unreliable on a headless box, so the
+  worker can silently lose auth.
+- **Long-lived token (recommended for servers)** — on a machine with a browser,
+  run `claude setup-token` to mint a **~1-year** OAuth token, then expose it to
+  the worker as `CLAUDE_CODE_OAUTH_TOKEN`. The worker spawns `claude` with its
+  own environment (no `env_clear`), so the child inherits it automatically — no
+  code change. Re-login then becomes roughly annual (or on revoke / lapsed
+  subscription). `ANTHROPIC_API_KEY` also works but bills via the API, not your
+  subscription.
+
+In the compose dev stack, set `CLAUDE_CODE_OAUTH_TOKEN` in `.env` and
+`run-worker.ps1` exports it into the worker's environment for you.
 
 ## Connecting to the manager
 
@@ -80,6 +102,9 @@ ExecStart=/opt/llm-chat/llm-chat-headless
 Environment=LLM_CHAT_WS_BIND=0.0.0.0
 Environment=LLM_CHAT_WS_PORT=7878
 Environment=LLM_CHAT_AUTH_TOKEN=change-me
+# Long-lived Claude login (claude setup-token). Prefer EnvironmentFile with a
+# 0600 file over an inline value so the token isn't world-readable in the unit.
+EnvironmentFile=/etc/llm-chat/worker.env   # contains CLAUDE_CODE_OAUTH_TOKEN=...
 User=llm
 Restart=on-failure
 

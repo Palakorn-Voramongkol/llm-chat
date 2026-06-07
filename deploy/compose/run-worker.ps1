@@ -12,7 +12,8 @@ param(
     [int]$Port = 7878,
     [string]$Bind = "0.0.0.0",
     [string]$EnvFile = (Join-Path $PSScriptRoot "..\..\.env"),
-    [string]$WorkerExe
+    [string]$WorkerExe,
+    [string]$ClaudeToken
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,7 +43,7 @@ function Resolve-WorkerExe([string]$RepoRoot, [string]$Override) {
 }
 
 function Invoke-RunWorker {
-    param([string]$Token, [int]$Port, [string]$Bind, [string]$EnvFile, [string]$WorkerExe)
+    param([string]$Token, [int]$Port, [string]$Bind, [string]$EnvFile, [string]$WorkerExe, [string]$ClaudeToken)
 
     if (-not $Token) { $Token = Read-DotEnvValue -Path $EnvFile -Key "LLM_CHAT_AUTH_TOKEN" }
     if (-not $Token) {
@@ -50,18 +51,29 @@ function Invoke-RunWorker {
               "Copy .env.example to .env and set it (openssl rand -hex 32)."
     }
 
+    # Long-lived Claude Code login (optional). When present, `claude` (spawned by
+    # the worker, which inherits this process's env) uses it instead of the
+    # interactive ~/.claude session — so the worker doesn't silently lose auth.
+    if (-not $ClaudeToken) { $ClaudeToken = Read-DotEnvValue -Path $EnvFile -Key "CLAUDE_CODE_OAUTH_TOKEN" }
+
     $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
     $exe = Resolve-WorkerExe -RepoRoot $repoRoot -Override $WorkerExe
 
     Write-Host "[run-worker] worker  = $exe"
     Write-Host "[run-worker] bind    = ${Bind}:${Port}"
     Write-Host "[run-worker] token   = (len=$($Token.Length))"
+    if ($ClaudeToken) {
+        Write-Host "[run-worker] claude  = CLAUDE_CODE_OAUTH_TOKEN set (len=$($ClaudeToken.Length)) — long-lived login"
+    } else {
+        Write-Host "[run-worker] claude  = using interactive ~/.claude login (set CLAUDE_CODE_OAUTH_TOKEN for a 1-year token)"
+    }
     Write-Host "[run-worker] NOTE: Windows Defender Firewall may prompt for the 0.0.0.0 bind."
     Write-Host "[run-worker]       Approve it (PRIVATE networks only) or the manager cannot reach :$Port."
 
     $env:LLM_CHAT_AUTH_TOKEN = $Token
     $env:LLM_CHAT_WS_PORT     = "$Port"
     $env:LLM_CHAT_WS_BIND     = $Bind
+    if ($ClaudeToken) { $env:CLAUDE_CODE_OAUTH_TOKEN = $ClaudeToken }
 
     # Foreground/blocking by design: holds the session for the GUI worker's
     # lifetime so Ctrl-C stops the worker.
@@ -72,5 +84,5 @@ function Invoke-RunWorker {
 # (`. .\run-worker.ps1`). Dot-sourcing exposes the functions for testing
 # without launching the windowless GUI worker.
 if ($MyInvocation.InvocationName -ne '.') {
-    Invoke-RunWorker -Token $Token -Port $Port -Bind $Bind -EnvFile $EnvFile -WorkerExe $WorkerExe
+    Invoke-RunWorker -Token $Token -Port $Port -Bind $Bind -EnvFile $EnvFile -WorkerExe $WorkerExe -ClaudeToken $ClaudeToken
 }
