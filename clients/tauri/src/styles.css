@@ -51,29 +51,17 @@ body {
 }
 .lumina-prose hr { @apply my-5 border-slate-200 dark:border-slate-800; }
 
-/* ---- LINE-style talk bubbles (tail at the top corner — verified via a
-   headless-Edge screenshot of bubble-preview, light + dark) ---- */
+/* ---- LINE-style talk bubbles — curved SVG tail at the top corner, traced
+   from the user's real LINE screenshot and verified by screenshot diff ---- */
 .lumina-bubble {
   position: relative;
   border-radius: 16px;
 }
-/* sent (you): LINE green, tail at the top-right pointing up-and-out */
 .lumina-bubble-sent {
   background: #06c755;
   color: #fff;
   border-top-right-radius: 4px;
 }
-.lumina-bubble-sent::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  right: -7px;
-  width: 8px;
-  height: 10px;
-  background: #06c755;
-  clip-path: polygon(0 0, 100% 0, 0 100%);
-}
-/* received: white (dark: slate-800), tail at the top-left pointing up-and-out */
 .lumina-bubble-received {
   --bubble-bg: #ffffff;
   background: var(--bubble-bg);
@@ -84,13 +72,20 @@ body {
   --bubble-bg: #1e293b; /* slate-800 */
   box-shadow: none;
 }
-.lumina-bubble-received::after {
-  content: "";
+/* the curved tail (an SVG fin positioned over the top corner) */
+.lumina-tail {
   position: absolute;
-  top: 0;
-  left: -7px;
-  width: 8px;
-  height: 10px;
-  background: var(--bubble-bg);
-  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  top: -2px;
+  width: 20px;
+  height: 17px;
+  pointer-events: none;
+}
+.lumina-tail-sent {
+  right: -11px;
+  fill: #06c755;
+}
+.lumina-tail-recv {
+  left: -11px;
+  transform: scaleX(-1);
+  fill: var(--bubble-bg);
 }

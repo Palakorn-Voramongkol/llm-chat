@@ -61,6 +61,13 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
       <div
         className={`min-w-0 ${widthCls} px-3.5 py-2 ${bubbleCls} ${msg.error ? "ring-1 ring-red-400" : ""}`}
       >
+        <svg
+          className={`lumina-tail ${isUser ? "lumina-tail-sent" : "lumina-tail-recv"}`}
+          viewBox="0 0 20 17"
+          aria-hidden="true"
+        >
+          <path d="M0,17 C0,7 2,2 7,2 C5,6 7,8 19,8 C12,10 10,13 9,17 Z" />
+        </svg>
         {isUser ? (
           <p className="whitespace-pre-wrap break-words">{msg.text}</p>
         ) : msg.pending ? (
