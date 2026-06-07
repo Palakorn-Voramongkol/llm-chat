@@ -147,3 +147,36 @@ def test_create_human_user_409_is_systemexit():
                            lambda *a, **k: _FakeResp(409)):
         with pytest.raises(SystemExit):
             provision.create_human_user("tok", {}, "org-1")
+
+
+# ---------- chat.admin role + admin SA + admin OIDC WEB app (admin-api path) ----------
+
+def test_create_admin_role_posts_chat_admin_rolekey():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"details": {}})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.create_admin_role("tok", {"h": "1"}, "proj-1")
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/management/v1/projects/proj-1/roles")
+    b = captured["body"]
+    assert b["roleKey"] == "chat.admin"
+    assert b["displayName"] == "Chat Admin"
+
+
+def test_create_admin_role_409_is_success_not_systemexit():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        provision.create_admin_role("tok", {}, "p")  # must NOT raise
+
+
+def test_create_admin_role_raises_on_hard_error():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(400)):
+        with pytest.raises(RuntimeError):
+            provision.create_admin_role("tok", {}, "p")

@@ -26,6 +26,7 @@ OUT_ENV_PATH = os.environ.get("OUT_ENV_PATH", "/out/manager.generated.env")
 
 PROJECT_NAME = "llm-chat"
 ROLE_KEY = "chat.user"
+ADMIN_ROLE_KEY = "chat.admin"
 MACHINE_USERNAME = "kabytech"
 
 # Interactive human-login path (OIDC Auth Code + PKCE). The OIDC public app the
@@ -199,6 +200,21 @@ def add_role(token: str, headers: dict, project_id: str) -> None:
         "POST", f"{ISSUER}/management/v1/projects/{project_id}/roles",
         headers=headers,
         json_body={"roleKey": ROLE_KEY, "displayName": "Chat User", "group": ""},
+    )
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
+
+
+def create_admin_role(token: str, headers: dict, project_id: str) -> None:
+    """Create the chat.admin project role the admin-api authorizes operators on
+    (appendix §3.3). Idempotent like add_role: 409 ALREADY_EXISTS == provisioned.
+    Keeping role creation in the one-time provisioner is what lets the runtime
+    admin SA stay least-privilege (no project.role.write needed at runtime)."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/projects/{project_id}/roles",
+        headers=headers,
+        json_body={"roleKey": ADMIN_ROLE_KEY, "displayName": "Chat Admin",
+                   "group": ""},
     )
     if not is_success(resp.status_code):
         resp.raise_for_status()
