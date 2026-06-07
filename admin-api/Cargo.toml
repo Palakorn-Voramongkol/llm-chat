@@ -3,13 +3,20 @@ name = "llm-chat-admin-api"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "llm_chat_admin_api"
+path = "src/lib.rs"
+
 [[bin]]
 name = "llm-chat-admin-api"
 path = "src/main.rs"
 
 [dependencies]
 # Shared workspace deps (root Cargo.toml [workspace.dependencies], Phase A).
-tokio = { workspace = true }
+# Override tokio features: the cached-token RwLock needs `sync`, and the
+# startup TcpListener + axum::serve need `net` (the workspace default only
+# carries rt-multi-thread + macros). Mirrors worker/Cargo.toml.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
