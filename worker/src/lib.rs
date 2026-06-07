@@ -403,7 +403,7 @@ pub(crate) mod pty {
 
         pub fn spawn_reader(
             &self,
-            app_handle: tauri::AppHandle,
+            sink: std::sync::Arc<dyn crate::EventSink>,
             session_id: String,
             ws_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
         ) {
@@ -411,7 +411,6 @@ pub(crate) mod pty {
             let active = self.reader_active.clone();
 
             std::thread::spawn(move || {
-                use tauri::Emitter;
                 let raw_handle = HANDLE(handle_val as *mut std::ffi::c_void);
                 let mut buf = [0u8; 4096];
                 while active.load(Ordering::Relaxed) {
@@ -427,13 +426,13 @@ pub(crate) mod pty {
                     let _ = ws_tx.send(data.clone());
                     use base64::Engine;
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
-                    let _ = app_handle.emit(
+                    sink.emit(
                         "pty-data",
                         serde_json::json!({"sessionId": session_id, "data": encoded}),
                     );
                 }
                 active.store(false, Ordering::Relaxed);
-                let _ = app_handle.emit("pty-closed", &session_id);
+                sink.emit("pty-closed", serde_json::json!(session_id));
                 unsafe {
                     let _ = CloseHandle(HANDLE(handle_val as *mut std::ffi::c_void));
                 }
@@ -567,7 +566,7 @@ pub(crate) mod pty {
 
         pub fn spawn_reader(
             &self,
-            app_handle: tauri::AppHandle,
+            sink: std::sync::Arc<dyn crate::EventSink>,
             session_id: String,
             ws_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
         ) {
@@ -581,7 +580,6 @@ pub(crate) mod pty {
             let active = self.reader_active.clone();
             std::thread::spawn(move || {
                 use std::io::Read as _;
-                use tauri::Emitter;
                 let mut buf = [0u8; 4096];
                 while active.load(Ordering::Relaxed) {
                     match reader.read(&mut buf) {
@@ -591,7 +589,7 @@ pub(crate) mod pty {
                             let _ = ws_tx.send(data.clone());
                             use base64::Engine;
                             let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
-                            let _ = app_handle.emit(
+                            sink.emit(
                                 "pty-data",
                                 serde_json::json!({
                                     "sessionId": session_id,
@@ -603,7 +601,7 @@ pub(crate) mod pty {
                     }
                 }
                 active.store(false, Ordering::Relaxed);
-                let _ = app_handle.emit("pty-closed", &session_id);
+                sink.emit("pty-closed", serde_json::json!(session_id));
             });
         }
     }
@@ -633,7 +631,6 @@ mod json_session {
         // /s/ delivers the question text then a separate "\r" submit frame; we
         // buffer bytes and flush as one JSON user message on the \r.
         buf: Arc<Mutex<Vec<u8>>>,
-        num: Arc<AtomicU32>,
         last_q: Arc<Mutex<String>>,
     }
 
@@ -642,7 +639,7 @@ mod json_session {
             claude_path: &str,
             session_id: String,
             qa_tx: broadcast::Sender<String>,
-            app_handle: tauri::AppHandle,
+            sink: Arc<dyn crate::EventSink>,
         ) -> Result<Self, String> {
             let args = [
                 "-p",
@@ -687,8 +684,8 @@ mod json_session {
                 let num = num.clone();
                 let last_q = last_q.clone();
                 let sid = session_id.clone();
+                let sink = sink.clone();
                 std::thread::spawn(move || {
-                    use tauri::Emitter;
                     let reader = BufReader::new(stdout);
                     for line in reader.lines() {
                         let line = match line {
@@ -725,10 +722,8 @@ mod json_session {
                                 sid = %sid, num = n, len = answer.len(),
                                 "stream-json result → qa"
                             );
-                            let _ = app_handle.emit("qa-detected", &payload);
-                            if let Some(tx) = Some(&qa_tx) {
-                                let _ = tx.send(payload.to_string());
-                            }
+                            sink.emit("qa-detected", payload.clone());
+                            let _ = qa_tx.send(payload.to_string());
                         }
                     }
                     tracing::info!(target: "backend::session", sid = %sid, "stream-json reader ended");
@@ -739,7 +734,6 @@ mod json_session {
                 child: Arc::new(Mutex::new(child)),
                 stdin: Arc::new(Mutex::new(stdin)),
                 buf: Arc::new(Mutex::new(Vec::new())),
-                num,
                 last_q,
             })
         }
@@ -816,6 +810,61 @@ struct AppState {
     session_order: Mutex<Vec<String>>,
     active_session_id: Mutex<Option<String>>,
     terminal_ready: Arc<AtomicBool>,
+}
+
+fn new_app_state() -> AppState {
+    AppState {
+        #[cfg(any(unix, windows))]
+        pty_sessions: Mutex::new(HashMap::new()),
+        json_sessions: Mutex::new(HashMap::new()),
+        pty_broadcasts: Mutex::new(HashMap::new()),
+        qa_broadcasts: Mutex::new(HashMap::new()),
+        qa_history: Mutex::new(HashMap::new()),
+        session_order: Mutex::new(Vec::new()),
+        active_session_id: Mutex::new(None),
+        terminal_ready: Arc::new(AtomicBool::new(false)),
+    }
+}
+
+// ========== Event sink (GUI decoupling) ==========
+// The WebSocket server + session machinery used to call tauri::AppHandle::emit
+// (to feed the in-app webview) and ::state (to reach AppState). That coupled the
+// headless server job to a GUI window. EventSink abstracts "emit an event"; the
+// GUI provides TauriSink, a headless binary provides NoopSink. AppState is now
+// passed explicitly as Arc<AppState>. This lets a CLI-only build run with no
+// WebKitGTK / display server.
+pub trait EventSink: Send + Sync {
+    fn emit(&self, event: &str, payload: serde_json::Value);
+    /// Capture the GUI window to PNG (GUI-only; headless returns an error).
+    fn capture_window_png(&self, _out: &std::path::Path) -> Result<(), String> {
+        Err("window capture is unavailable in headless mode (no GUI window)".into())
+    }
+}
+
+/// No-op sink for headless runs: external clients receive data through the
+/// broadcast channels, not through emit, so dropping emit changes nothing.
+pub struct NoopSink;
+impl EventSink for NoopSink {
+    fn emit(&self, _event: &str, _payload: serde_json::Value) {}
+}
+
+pub struct TauriSink(pub tauri::AppHandle);
+impl EventSink for TauriSink {
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        use tauri::Emitter;
+        let _ = self.0.emit(event, payload);
+    }
+    fn capture_window_png(&self, out: &std::path::Path) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            capture_main_window_to_png(&self.0, out)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = out;
+            Err("window capture is implemented for Windows only".into())
+        }
+    }
 }
 
 // ========== Git Bash Discovery ==========
@@ -1028,9 +1077,8 @@ fn do_spawn_session(
     cols: u16,
     rows: u16,
     state: &AppState,
-    app_handle: &tauri::AppHandle,
+    sink: &Arc<dyn EventSink>,
 ) -> Result<String, String> {
-    use tauri::Emitter;
     {
         let order = state.session_order.lock().unwrap();
         if order.len() >= MAX_SESSIONS {
@@ -1056,12 +1104,12 @@ fn do_spawn_session(
         );
         let (qa_tx, _qa_rx) = broadcast::channel::<String>(256);
         let session = json_session::JsonSession::spawn(
-            &claude_path, session_id.clone(), qa_tx.clone(), app_handle.clone(),
+            &claude_path, session_id.clone(), qa_tx.clone(), sink.clone(),
         )?;
         state.qa_broadcasts.lock().unwrap().insert(session_id.clone(), qa_tx);
         state.session_order.lock().unwrap().push(session_id.clone());
         state.json_sessions.lock().unwrap().insert(session_id.clone(), session);
-        let _ = app_handle.emit("claude-session", serde_json::json!({"sessionId": session_id}));
+        sink.emit("claude-session", serde_json::json!({"sessionId": session_id}));
         return Ok(format!("{claude_path} (stream-json)"));
     }
 
@@ -1094,7 +1142,7 @@ fn do_spawn_session(
         cmd = %cmd,
         "spawning PTY session"
     );
-    let _ = app_handle.emit(
+    sink.emit(
         "new-pty-session",
         serde_json::json!({"sessionId": session_id}),
     );
@@ -1112,13 +1160,13 @@ fn do_spawn_session(
         .unwrap()
         .insert(session_id.clone(), qa_tx);
     state.session_order.lock().unwrap().push(session_id.clone());
-    session.spawn_reader(app_handle.clone(), session_id.clone(), ws_tx);
+    session.spawn_reader(sink.clone(), session_id.clone(), ws_tx);
     state
         .pty_sessions
         .lock()
         .unwrap()
         .insert(session_id.clone(), session);
-    let _ = app_handle.emit(
+    sink.emit(
         "claude-session",
         serde_json::json!({"sessionId": session_id}),
     );
@@ -1130,19 +1178,20 @@ fn spawn_session(
     session_id: String,
     cols: u16,
     rows: u16,
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     #[cfg(any(unix, windows))]
     {
-        return do_spawn_session(session_id, cols, rows, &state, &app_handle);
+        let sink: Arc<dyn EventSink> = Arc::new(TauriSink(app_handle));
+        return do_spawn_session(session_id, cols, rows, &state, &sink);
     }
     #[allow(unreachable_code)]
     Err("Unsupported platform".into())
 }
 
 #[tauri::command]
-fn close_session(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn close_session(session_id: String, state: tauri::State<'_, std::sync::Arc<AppState>>) -> Result<(), String> {
     #[cfg(any(unix, windows))]
     {
         let json_existed = state
@@ -1180,12 +1229,12 @@ fn close_session(session_id: String, state: tauri::State<'_, AppState>) -> Resul
 }
 
 #[tauri::command]
-fn list_sessions(state: tauri::State<'_, AppState>) -> Vec<String> {
+fn list_sessions(state: tauri::State<'_, std::sync::Arc<AppState>>) -> Vec<String> {
     state.session_order.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn set_active_session(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn set_active_session(session_id: String, state: tauri::State<'_, std::sync::Arc<AppState>>) -> Result<(), String> {
     *state.active_session_id.lock().unwrap() = Some(session_id);
     Ok(())
 }
@@ -1422,7 +1471,7 @@ fn broadcast_qa(
     answer: String,
     session_id: Option<String>,
     is_new: Option<bool>,
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     use tauri::Emitter;
@@ -1505,7 +1554,7 @@ fn save_terminal_output(content: String) -> Result<String, String> {
 fn terminal_ready(
     _cols: u16,
     _rows: u16,
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
 ) -> Result<String, String> {
     state.terminal_ready.store(true, Ordering::Relaxed);
     Ok("ready".into())
@@ -1533,7 +1582,7 @@ fn frontend_log(level: String, source: String, message: String, data: Option<Str
 fn pty_write(
     session_id: String,
     data: String,
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
 ) -> Result<(), String> {
     #[cfg(any(unix, windows))]
     {
@@ -1568,7 +1617,7 @@ fn pty_resize(
     session_id: String,
     cols: u16,
     rows: u16,
-    state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, std::sync::Arc<AppState>>,
 ) -> Result<(), String> {
     #[cfg(any(unix, windows))]
     {
@@ -1899,7 +1948,7 @@ fn extract_token_from_request(
 // `Authorization: Bearer <token>` header or `?token=<token>` query string.
 // Browser-style http(s) Origin headers are rejected outright.
 #[cfg(any(unix, windows))]
-fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
+fn start_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16) {
     use futures_util::{SinkExt, StreamExt};
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
@@ -1963,7 +2012,8 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                     continue;
                 }
             };
-            let app_handle = app_handle.clone();
+            let state = state.clone();
+            let sink = sink.clone();
             let auth_token = auth_token.clone();
             tokio::spawn(async move {
                 let path_holder = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -2008,10 +2058,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                     }
                 };
                 let req_path = path_holder.lock().unwrap().clone();
-                let state = {
-                    use tauri::Manager;
-                    app_handle.state::<AppState>()
-                };
+                // `state` (Arc<AppState>) is the captured connection state.
 
                 let (mut ws_sink, mut ws_stream) = ws.split();
 
@@ -2024,7 +2071,8 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                 // command per line: {"cmd":"open"} | {"cmd":"close","sessionId":"..."} |
                 // {"cmd":"list"}. Server replies with one JSON line per command.
                 if req_path == "/control" {
-                    let app_handle_ctrl = app_handle.clone();
+                    let state_ctrl = state.clone();
+                    let sink_ctrl = sink.clone();
                     let hello = serde_json::json!({"ok": true, "hello": "control"});
                     append_control_log("hello", &hello);
                     let _ = ws_sink.send(Message::Text(hello.to_string())).await;
@@ -2044,7 +2092,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 #[cfg(windows)]
                                 {
                                     let out = screenshot_path(port);
-                                    match capture_main_window_to_png(&app_handle_ctrl, &out) {
+                                    match sink_ctrl.capture_window_png(&out) {
                                         Ok(()) => serde_json::json!({
                                             "ok": true,
                                             "path": out.to_string_lossy(),
@@ -2059,8 +2107,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 }
                             }
                             "list" => {
-                                use tauri::Manager;
-                                let st = app_handle_ctrl.state::<AppState>();
+                                let st = &*state_ctrl;
                                 let order = st.session_order.lock().unwrap().clone();
                                 let active = st.active_session_id.lock().unwrap().clone();
                                 serde_json::json!({
@@ -2071,8 +2118,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 })
                             }
                             "info" => {
-                                use tauri::Manager;
-                                let st = app_handle_ctrl.state::<AppState>();
+                                let st = &*state_ctrl;
                                 let order = st.session_order.lock().unwrap().clone();
                                 let active = st.active_session_id.lock().unwrap().clone();
                                 let active_index = active
@@ -2089,8 +2135,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 })
                             }
                             "current" => {
-                                use tauri::Manager;
-                                let st = app_handle_ctrl.state::<AppState>();
+                                let st = &*state_ctrl;
                                 let active = st.active_session_id.lock().unwrap().clone();
                                 let order = st.session_order.lock().unwrap().clone();
                                 let active_index = active
@@ -2115,8 +2160,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("all")
                                     .to_string();
-                                use tauri::Manager;
-                                let st = app_handle_ctrl.state::<AppState>();
+                                let st = &*state_ctrl;
                                 let order = st.session_order.lock().unwrap().clone();
                                 let resolved = if let Ok(idx) = raw_sid.parse::<usize>() {
                                     if idx >= 1 && idx <= order.len() {
@@ -2133,15 +2177,13 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     Some(sid) => {
                                         if what == "stream" || what == "all" {
                                             st.qa_history.lock().unwrap().remove(&sid);
-                                            use tauri::Emitter;
-                                            let _ = app_handle_ctrl.emit(
+                                            let _ = sink_ctrl.emit(
                                                 "external-clear-stream",
                                                 serde_json::json!({"sessionId": sid}),
                                             );
                                         }
                                         if what == "terminal" || what == "all" {
-                                            use tauri::Emitter;
-                                            let _ = app_handle_ctrl.emit(
+                                            let _ = sink_ctrl.emit(
                                                 "external-clear-terminal",
                                                 serde_json::json!({"sessionId": sid}),
                                             );
@@ -2152,8 +2194,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 }
                             }
                             "history" => {
-                                use tauri::Manager;
-                                let st = app_handle_ctrl.state::<AppState>();
+                                let st = &*state_ctrl;
                                 let order = st.session_order.lock().unwrap().clone();
                                 let hist = st.qa_history.lock().unwrap().clone();
                                 let target = req.get("sessionId").and_then(|v| v.as_str());
@@ -2194,15 +2235,15 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 }
                             }
                             "open" => {
-                                use tauri::Manager;
-                                // Wait for the webview JS to register its
-                                // event listeners (signalled by the
-                                // terminal_ready command). Without this we'd
-                                // emit "external-session-added" into the void
-                                // and the GUI parser would never start for
-                                // this session.
-                                {
-                                    let st = app_handle_ctrl.state::<AppState>();
+                                // Only the legacy PTY/TUI transport needs the
+                                // webview: wait for its JS to register event
+                                // listeners (the terminal_ready command) before
+                                // spawning. The default stream-json transport is
+                                // pure Rust (no webview), and headless has no
+                                // webview at all — so skip the wait there, or it
+                                // would stall ~10s and time the manager out.
+                                if std::env::var("LLM_CHAT_TRANSPORT").as_deref() == Ok("pty") {
+                                    let st = &*state_ctrl;
                                     let mut waits = 0;
                                     while !st
                                         .terminal_ready
@@ -2216,7 +2257,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                         }
                                     }
                                 }
-                                let st_handle = app_handle_ctrl.state::<AppState>();
+                                let st_handle = &*state_ctrl;
                                 let id = format!(
                                     "s{}",
                                     std::time::SystemTime::now()
@@ -2228,13 +2269,12 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     id.clone(),
                                     120,
                                     30,
-                                    &*st_handle,
-                                    &app_handle_ctrl,
+                                    st_handle,
+                                    &sink_ctrl,
                                 );
                                 match res {
                                     Ok(_) => {
-                                        use tauri::Emitter;
-                                        let _ = app_handle_ctrl.emit(
+                                        let _ = sink_ctrl.emit(
                                             "external-session-added",
                                             serde_json::json!({"sessionId": id}),
                                         );
@@ -2249,8 +2289,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                use tauri::Manager;
-                                let st = app_handle_ctrl.state::<AppState>();
+                                let st = &*state_ctrl;
                                 if let Some(js) = st.json_sessions.lock().unwrap().remove(&sid) {
                                     js.close();
                                 }
@@ -2263,8 +2302,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                 st.qa_history.lock().unwrap().remove(&sid);
                                 st.session_order.lock().unwrap().retain(|x| x != &sid);
                                 cleanup_attachments(&sid);
-                                use tauri::Emitter;
-                                let _ = app_handle_ctrl.emit(
+                                let _ = sink_ctrl.emit(
                                     "external-session-closed",
                                     serde_json::json!({"sessionId": sid}),
                                 );
@@ -2276,14 +2314,12 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                use tauri::Manager;
-                                let st = app_handle_ctrl.state::<AppState>();
+                                let st = &*state_ctrl;
                                 let exists = st.session_order.lock().unwrap().contains(&sid);
                                 if !exists {
                                     serde_json::json!({"ok":false,"error":format!("no session: {}", sid)})
                                 } else {
-                                    use tauri::Emitter;
-                                    let _ = app_handle_ctrl.emit(
+                                    let _ = sink_ctrl.emit(
                                         "external-switch-session",
                                         serde_json::json!({"sessionId": sid}),
                                     );
@@ -2502,7 +2538,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                 });
 
                 // WS -> PTY
-                let app_handle_inner = app_handle.clone();
+                let state_inner = state.clone();
                 let session_for_write = session_id.clone();
                 while let Some(msg) = ws_stream.next().await {
                     let msg = match msg {
@@ -2532,8 +2568,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                     // Scope the std::sync::Mutex guard so it's dropped before
                     // the next iteration's `.await` (not Send across await).
                     let outcome: &str = {
-                        use tauri::Manager;
-                        let st = app_handle_inner.state::<AppState>();
+                        let st = &*state_inner;
                         // stream-json session takes priority; fall back to PTY.
                         let json_outcome = st
                             .json_sessions
@@ -2605,6 +2640,64 @@ fn init_backend_tracing() {
     };
 }
 
+/// Environment hints inherited by the spawned `claude` child processes. Shared
+/// by the GUI and headless entry points.
+fn apply_child_env() {
+    // Claude Code v2.1+ on Windows refuses to start without bash.exe. If Git for
+    // Windows is installed but bash isn't on PATH, set the var so children inherit it.
+    if std::env::var("CLAUDE_CODE_GIT_BASH_PATH").is_err() {
+        if let Some(bash) = find_git_bash_path() {
+            std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", &bash);
+        }
+    }
+    // Color/locale hints so the (legacy) PTY/TUI transport renders claude's rich
+    // UI; harmless for the default stream-json transport.
+    if std::env::var("FORCE_COLOR").is_err() {
+        std::env::set_var("FORCE_COLOR", "3");
+    }
+    if std::env::var("COLORFGBG").is_err() {
+        std::env::set_var("COLORFGBG", "15;0");
+    }
+    if std::env::var("COLORTERM").is_err() {
+        std::env::set_var("COLORTERM", "truecolor");
+    }
+    if std::env::var("TERM").is_err() {
+        std::env::set_var("TERM", "xterm-256color");
+    }
+    if std::env::var("LANG").is_err() {
+        std::env::set_var("LANG", "en_US.UTF-8");
+    }
+    if std::env::var("LC_ALL").is_err() {
+        std::env::set_var("LC_ALL", "en_US.UTF-8");
+    }
+}
+
+/// Headless entry: WebSocket relay + stream-json Claude sessions with NO Tauri
+/// window — no display server required. Blocks forever (the WS server runs on
+/// the async runtime). Used by the `llm-chat-headless` binary for CLI-only Linux.
+#[cfg(any(unix, windows))]
+pub fn run_headless() {
+    init_backend_tracing();
+    apply_child_env();
+    let port: u16 = std::env::var("LLM_CHAT_WS_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(7878);
+    tracing::info!(
+        target: "backend",
+        port,
+        managed = std::env::var("LLM_CHAT_AUTH_TOKEN").is_ok(),
+        "backend starting (headless — no window)"
+    );
+    let state = std::sync::Arc::new(new_app_state());
+    let sink: std::sync::Arc<dyn EventSink> = std::sync::Arc::new(NoopSink);
+    start_ws_server(state, sink, port);
+    // start_ws_server spawns its work on the async runtime; keep the process alive.
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     init_backend_tracing();
@@ -2618,50 +2711,9 @@ pub fn run() {
         managed = std::env::var("LLM_CHAT_AUTH_TOKEN").is_ok(),
         "backend starting"
     );
-    // Claude Code v2.1+ on Windows refuses to start without bash.exe. If the
-    // user has Git for Windows installed but bash isn't on PATH and the env
-    // var isn't set, set it now so child processes inherit it.
-    if std::env::var("CLAUDE_CODE_GIT_BASH_PATH").is_err() {
-        if let Some(bash) = find_git_bash_path() {
-            std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", &bash);
-        }
-    }
-    // Hint full-color, dark-theme terminal so claude renders its rich TUI
-    // (orange box, mascot, etc.) instead of the degraded plain mode it falls
-    // back to when capabilities look weak. `npm run tauri dev` sets these via
-    // npm; bare `cargo build` + manager spawn doesn't, so set them ourselves.
-    if std::env::var("FORCE_COLOR").is_err() {
-        std::env::set_var("FORCE_COLOR", "3");
-    }
-    if std::env::var("COLORFGBG").is_err() {
-        std::env::set_var("COLORFGBG", "15;0");
-    }
-    if std::env::var("COLORTERM").is_err() {
-        std::env::set_var("COLORTERM", "truecolor");
-    }
-    if std::env::var("TERM").is_err() {
-        std::env::set_var("TERM", "xterm-256color");
-    }
-    // UTF-8 locale so claude/Ink uses Unicode box drawing instead of the
-    // ASCII fallback (`|` pipes, blocky mascot) we get in clean-env spawns.
-    if std::env::var("LANG").is_err() {
-        std::env::set_var("LANG", "en_US.UTF-8");
-    }
-    if std::env::var("LC_ALL").is_err() {
-        std::env::set_var("LC_ALL", "en_US.UTF-8");
-    }
+    apply_child_env();
     tauri::Builder::default()
-        .manage(AppState {
-            #[cfg(any(unix, windows))]
-            pty_sessions: Mutex::new(HashMap::new()),
-            json_sessions: Mutex::new(HashMap::new()),
-            pty_broadcasts: Mutex::new(HashMap::new()),
-            qa_broadcasts: Mutex::new(HashMap::new()),
-            qa_history: Mutex::new(HashMap::new()),
-            session_order: Mutex::new(Vec::new()),
-            active_session_id: Mutex::new(None),
-            terminal_ready: Arc::new(AtomicBool::new(false)),
-        })
+        .manage(std::sync::Arc::new(new_app_state()))
         .invoke_handler(tauri::generate_handler![
             terminal_ready,
             pty_write,
@@ -2681,11 +2733,16 @@ pub fn run() {
         .setup(|app| {
             #[cfg(any(unix, windows))]
             {
+                use tauri::Manager;
                 let port: u16 = std::env::var("LLM_CHAT_WS_PORT")
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(7878);
-                start_ws_server(app.handle().clone(), port);
+                let st: std::sync::Arc<AppState> =
+                    app.state::<std::sync::Arc<AppState>>().inner().clone();
+                let sink: std::sync::Arc<dyn EventSink> =
+                    std::sync::Arc::new(TauriSink(app.handle().clone()));
+                start_ws_server(st, sink, port);
             }
             // Stealth mode: hide the main window at startup. The Rust process
             // and WS server keep running normally; just no visible UI / no

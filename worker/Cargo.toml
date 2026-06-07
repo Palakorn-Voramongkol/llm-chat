@@ -9,6 +9,14 @@ edition = "2021"
 name = "llm_chat_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Default GUI binary (Tauri window) — src/main.rs (implicit).
+# Headless server binary: WebSocket relay + stream-json Claude sessions with NO
+# window created, so it runs without a display server (X11/Wayland). On Linux it
+# still links libwebkit2gtk (a package install), but never opens a window.
+[[bin]]
+name = "llm-chat-headless"
+path = "src/bin/headless.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
