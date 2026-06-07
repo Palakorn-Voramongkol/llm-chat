@@ -615,6 +615,187 @@ pub(crate) mod pty {
     }
 }
 
+// ========== Claude stream-json session (source-of-truth transport) ==========
+// Drives `claude` over RAW PIPES in stream-json mode instead of a PTY, so we
+// read claude's ACTUAL answer text (real newlines, real markdown) from its
+// `result` events — no terminal scraping, no width/chrome/table heuristics.
+// A PTY would line-wrap and corrupt the JSON, hence plain pipes.
+mod json_session {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Child, ChildStdin, Command, Stdio};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::broadcast;
+
+    pub struct JsonSession {
+        child: Arc<Mutex<Child>>,
+        stdin: Arc<Mutex<ChildStdin>>,
+        // /s/ delivers the question text then a separate "\r" submit frame; we
+        // buffer bytes and flush as one JSON user message on the \r.
+        buf: Arc<Mutex<Vec<u8>>>,
+        num: Arc<AtomicU32>,
+        last_q: Arc<Mutex<String>>,
+    }
+
+    impl JsonSession {
+        pub fn spawn(
+            claude_path: &str,
+            session_id: String,
+            qa_tx: broadcast::Sender<String>,
+            app_handle: tauri::AppHandle,
+        ) -> Result<Self, String> {
+            let args = [
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--dangerously-skip-permissions",
+            ];
+            // claude.cmd/.bat need a shell; claude.exe / unix bins run directly.
+            let lower = claude_path.to_ascii_lowercase();
+            let mut cmd = if cfg!(windows) && (lower.ends_with(".cmd") || lower.ends_with(".bat")) {
+                let mut c = Command::new("cmd.exe");
+                c.arg("/c").arg(claude_path).args(args);
+                c
+            } else {
+                let mut c = Command::new(claude_path);
+                c.args(args);
+                c
+            };
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            let mut child = cmd.spawn().map_err(|e| format!("spawn claude (json): {e}"))?;
+            let stdin = child.stdin.take().ok_or("no child stdin")?;
+            let stdout = child.stdout.take().ok_or("no child stdout")?;
+
+            let num = Arc::new(AtomicU32::new(0));
+            let last_q = Arc::new(Mutex::new(String::new()));
+
+            // Reader: parse stdout JSONL; on a successful `result` event, push
+            // claude's exact answer text into the qa channel (same shape the
+            // frontend parser used, so the manager/client path is unchanged).
+            {
+                let qa_tx = qa_tx.clone();
+                let num = num.clone();
+                let last_q = last_q.clone();
+                let sid = session_id.clone();
+                std::thread::spawn(move || {
+                    use tauri::Emitter;
+                    let reader = BufReader::new(stdout);
+                    for line in reader.lines() {
+                        let line = match line {
+                            Ok(l) => l,
+                            Err(_) => break,
+                        };
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let v: serde_json::Value = match serde_json::from_str(&line) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        let is_result = v.get("type").and_then(|x| x.as_str()) == Some("result");
+                        let ok = v.get("subtype").and_then(|x| x.as_str()) == Some("success")
+                            || v.get("is_error").and_then(|x| x.as_bool()) == Some(false);
+                        if is_result && ok {
+                            let answer = v
+                                .get("result")
+                                .and_then(|x| x.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let n = num.fetch_add(1, Ordering::SeqCst) + 1;
+                            let q = last_q.lock().unwrap().clone();
+                            let payload = serde_json::json!({
+                                "num": n,
+                                "question": q,
+                                "answer": answer,
+                                "sessionId": sid,
+                                "isNew": true,
+                            });
+                            tracing::info!(
+                                target: "backend::qa",
+                                sid = %sid, num = n, len = answer.len(),
+                                "stream-json result → qa"
+                            );
+                            let _ = app_handle.emit("qa-detected", &payload);
+                            if let Some(tx) = Some(&qa_tx) {
+                                let _ = tx.send(payload.to_string());
+                            }
+                        }
+                    }
+                    tracing::info!(target: "backend::session", sid = %sid, "stream-json reader ended");
+                });
+            }
+
+            Ok(JsonSession {
+                child: Arc::new(Mutex::new(child)),
+                stdin: Arc::new(Mutex::new(stdin)),
+                buf: Arc::new(Mutex::new(Vec::new())),
+                num,
+                last_q,
+            })
+        }
+
+        /// Accept raw /s/ bytes; buffer until the manager's \r submit, then send
+        /// the buffered text as one stream-json user message. (\n inside the
+        /// question is kept — only \r submits, matching the manager's framing.)
+        pub fn write(&self, bytes: &[u8]) -> Result<(), String> {
+            let mut to_submit: Option<String> = None;
+            {
+                let mut buf = self.buf.lock().unwrap();
+                for &b in bytes {
+                    if b == b'\r' {
+                        if !buf.is_empty() {
+                            to_submit = Some(String::from_utf8_lossy(&buf).to_string());
+                            buf.clear();
+                        }
+                    } else {
+                        buf.push(b);
+                    }
+                }
+            }
+            if let Some(text) = to_submit {
+                self.submit(&text)?;
+            }
+            Ok(())
+        }
+
+        fn submit(&self, text: &str) -> Result<(), String> {
+            *self.last_q.lock().unwrap() = text.to_string();
+            let msg = serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": text}]}
+            });
+            let mut line = msg.to_string();
+            line.push('\n');
+            let mut stdin = self.stdin.lock().unwrap();
+            stdin
+                .write_all(line.as_bytes())
+                .map_err(|e| format!("write claude stdin: {e}"))?;
+            stdin.flush().map_err(|e| format!("flush claude stdin: {e}"))?;
+            Ok(())
+        }
+
+        pub fn close(&self) {
+            let _ = self.child.lock().unwrap().kill();
+        }
+    }
+
+    impl Drop for JsonSession {
+        fn drop(&mut self) {
+            self.close();
+        }
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 struct QaItem {
     num: u32,
@@ -626,6 +807,9 @@ struct QaItem {
 struct AppState {
     #[cfg(any(unix, windows))]
     pty_sessions: Mutex<HashMap<String, pty::PtySession>>,
+    // Stream-json sessions (source-of-truth transport). A session is in EITHER
+    // this map (managed/chat, default) or pty_sessions (standalone GUI / pty mode).
+    json_sessions: Mutex<HashMap<String, json_session::JsonSession>>,
     pty_broadcasts: Mutex<HashMap<String, broadcast::Sender<Vec<u8>>>>,
     qa_broadcasts: Mutex<HashMap<String, broadcast::Sender<String>>>,
     qa_history: Mutex<HashMap<String, Vec<QaItem>>>,
@@ -856,7 +1040,33 @@ fn do_spawn_session(
             ));
         }
     }
-    let claude_path = find_claude_path().unwrap_or_else(|| {
+    let claude_path = find_claude_path();
+    // Default transport is stream-json (read claude's real answer text). Set
+    // LLM_CHAT_TRANSPORT=pty for the legacy PTY/TUI path (standalone GUI).
+    let transport = std::env::var("LLM_CHAT_TRANSPORT").unwrap_or_else(|_| "stream-json".into());
+
+    if transport != "pty" {
+        let claude_path = claude_path.ok_or_else(|| {
+            "claude CLI not found on PATH (set LLM_CHAT_TRANSPORT=pty for the TUI path)".to_string()
+        })?;
+        tracing::info!(
+            target: "backend::session",
+            sid = %session_id, transport = "stream-json", claude = %claude_path,
+            "spawning stream-json session"
+        );
+        let (qa_tx, _qa_rx) = broadcast::channel::<String>(256);
+        let session = json_session::JsonSession::spawn(
+            &claude_path, session_id.clone(), qa_tx.clone(), app_handle.clone(),
+        )?;
+        state.qa_broadcasts.lock().unwrap().insert(session_id.clone(), qa_tx);
+        state.session_order.lock().unwrap().push(session_id.clone());
+        state.json_sessions.lock().unwrap().insert(session_id.clone(), session);
+        let _ = app_handle.emit("claude-session", serde_json::json!({"sessionId": session_id}));
+        return Ok(format!("{claude_path} (stream-json)"));
+    }
+
+    // ---- legacy PTY/TUI transport ----
+    let claude_path = claude_path.unwrap_or_else(|| {
         tracing::warn!(target: "backend::pty", "claude CLI not found on PATH");
         #[cfg(windows)]
         { "echo Claude CLI not found in PATH, APPDATA\\npm, or %LOCALAPPDATA%\\AnthropicClaude && pause".into() }
@@ -935,13 +1145,21 @@ fn spawn_session(
 fn close_session(session_id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
     #[cfg(any(unix, windows))]
     {
+        let json_existed = state
+            .json_sessions
+            .lock()
+            .unwrap()
+            .remove(&session_id)
+            .map(|s| s.close())
+            .is_some();
         let existed = state
             .pty_sessions
             .lock()
             .unwrap()
             .remove(&session_id)
             .map(|mut s| s.close())
-            .is_some();
+            .is_some()
+            || json_existed;
         state.pty_broadcasts.lock().unwrap().remove(&session_id);
         state.qa_broadcasts.lock().unwrap().remove(&session_id);
         state.qa_history.lock().unwrap().remove(&session_id);
@@ -2033,6 +2251,9 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                                     .to_string();
                                 use tauri::Manager;
                                 let st = app_handle_ctrl.state::<AppState>();
+                                if let Some(js) = st.json_sessions.lock().unwrap().remove(&sid) {
+                                    js.close();
+                                }
                                 if let Some(mut sess) = st.pty_sessions.lock().unwrap().remove(&sid)
                                 {
                                     sess.close();
@@ -2233,22 +2454,23 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                     }
                 };
 
-                // Subscribe to broadcast for this session.
+                // A session lives in pty_broadcasts (PTY) OR json_sessions
+                // (stream-json). PTY sessions stream their console bytes back
+                // over this socket; stream-json sessions don't (answers go via
+                // /qa/), so the PTY->WS forward is set up only when present.
                 let bcast_opt: Option<broadcast::Sender<Vec<u8>>> = state
                     .pty_broadcasts
                     .lock()
                     .unwrap()
                     .get(&session_id)
                     .cloned();
-                let mut rx = match bcast_opt {
-                    Some(tx) => tx.subscribe(),
-                    None => {
-                        let _ = ws_sink
-                            .send(Message::Text(format!("no session: {}", session_id)))
-                            .await;
-                        return;
-                    }
-                };
+                let is_json = state.json_sessions.lock().unwrap().contains_key(&session_id);
+                if bcast_opt.is_none() && !is_json {
+                    let _ = ws_sink
+                        .send(Message::Text(format!("no session: {}", session_id)))
+                        .await;
+                    return;
+                }
 
                 let _ = ws_sink
                     .send(Message::Text(format!(
@@ -2259,21 +2481,24 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
 
                 let ws_sink = std::sync::Arc::new(tokio::sync::Mutex::new(ws_sink));
 
-                // PTY -> WS
+                // PTY -> WS (only for PTY sessions).
                 let sink_for_forward = ws_sink.clone();
-                let forward = tokio::spawn(async move {
-                    loop {
-                        match rx.recv().await {
-                            Ok(bytes) => {
-                                let mut s = sink_for_forward.lock().await;
-                                if s.send(Message::Binary(bytes)).await.is_err() {
-                                    break;
+                let forward = bcast_opt.map(|tx| {
+                    let mut rx = tx.subscribe();
+                    tokio::spawn(async move {
+                        loop {
+                            match rx.recv().await {
+                                Ok(bytes) => {
+                                    let mut s = sink_for_forward.lock().await;
+                                    if s.send(Message::Binary(bytes)).await.is_err() {
+                                        break;
+                                    }
                                 }
+                                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                                Err(broadcast::error::RecvError::Closed) => break,
                             }
-                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                            Err(broadcast::error::RecvError::Closed) => break,
                         }
-                    }
+                    })
                 });
 
                 // WS -> PTY
@@ -2309,13 +2534,28 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                     let outcome: &str = {
                         use tauri::Manager;
                         let st = app_handle_inner.state::<AppState>();
-                        let map = st.pty_sessions.lock().unwrap();
-                        match map.get(&session_for_write) {
-                            Some(sess) => match sess.write(&bytes) {
+                        // stream-json session takes priority; fall back to PTY.
+                        let json_outcome = st
+                            .json_sessions
+                            .lock()
+                            .unwrap()
+                            .get(&session_for_write)
+                            .map(|js| match js.write(&bytes) {
                                 Ok(()) => "ok",
                                 Err(_) => "write_error",
-                            },
-                            None => "session_missing",
+                            });
+                        match json_outcome {
+                            Some(o) => o,
+                            None => {
+                                let map = st.pty_sessions.lock().unwrap();
+                                match map.get(&session_for_write) {
+                                    Some(sess) => match sess.write(&bytes) {
+                                        Ok(()) => "ok",
+                                        Err(_) => "write_error",
+                                    },
+                                    None => "session_missing",
+                                }
+                            }
                         }
                     };
                     let write_ok = outcome == "ok";
@@ -2330,7 +2570,9 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
                         pty_input_mark(seq, write_ok).await;
                     }
                 }
-                forward.abort();
+                if let Some(f) = forward {
+                    f.abort();
+                }
             });
         }
     });
@@ -2412,6 +2654,7 @@ pub fn run() {
         .manage(AppState {
             #[cfg(any(unix, windows))]
             pty_sessions: Mutex::new(HashMap::new()),
+            json_sessions: Mutex::new(HashMap::new()),
             pty_broadcasts: Mutex::new(HashMap::new()),
             qa_broadcasts: Mutex::new(HashMap::new()),
             qa_history: Mutex::new(HashMap::new()),
