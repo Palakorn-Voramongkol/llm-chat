@@ -3,3 +3,5 @@
 pyjwt[crypto]>=2.8
 requests>=2.31
 websockets>=12
+keyring>=24
+platformdirs>=4

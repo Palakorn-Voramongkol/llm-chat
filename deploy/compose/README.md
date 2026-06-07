@@ -39,7 +39,7 @@ docker compose up -d
 #    Wait until `docker compose ps` shows zitadel healthy + zitadel-init Exited(0),
 #    and .\secrets\kabytech-key.json + .\secrets\project_id exist.
 
-# 5. Round-trip with the Python client.
+# 5a. Machine round-trip (kabytech service account, no human).
 python clients/python/llm_chat_client.py `
   --issuer  http://host.docker.internal:8080 `
   --project (Get-Content -Raw .\secrets\project_id).Trim() `
@@ -47,7 +47,19 @@ python clients/python/llm_chat_client.py `
   --manager ws://127.0.0.1:7777/chat `
   --send "hello"
 #    Expect an 'a' frame and exit code 0.
+
+# 5b. Human, interactive (browser login as the demo user).
+cd clients\python; pip install .        # one-time: gives the `llm-chat` command
+llm-chat login                          # browser opens; sign in with:
+Get-Content ..\..\secrets\demo_user, ..\..\secrets\demo_password
+llm-chat whoami                         # shows demo@llm-chat.local + chat.user
+llm-chat chat                           # interactive REPL on the human identity
 ```
+
+The provisioner registers an OIDC app (`secrets/oidc_client_id`) and a demo
+human user (`secrets/demo_user` / `secrets/demo_password`) with the `chat.user`
+role. The machine (kabytech) and human paths hit the same manager check
+(JWKS-validated JWT + `chat.user`); only the principal differs.
 
 ### Clean reset
 Wipe Zitadel state AND host secrets together, or the stale kabytech key won't
