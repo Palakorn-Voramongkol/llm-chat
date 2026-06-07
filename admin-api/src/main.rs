@@ -6,6 +6,8 @@
 // guard + router + serve). For now it is a compiling placeholder so the crate
 // is a real workspace member and `cargo test -p llm-chat-admin-api` runs.
 
+mod config;
+
 fn main() {
     eprintln!("llm-chat-admin-api: not yet wired (see Task 13)");
 }
