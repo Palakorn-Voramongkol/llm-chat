@@ -511,6 +511,31 @@ fn backend_host() -> String {
         .expect("validated at startup")
 }
 
+/// Pure: parse a comma-separated MANAGER_BACKEND_PORTS list. Returns Some(ports)
+/// when at least one token parses to a u16; None when unset/empty/all-unparseable.
+/// PRESENCE is the mode toggle (unchanged semantics): None == "spawn local
+/// workers" (today's behavior); Some == external-backend mode. This is NOT an
+/// address value, so it is intentionally NOT made required.
+fn parse_backend_ports(raw: Option<String>) -> Option<Vec<u16>> {
+    let raw = raw?;
+    let ports: Vec<u16> = raw
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<u16>().ok())
+        .collect();
+    if ports.is_empty() {
+        None
+    } else {
+        Some(ports)
+    }
+}
+
+/// Thin wrapper (not unit-tested): read MANAGER_BACKEND_PORTS.
+fn external_backend_ports() -> Option<Vec<u16>> {
+    parse_backend_ports(std::env::var("MANAGER_BACKEND_PORTS").ok())
+}
+
 fn auth_token_path() -> std::path::PathBuf {
     // Prefer %LOCALAPPDATA%\com.llm-chat.app\ on Windows — per-user, not swept
     // by temp cleaners. On unix, the XDG equivalent is $XDG_DATA_HOME (or
@@ -748,12 +773,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some("1") | Some("true")
     );
 
-    let mut ports = Vec::new();
-    for i in 0..n_instances {
-        let port = start_port + i as u16;
-        spawn_instance(&exe_path, port, &auth_token, &backend_host, stealth)?;
-        ports.push(port);
-    }
+    let ports: Vec<u16> = match external_backend_ports() {
+        Some(external) => {
+            tracing::info!(
+                target: "manager",
+                backend_host = %backend_host,
+                ports = ?external,
+                "external backend mode — waiting for pre-started worker(s), not spawning"
+            );
+            external
+        }
+        None => {
+            let mut spawned = Vec::new();
+            for i in 0..n_instances {
+                let port = start_port + i as u16;
+                spawn_instance(&exe_path, port, &auth_token, &backend_host, stealth)?;
+                spawned.push(port);
+            }
+            spawned
+        }
+    };
 
     tracing::info!(target: "manager", count = ports.len(), "waiting for backends");
     for &p in &ports {
@@ -2121,5 +2160,33 @@ mod tests {
     fn require_addr_bind_honors_all_interfaces() {
         assert_eq!(require_addr("MANAGER_BIND", Some("0.0.0.0".to_string())).unwrap(),
                    "0.0.0.0");
+    }
+
+    #[test]
+    fn parse_ports_none_is_none() {
+        assert_eq!(parse_backend_ports(None), None);
+    }
+    #[test]
+    fn parse_ports_empty_is_none() {
+        assert_eq!(parse_backend_ports(Some(String::new())), None);
+        assert_eq!(parse_backend_ports(Some("   ".to_string())), None);
+    }
+    #[test]
+    fn parse_ports_single() {
+        assert_eq!(parse_backend_ports(Some("7878".to_string())), Some(vec![7878]));
+    }
+    #[test]
+    fn parse_ports_multi() {
+        assert_eq!(parse_backend_ports(Some("7878,7879".to_string())),
+                   Some(vec![7878, 7879]));
+    }
+    #[test]
+    fn parse_ports_skips_blank_and_bad_keeps_good() {
+        assert_eq!(parse_backend_ports(Some(" 7878 , bad , 7879 ".to_string())),
+                   Some(vec![7878, 7879]));
+    }
+    #[test]
+    fn parse_ports_all_bad_is_none() {
+        assert_eq!(parse_backend_ports(Some("bad,nope".to_string())), None);
     }
 }
