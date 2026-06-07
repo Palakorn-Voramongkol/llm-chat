@@ -170,9 +170,12 @@ ACL is tightened to the current user (`icacls` on Windows, `chmod 0600` on unix)
 3. **Initialized.** Manager → client: `{type:initialized, sid, backendPort, connectionId}`.
 4. **Bridge.** Manager opens two loopback WS to the owning backend:
    `/s/<sid>` (PTY input) and `/qa/<sid>` (parsed answers).
-5. **Warm up.** Sleeps `MANAGER_CHAT_WARMUP_SECS` (default 8 s) — `claude`
-   needs ~5–8 s to reach its prompt *and* the JS parser must hook `onData`
-   before traffic starts.
+5. **Warm up.** Sleeps `MANAGER_CHAT_WARMUP_SECS`. The backend reports its
+   transport in the `{cmd:open}` reply, so the manager picks the default: **0
+   for stream-json** (claude reads stdin from the start — no warmup needed) and
+   **8 s for the legacy PTY transport** (where `claude` needs ~5–8 s to reach
+   its prompt *and* the JS parser must hook `onData` before traffic starts). An
+   explicit env value overrides both.
 6. **Ask.** Client → `{type:q, id, text, attachments?}`.
    - Attachments are first saved via the backend's `save_attachment`; their
      on-disk paths are rewritten into `Read the file at <path>.` instructions
@@ -186,10 +189,14 @@ ACL is tightened to the current user (`icacls` on Windows, `chmod 0600` on unix)
 7. **Answer.** The backend feeds the PTY → `claude` answers → xterm renders →
    `claude_cli_parser.js` parses it → `broadcast_qa` fans out
    `{num, answer}` on `/qa/<sid>`.
-8. **Pair & deliver.** Manager debounces each answer 3 s (to capture the
-   *final* text), pops the **oldest `sent` row** for this connection (FIFO),
+8. **Pair & deliver.** Each `/qa` event carries `final`. stream-json sends one
+   complete `result` per question (`final:true`) → the manager delivers it
+   **immediately**; the legacy PTY path streams partial repaints → the manager
+   debounces `MANAGER_CHAT_SETTLE_MS` (default 3 s) to capture the *final* text.
+   Either way it pops the **oldest `sent` row** for this connection (FIFO),
    marks it `answered`, and sends
-   `{type:a, id, seq, text, timeIn, timeOut}` to the client.
+   `{type:a, id, seq, text, timeIn, timeOut, latencyMs}` to the client
+   (`latencyMs` = question-received → answer-forwarded).
 9. **Confirm.** Client → `{type:confirm, seq}` → manager marks the row
    `confirmed` (audit closure).
 10. **Teardown.** On client disconnect the manager closes the session
@@ -242,7 +249,9 @@ Full payloads: [`manager-interface.md`](manager-interface.md),
 
 **Manager env** (`deploy/manager/manager.env.example`): `MANAGER_PORT`,
 `MANAGER_INSTANCES`, `MANAGER_START_PORT`, `MANAGER_STEALTH`, `LLM_CHAT_EXE`,
-`MANAGER_CHAT_WARMUP_SECS`, `ZITADEL_ISSUER` / `ZITADEL_AUDIENCE` /
+`MANAGER_CHAT_WARMUP_SECS` (default: 0 for stream-json, 8 for PTY),
+`MANAGER_CHAT_SETTLE_MS` (PTY answer debounce, default 3000),
+`ZITADEL_ISSUER` / `ZITADEL_AUDIENCE` /
 `ZITADEL_PROJECT_ID`, `MANAGER_DB_URL` (optional Postgres).
 
 **Client env / flags** (`clients/python/llm_chat_client.py`): `--issuer` /

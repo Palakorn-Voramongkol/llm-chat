@@ -42,7 +42,7 @@ Banner sent on `/control` open: `{"ok":true,"hello":"manager-control"}`.
 | C → S | `{"type":"q","id":"<opaque>","text":"…","attachments":[{name,mime,data:base64}]?}` | A new question. `id` is your correlation token; `attachments` are optional image/PDF files which the manager saves to disk and rewrites into "Read the file at …" instructions before sending text to Claude. |
 | S → C | `{"type":"initialized","sid":…,"backendPort":…,"connectionId":…,"timeOut":…}` | First frame after handshake. The manager spawned a session for you; subsequent frames refer to it. |
 | S → C | `{"type":"ack","id":…,"seq":N,"timeIn":…}` | Sent **immediately after the DB insert, before** writing to the PTY. `seq` is the server-assigned FIFO index — also the row id in `chat_question`. |
-| S → C | `{"type":"a","id":…,"seq":N,"text":"…","timeIn":…,"timeOut":…}` | Sent **after a 3 s parser settle** once Claude's answer is detected on `/qa`. `text` is the parsed answer body. |
+| S → C | `{"type":"a","id":…,"seq":N,"text":"…","timeIn":…,"timeOut":…,"latencyMs":N}` | The answer. Delivered **immediately** when the backend marks it final (stream-json sends one complete `result` per question); the legacy PTY path waits a `MANAGER_CHAT_SETTLE_MS` parser settle (default 3 s). `text` is the answer body; `latencyMs` = question-received → answer-forwarded. |
 | C → S | `{"type":"confirm","seq":N}` | Marks the row as `confirmed` in `chat_question` (audit closure). |
 | S → C | `{"type":"err","text":…,"timeOut":…}` | Any error along the way — backend down, DB insert failed, PTY closed, attachment save failed, etc. |
 

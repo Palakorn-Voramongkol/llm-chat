@@ -1112,8 +1112,8 @@ async fn handle_control(
                 serde_json::json!({"ok":true,"ports":ports,"sessionsPerPort":counts})
             }
             "open" => match cmd_open(&state).await {
-                Ok((sid, port)) => {
-                    serde_json::json!({"ok":true,"sessionId":sid,"backendPort":port})
+                Ok((sid, port, transport)) => {
+                    serde_json::json!({"ok":true,"sessionId":sid,"backendPort":port,"transport":transport})
                 }
                 Err(e) => serde_json::json!({"ok":false,"error":e.to_string()}),
             },
@@ -1337,7 +1337,7 @@ async fn pick_least_loaded_port(state: &SharedState) -> Option<u16> {
 
 async fn cmd_open(
     state: &SharedState,
-) -> Result<(String, u16), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(String, u16, String), Box<dyn std::error::Error + Send + Sync>> {
     let port = pick_least_loaded_port(state)
         .await
         .ok_or("no backends configured")?;
@@ -1347,8 +1347,17 @@ async fn cmd_open(
         .and_then(|v| v.as_str())
         .ok_or("backend did not return sessionId")?
         .to_string();
+    // The backend reports its transport so we can skip PTY-era timing hacks
+    // (warmup/settle) for the stream-json path. Default to stream-json — that
+    // is the backend default, and an older backend that omits the field is the
+    // only case we'd guess on.
+    let transport = resp
+        .get("transport")
+        .and_then(|v| v.as_str())
+        .unwrap_or("stream-json")
+        .to_string();
     state.lock().await.session_to_port.insert(sid.clone(), port);
-    Ok((sid, port))
+    Ok((sid, port, transport))
 }
 
 async fn cmd_close(
@@ -1432,7 +1441,7 @@ async fn bridge_session_auto(
     mut ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (sid, port) = match cmd_open(&state).await {
+    let (sid, port, _transport) = match cmd_open(&state).await {
         Ok(x) => x,
         Err(e) => {
             let _ = ws
@@ -1509,6 +1518,100 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Milliseconds between two RFC3339 timestamps (`time_out - time_in`). Returns
+/// -1 if either fails to parse, so a bad value shows up in logs rather than
+/// being silently coerced to 0.
+fn latency_ms(time_in: &str, time_out: &str) -> i64 {
+    match (
+        chrono::DateTime::parse_from_rfc3339(time_in),
+        chrono::DateTime::parse_from_rfc3339(time_out),
+    ) {
+        (Ok(a), Ok(b)) => (b - a).num_milliseconds(),
+        _ => -1,
+    }
+}
+
+/// Pair one finalized answer with the oldest outstanding question for this
+/// connection (FIFO), persist it, and forward it to the client — logging the
+/// derived `latency_ms` (question received → answer forwarded).
+///
+/// Factored out so the stream-json path can call it INLINE in the qa loop
+/// (serializing `pop_sent` + forward, which also closes a latent race: the
+/// SELECT-then-UPDATE in pop_sent/mark_answered is not atomic, so two
+/// concurrent flushes could otherwise pop the same oldest row). The legacy PTY
+/// path still calls it after a debounce. `num` is for log correlation only.
+async fn flush_answer(
+    db: &ChatDb,
+    connection_id: &str,
+    num: u32,
+    final_text: String,
+    answer_tx: &tokio::sync::mpsc::Sender<serde_json::Value>,
+) {
+    // Pop the oldest 'sent' row for this connection (FIFO via ORDER BY seq ASC).
+    // Distinguish a DB error from a genuinely empty queue: a swallowed error
+    // would leave the row 'sent' and silently mispair the NEXT answer.
+    let row = match db.pop_sent(connection_id).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                target: "manager::chat",
+                num,
+                connection_id = %connection_id,
+                error = %e,
+                "pop_sent failed — cannot pair this answer (row stays 'sent')"
+            );
+            return;
+        }
+    };
+    let (seq, q_id, time_in) = match row {
+        Some(r) => r,
+        None => {
+            tracing::warn!(
+                target: "manager::chat",
+                num,
+                connection_id = %connection_id,
+                "answer with no matching pending question"
+            );
+            return;
+        }
+    };
+    let time_out = now_iso();
+    let lat_ms = latency_ms(&time_in, &time_out);
+    tracing::info!(
+        target: "manager::chat::qa",
+        num,
+        seq,
+        id = %q_id,
+        len = final_text.len(),
+        latency_ms = lat_ms,
+        text = %log_preview(&final_text, 160),
+        "answer paired with question (FIFO) — forwarding to client"
+    );
+    // A failed UPDATE leaves the row 'sent', so the next answer would re-pop and
+    // mispair it. Log loudly — the SELECT-then-UPDATE here is not atomic (a fully
+    // race-free fix is a single claim-and-answer UPDATE...RETURNING, tracked as
+    // follow-up); inline execution in the qa loop avoids the concurrent case.
+    if let Err(e) = db.mark_answered(seq, &final_text, &time_out).await {
+        tracing::error!(
+            target: "manager::chat",
+            num,
+            seq,
+            error = %e,
+            "mark_answered failed — row stays 'sent'; next answer may mispair"
+        );
+    }
+    let out = serde_json::json!({
+        "type": "a",
+        "id": q_id,
+        "seq": seq,
+        "text": final_text,
+        "timeIn": time_in,
+        "timeOut": time_out,
+        "latencyMs": lat_ms,
+    });
+    let _ = answer_tx.send(out).await;
+}
+
 /// Single-line, length-bounded rendering of arbitrary text for logs. Collapses
 /// newlines/CR to visible escapes so a multi-line PTY payload stays on one log
 /// line, and truncates to `max` chars with an explicit ellipsis so we never
@@ -1529,7 +1632,7 @@ async fn handle_chat(
     use tokio::sync::mpsc;
 
     // 1. Spawn a fresh session in the least-loaded backend.
-    let (sid, port) = match cmd_open(&state).await {
+    let (sid, port, transport) = match cmd_open(&state).await {
         Ok(x) => x,
         Err(e) => {
             let mut ws = ws;
@@ -1624,16 +1727,19 @@ async fn handle_chat(
     };
     let (_qa_sink_unused, mut qa_stream) = qa_ws.split();
 
-    // Cold-start grace period: claude CLI takes ~5–8 s to reach its prompt
-    // after PTY spawn, AND the JS parser needs to register an onData hook on
-    // the new xterm tab before PTY traffic starts. Without this delay, the
-    // first q gets typed while claude is still showing its welcome screen
-    // (no `>` / `●` markers ever emit on /qa). 0 disables the wait for tests
-    // that have already warmed up the session another way.
+    // Cold-start grace period. This is a PTY/TUI-era hack: the claude CLI takes
+    // ~5–8 s to reach its prompt after PTY spawn, AND the JS parser needs to
+    // register an onData hook on the new xterm tab before PTY traffic starts —
+    // otherwise the first q is typed into claude's welcome screen and no
+    // `>` / `●` markers ever emit on /qa. NONE of that applies to the
+    // stream-json transport: it is pure Rust with no webview, and claude reads
+    // stdin from the start (input buffers until it is ready), so warmup is 0
+    // there. PTY keeps the 8 s default. An explicit MANAGER_CHAT_WARMUP_SECS
+    // overrides both (0 also lets tests skip a wait they've handled another way).
     let warmup = std::env::var("MANAGER_CHAT_WARMUP_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(8);
+        .unwrap_or(if transport == "pty" { 8 } else { 0 });
     if warmup > 0 {
         tracing::debug!(target: "manager::chat", sid = %sid, warmup_secs = warmup,
             "warming up newly-spawned session before processing first q");
@@ -1930,11 +2036,12 @@ async fn handle_chat(
     });
 
     // ---- QA task ----
-    // For each parser event, debounce ~3s so we get the FINAL answer text per
-    // num. Once settled, pop the oldest 'sent' row for THIS connection (FIFO
-    // order via SELECT MIN(seq)), UPDATE it with answer + status='answered'
-    // + time_out, and forward the {a, id, text, timeIn, timeOut} JSON to the
-    // client.
+    // Each backend /qa event carries `final`. stream-json sets final:true (one
+    // complete `result` per num) → flush IMMEDIATELY via flush_answer. The
+    // legacy PTY path streams partial repaints (no final) → debounce ~settle so
+    // we commit only the FINAL text per num, then flush. flush_answer pops the
+    // oldest 'sent' row for THIS connection (FIFO), marks it answered, and
+    // forwards {a, id, text, timeIn, timeOut, latencyMs} to the client.
     let db_for_qa = db.clone();
     let connection_id_for_qa = connection_id.clone();
     let answer_tx_for_qa = answer_tx.clone();
@@ -1942,7 +2049,14 @@ async fn handle_chat(
         use std::collections::HashMap;
         let pending_text: Arc<Mutex<HashMap<u32, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let versions: Arc<Mutex<HashMap<u32, u64>>> = Arc::new(Mutex::new(HashMap::new()));
-        let settle = Duration::from_millis(3000);
+        // PTY-only debounce window (tunable). Unused by the stream-json path,
+        // which flushes on final:true without waiting.
+        let settle = Duration::from_millis(
+            std::env::var("MANAGER_CHAT_SETTLE_MS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(3000),
+        );
 
         while let Some(msg) = qa_stream.next().await {
             let text = match msg {
@@ -1971,22 +2085,48 @@ async fn handle_chat(
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Backend signals finality: stream-json sends one complete `result`
+            // per num (final:true); the legacy PTY path streams partial repaints
+            // (no final) that must be debounced.
+            let is_final = v.get("final").and_then(|x| x.as_bool()).unwrap_or(false);
             tracing::info!(
                 target: "manager::chat::qa",
                 num,
                 raw_len = raw.len(),
+                is_final,
                 raw = %log_preview(&raw, 160),
                 question = %log_preview(v.get("question").and_then(|x| x.as_str()).unwrap_or(""), 120),
                 "raw answer received from backend /qa stream"
             );
-            // The backend (llm-chat) cleans TUI noise before broadcasting on
-            // /qa/<sid>, so this stream is already normalized. Pass through.
+
+            if is_final {
+                // Final on arrival → flush inline (no debounce). Running this in
+                // the qa loop serializes pop_sent + forward, so back-to-back
+                // answers can't race on the same oldest 'sent' row.
+                //
+                // Flush even when the text is empty: stream-json emits EXACTLY
+                // one final result per submitted question, so skipping an empty
+                // one would leave that question's row 'sent' forever and mispair
+                // every later answer (FIFO desync). An empty answer is delivered
+                // verbatim — claude genuinely produced it.
+                flush_answer(
+                    &db_for_qa,
+                    &connection_id_for_qa,
+                    num,
+                    raw,
+                    &answer_tx_for_qa,
+                )
+                .await;
+                continue;
+            }
+
+            // Legacy PTY path: debounce repaints, keep only the latest version.
             pending_text.lock().await.insert(num, raw);
             let new_version = {
                 let mut versions = versions.lock().await;
-                let v = versions.entry(num).or_insert(0);
-                *v += 1;
-                *v
+                let ver = versions.entry(num).or_insert(0);
+                *ver += 1;
+                *ver
             };
 
             let pending_text_for_flush = pending_text.clone();
@@ -2007,40 +2147,7 @@ async fn handle_chat(
                     Some(t) if !t.is_empty() => t,
                     _ => return,
                 };
-                // Pop the oldest 'sent' row for this connection (FIFO).
-                let row = db.pop_sent(&connection_id).await.unwrap_or(None);
-                let (seq, q_id, time_in) = match row {
-                    Some(r) => r,
-                    None => {
-                        tracing::warn!(
-                            target: "manager::chat",
-                            num,
-                            connection_id = %connection_id,
-                            "answer with no matching pending question"
-                        );
-                        return;
-                    }
-                };
-                let time_out = now_iso();
-                tracing::info!(
-                    target: "manager::chat::qa",
-                    num,
-                    seq,
-                    id = %q_id,
-                    len = final_text.len(),
-                    text = %log_preview(&final_text, 160),
-                    "answer paired with question (FIFO) — forwarding to client"
-                );
-                let _ = db.mark_answered(seq, &final_text, &time_out).await;
-                let out = serde_json::json!({
-                    "type": "a",
-                    "id": q_id,
-                    "seq": seq,
-                    "text": final_text,
-                    "timeIn": time_in,
-                    "timeOut": time_out,
-                });
-                let _ = answer_tx.send(out).await;
+                flush_answer(&db, &connection_id, num, final_text, &answer_tx).await;
             });
         }
     });

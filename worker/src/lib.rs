@@ -716,6 +716,11 @@ mod json_session {
                                 "answer": answer,
                                 "sessionId": sid,
                                 "isNew": true,
+                                // stream-json emits ONE complete `result` event
+                                // per answer — it is final the moment we see it.
+                                // The manager uses this to flush immediately
+                                // instead of debouncing for late PTY redraws.
+                                "final": true,
                             });
                             tracing::info!(
                                 target: "backend::qa",
@@ -2253,6 +2258,13 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                 }
                             }
                             "open" => {
+                                // The worker is the source of truth for which
+                                // transport this session uses; report it in the
+                                // reply so the manager can tune its behavior
+                                // (warmup/settle) without coordinating env vars
+                                // across two processes.
+                                let transport = std::env::var("LLM_CHAT_TRANSPORT")
+                                    .unwrap_or_else(|_| "stream-json".into());
                                 // Only the legacy PTY/TUI transport needs the
                                 // webview: wait for its JS to register event
                                 // listeners (the terminal_ready command) before
@@ -2260,7 +2272,7 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                 // pure Rust (no webview), and headless has no
                                 // webview at all — so skip the wait there, or it
                                 // would stall ~10s and time the manager out.
-                                if std::env::var("LLM_CHAT_TRANSPORT").as_deref() == Ok("pty") {
+                                if transport == "pty" {
                                     let st = &*state_ctrl;
                                     let mut waits = 0;
                                     while !st
@@ -2296,7 +2308,7 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                             "external-session-added",
                                             serde_json::json!({"sessionId": id}),
                                         );
-                                        serde_json::json!({"ok":true,"sessionId":id})
+                                        serde_json::json!({"ok":true,"sessionId":id,"transport":transport})
                                     }
                                     Err(e) => serde_json::json!({"ok":false,"error":e}),
                                 }
