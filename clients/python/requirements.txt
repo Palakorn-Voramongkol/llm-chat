@@ -1,0 +1,5 @@
+# Runtime dependencies for the llm-chat Python client.
+# (Or `pip install .` to use pyproject.toml + get the `llm-chat` command.)
+pyjwt[crypto]>=2.8
+requests>=2.31
+websockets>=12

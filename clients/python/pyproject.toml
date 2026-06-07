@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-chat-client"
+version = "1.0.0"
+description = "Client for the llm-chat manager's /chat WebSocket (Zitadel JWT auth)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "pyjwt[crypto]>=2.8",
+    "requests>=2.31",
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+llm-chat = "llm_chat.cli:main"
+
+[tool.setuptools]
+packages = ["llm_chat"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
