@@ -1,0 +1,100 @@
+# llm-chat Rust client
+
+A faithful Rust port of [`clients/python`](../python) — same `llm-chat` command,
+same subcommands, flags, env vars, file paths, auth flows, and markdown
+rendering. It **shares the cached login** with the Python client (same OS
+keyring entry + `tokens.json`), so a `login` from either is reused by the other.
+
+## Build
+
+```bash
+# from the repo root (workspace member)
+cargo build --release -p llm-chat-client
+# -> target/release/llm-chat(.exe)
+```
+
+## Quick start (zero config)
+
+```bash
+# Human, interactive: sign in once, then chat
+llm-chat login
+llm-chat chat
+
+# Machine (kabytech service account): no login, uses the key
+llm-chat ask --send "hello"
+```
+
+Both resolve issuer/project/key from flags → env → the compose stack's
+`secrets/` dir, so they run flagless when the stack is up. High-effort answers
+are slow — keep `--timeout` generous (default 120s).
+
+## Commands
+
+| Command | Auth (default) | Purpose |
+|---|---|---|
+| `chat` (or bare `llm-chat`) | human (browser) | interactive multi-turn REPL |
+| `ask --send <text>` | machine (kabytech) | one-shot question |
+| `login` | human | browser sign-in, cache the session |
+| `logout` | human | revoke + clear the cached session |
+| `whoami` | — | show the cached user identity |
+
+## Connection / auth flags
+
+Each value falls back to an env var, then the `secrets/` dir:
+
+| Flag | Env var | Default |
+|---|---|---|
+| `--issuer` | `ZITADEL_ISSUER` | `http://host.docker.internal:8080` |
+| `--project` | `PROJECT_ID` | `secrets/project_id` |
+| `--key-file` | `KABYTECH_KEY` | `secrets/kabytech-key.json` (machine) |
+| `--oidc-client-id` | `OIDC_CLIENT_ID` | `secrets/oidc_client_id` (human) |
+| `--oidc-port` | — | `8477` (login redirect) |
+| `--manager` | `MANAGER_WS` | `ws://127.0.0.1:7777/chat` |
+| `--auth` | — | `chat`→`user`, `ask`→`machine` |
+| `--timeout` | — | `120` (seconds per answer) |
+| `--plain` | — | render markdown as plain text (no ANSI/color) |
+| `--raw` | — | print claude's literal markdown (no rendering) |
+| `-v` / `-vv` | — | INFO / DEBUG logs on stderr |
+
+`LLM_CHAT_SECRETS_DIR` overrides where `secrets/` is looked up;
+`LLM_CHAT_CONFIG_DIR` overrides where the token cache is stored.
+
+## Markdown display
+
+Same three modes as the Python client (display only — claude's exact markdown
+is received unchanged and handed to a real renderer, [termimad](https://crates.io/crates/termimad)):
+
+- **auto** (default): styled (color/bold/tables) on a capable terminal;
+  falls back to **plain text** when piped, `NO_COLOR` is set, or `TERM=dumb` —
+  so it runs on a headless Linux CLI and over SSH.
+- **`--plain`**: markdown obeyed, zero ANSI.
+- **`--raw`**: the literal markdown.
+
+In the REPL: `/render auto|plain|raw` switches live.
+
+## REPL slash-commands
+
+```
+/help      /history     /session     /render MODE
+/reset     /multi       /quit (/exit)
+```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 2 | usage / missing-or-bad credentials |
+| 3 | auth (token exchange) error |
+| 4 | manager unavailable |
+| 5 | protocol error / answer timeout |
+| 130 | interrupted |
+
+## Tests
+
+```bash
+cargo test -p llm-chat-client
+```
+
+Covers the pure logic ported from the Python unit tests: PKCE/state, scope,
+authorize URL, callback parsing, render modes, and JWT claim decode.

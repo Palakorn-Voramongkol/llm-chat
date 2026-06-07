@@ -1,0 +1,47 @@
+[package]
+name = "llm-chat-client"
+version = "1.0.0"
+edition = "2021"
+description = "Client for the llm-chat manager's /chat WebSocket (Zitadel JWT auth) — Rust port of clients/python."
+license = "MIT"
+
+# The `llm-chat` command: same surface as the Python client
+# (ask / chat / login / logout / whoami).
+[[bin]]
+name = "llm-chat"
+path = "src/main.rs"
+
+[lib]
+name = "llm_chat_client"
+path = "src/lib.rs"
+
+[dependencies]
+# Reused from the workspace for version consistency with the server crates.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `blocking` so auth/OIDC stay synchronous like the Python client; the async
+# /chat leg calls them via tokio::task::spawn_blocking.
+reqwest = { workspace = true, features = ["blocking"] }
+jsonwebtoken = { workspace = true }
+tracing = { workspace = true }
+
+# Client-specific.
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+clap = { version = "4", features = ["derive"] }
+# v3.6 (NOT v4 — restructured, migration discouraged). Backends must be listed
+# explicitly (v3 ships no default backend). Same OS store as Python `keyring`.
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+dirs = "5"
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+# markdown -> terminal; no_style skin for plain mode.
+termimad = "0.34"
+# one-shot loopback HTTP server for the OIDC redirect (parsed Request, no
+# hand-rolled HTTP parsing).
+tiny_http = "0.12"
+open = "5"
+url = "2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

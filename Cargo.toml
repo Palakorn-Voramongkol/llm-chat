@@ -1,5 +1,5 @@
 [workspace]
-members = ["manager", "worker", "crates/zitadel-auth", "admin-api"]
+members = ["manager", "worker", "crates/zitadel-auth", "admin-api", "clients/rust"]
 resolver = "2"
 
 [workspace.dependencies]

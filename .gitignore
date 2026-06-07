@@ -1,4 +1,5 @@
 node_modules/
+target/
 worker/target/
 worker/node_modules/
 manager/target/
