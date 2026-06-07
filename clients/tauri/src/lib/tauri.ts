@@ -32,10 +32,10 @@ export const api = {
   login: () => invoke<Identity>("login"),
   restore: () => invoke<Identity | null>("restore"),
   logout: () => invoke<void>("logout"),
-  // chat (wired in the chat step)
   chatConnect: () => invoke<string>("chat_connect"),
-  chatSend: (text: string) => invoke<void>("chat_send", { text }),
+  chatSend: (id: string, text: string) => invoke<void>("chat_send", { id, text }),
   chatClose: () => invoke<void>("chat_close"),
+  openExternal: (url: string) => invoke<void>("open_external", { url }),
 };
 
 export function onEvent<T>(event: string, cb: (payload: T) => void): Promise<UnlistenFn> {

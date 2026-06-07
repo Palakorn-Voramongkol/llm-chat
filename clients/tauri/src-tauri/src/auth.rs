@@ -35,9 +35,16 @@ pub struct Session {
     pub identity: Option<Identity>,
 }
 
+/// Write half of the open /chat WebSocket (held so `chat_send` can write `q`).
+pub type ChatSink = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    tokio_tungstenite::tungstenite::Message,
+>;
+
 pub struct AppState {
     pub config: Config,
     pub session: Mutex<Session>,
+    pub chat_sink: tokio::sync::Mutex<Option<ChatSink>>,
 }
 
 impl AppState {
@@ -45,6 +52,7 @@ impl AppState {
         AppState {
             config: Config::load(),
             session: Mutex::new(Session::default()),
+            chat_sink: tokio::sync::Mutex::new(None),
         }
     }
     /// The current access token, for the chat WS bridge.
