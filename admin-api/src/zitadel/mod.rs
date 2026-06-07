@@ -3,6 +3,7 @@
 //! users, grants, keys. Task 12 lands `error`.
 
 pub mod error;
+pub mod grants;
 pub mod model;
 pub mod token;
 
@@ -24,5 +25,54 @@ impl ZitadelClient {
     /// tests alike.
     pub fn new(cfg: AdminConfig, http: reqwest::Client) -> Self {
         Self { cfg, http, token: tokio::sync::RwLock::new(None) }
+    }
+}
+
+use crate::zitadel::error::{map_status, ZitadelError};
+use serde_json::Value;
+
+impl ZitadelClient {
+    async fn send_json(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, ZitadelError> {
+        let token = self.valid_token().await?;
+        let mut req = self
+            .http
+            .request(method, url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json");
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ZitadelError::Transport(e.to_string()))?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        if !(200..300).contains(&status) {
+            return Err(map_status(status, &text));
+        }
+        if text.is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| ZitadelError::Invalid(format!("response json: {e}")))
+    }
+
+    pub(crate) async fn post_json(&self, url: &str, body: &Value) -> Result<Value, ZitadelError> {
+        self.send_json(reqwest::Method::POST, url, Some(body)).await
+    }
+    pub(crate) async fn put_json(&self, url: &str, body: &Value) -> Result<Value, ZitadelError> {
+        self.send_json(reqwest::Method::PUT, url, Some(body)).await
+    }
+    pub(crate) async fn get_json(&self, url: &str) -> Result<Value, ZitadelError> {
+        self.send_json(reqwest::Method::GET, url, None).await
+    }
+    pub(crate) async fn delete(&self, url: &str) -> Result<Value, ZitadelError> {
+        self.send_json(reqwest::Method::DELETE, url, None).await
     }
 }
