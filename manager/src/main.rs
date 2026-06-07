@@ -485,6 +485,32 @@ fn random_token() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Pure, reusable: require a non-empty address env var. Trims surrounding
+/// whitespace. Returns Err(format!("{var_name} must be set (no default)")) when
+/// None/empty/whitespace-only; Ok(trimmed) otherwise. Shared by MANAGER_BIND
+/// and MANAGER_BACKEND_HOST — these are REQUIRED, there is no code default.
+fn require_addr(var_name: &str, raw: Option<String>) -> Result<String, String> {
+    match raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        Some(v) => Ok(v),
+        None => Err(format!("{var_name} must be set (no default)")),
+    }
+}
+
+/// Thin wrapper (not unit-tested): read MANAGER_BACKEND_HOST.
+///
+/// SAFE to unwrap: main() resolves MANAGER_BACKEND_HOST via require_addr at
+/// startup and fails fast if it is missing, so by the time any request-time
+/// dial site runs the var is guaranteed present. The five request-time sites
+/// (call_backend, /s/, /qa/, bridge_to_backend, handle_root) are outside
+/// main()'s scope and call this wrapper inline per request; MANAGER_BACKEND_HOST
+/// is immutable for the process lifetime, so every read returns the same
+/// already-validated value. Accepted per-request read (one-shot, not a hot
+/// loop). No ManagerState field, no call_backend signature change.
+fn backend_host() -> String {
+    require_addr("MANAGER_BACKEND_HOST", std::env::var("MANAGER_BACKEND_HOST").ok())
+        .expect("validated at startup")
+}
+
 fn auth_token_path() -> std::path::PathBuf {
     // Prefer %LOCALAPPDATA%\com.llm-chat.app\ on Windows — per-user, not swept
     // by temp cleaners. On unix, the XDG equivalent is $XDG_DATA_HOME (or
@@ -708,6 +734,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Token itself only at DEBUG — INFO log shouldn't leak credentials.
     tracing::debug!(target: "manager::auth", token = %auth_token, "auth token");
 
+    // Resolve the backend dial host once, at startup, and FAIL FAST if it is
+    // missing — there is no code default. This same String is threaded into
+    // the spawn_instance forwarding, wait_for_tcp, and the spawn-skip log so
+    // every site observes the one validated host.
+    let backend_host = require_addr(
+        "MANAGER_BACKEND_HOST",
+        std::env::var("MANAGER_BACKEND_HOST").ok(),
+    )?;
+
     let stealth: bool = matches!(
         std::env::var("MANAGER_STEALTH").ok().as_deref(),
         Some("1") | Some("true")
@@ -716,13 +751,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ports = Vec::new();
     for i in 0..n_instances {
         let port = start_port + i as u16;
-        spawn_instance(&exe_path, port, &auth_token, stealth)?;
+        spawn_instance(&exe_path, port, &auth_token, &backend_host, stealth)?;
         ports.push(port);
     }
 
     tracing::info!(target: "manager", count = ports.len(), "waiting for backends");
     for &p in &ports {
-        wait_for_tcp(p, 90).await?;
+        wait_for_tcp(&backend_host, p, 90).await?;
         tracing::info!(target: "manager", instance_port = p, "backend ready");
     }
 
@@ -807,7 +842,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn spawn_instance(exe: &str, port: u16, auth_token: &str, stealth: bool) -> std::io::Result<()> {
+fn spawn_instance(exe: &str, port: u16, auth_token: &str, backend_host: &str, stealth: bool) -> std::io::Result<()> {
     use std::process::Command;
     let path = std::path::Path::new(exe);
     let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
@@ -833,7 +868,11 @@ fn spawn_instance(exe: &str, port: u16, auth_token: &str, stealth: bool) -> std:
         Command::new(&canon)
     };
     cmd.env("LLM_CHAT_WS_PORT", port.to_string())
-        .env("LLM_CHAT_AUTH_TOKEN", auth_token);
+        .env("LLM_CHAT_AUTH_TOKEN", auth_token)
+        // The manager dials backends at backend_host, so the spawned worker
+        // must bind that same host. This also supplies the worker's now-
+        // required LLM_CHAT_WS_BIND with no hardcoded default.
+        .env("LLM_CHAT_WS_BIND", backend_host);
     if stealth {
         cmd.env("LLM_CHAT_STEALTH", "1");
     }
@@ -865,16 +904,16 @@ fn which_on_path(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-async fn wait_for_tcp(port: u16, retries: u32) -> Result<(), std::io::Error> {
+async fn wait_for_tcp(host: &str, port: u16, retries: u32) -> Result<(), std::io::Error> {
     for _ in 0..retries {
-        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+        if TcpStream::connect((host, port)).await.is_ok() {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        format!("backend on port {} did not come up", port),
+        format!("backend on {}:{} did not come up", host, port),
     ))
 }
 
@@ -1291,7 +1330,7 @@ async fn call_backend(
     let token = std::fs::read_to_string(auth_token_path())?
         .trim()
         .to_string();
-    let url = format!("ws://127.0.0.1:{}/control", port);
+    let url = format!("ws://{}:{}/control", backend_host(), port);
     let (mut ws, _) = connect_async(auth_request(&url, &token)?).await?;
     // Discard the initial hello banner
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws.next()).await;
@@ -1482,7 +1521,7 @@ async fn handle_chat(
 
     // 3. Connect to backend's /s/<sid> for sending PTY input AND to /qa/<sid>
     //    for receiving parsed Q&A events.
-    let s_url = format!("ws://127.0.0.1:{}/s/{}", port, sid);
+    let s_url = format!("ws://{}:{}/s/{}", backend_host(), port, sid);
     let s_req = auth_request(&s_url, &token)?;
     let (s_ws, _) = match connect_async(s_req).await {
         Ok(p) => p,
@@ -1499,7 +1538,7 @@ async fn handle_chat(
     };
     let (mut s_sink, _s_stream_unused) = s_ws.split();
 
-    let qa_url = format!("ws://127.0.0.1:{}/qa/{}", port, sid);
+    let qa_url = format!("ws://{}:{}/qa/{}", backend_host(), port, sid);
     let qa_req = auth_request(&qa_url, &token)?;
     let (qa_ws, _) = match connect_async(qa_req).await {
         Ok(p) => p,
@@ -1943,7 +1982,7 @@ async fn bridge_to_backend(
     token: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut client_sink, mut client_stream) = ws.split();
-    let url = format!("ws://127.0.0.1:{}{}{}", backend_port, base, sid);
+    let url = format!("ws://{}:{}{}{}", backend_host(), backend_port, base, sid);
     let req_with_auth = match auth_request(&url, token) {
         Ok(r) => r,
         Err(e) => {
@@ -2013,7 +2052,7 @@ async fn handle_root(
     };
     let mut all: Vec<String> = Vec::new();
     for p in &ports {
-        let url = format!("ws://127.0.0.1:{}/", p);
+        let url = format!("ws://{}:{}/", backend_host(), p);
         let req = match auth_request(&url, &token) {
             Ok(r) => r,
             Err(_) => continue,
@@ -2035,4 +2074,36 @@ async fn handle_root(
         ))
         .await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_addr_errors_when_none() {
+        let err = require_addr("MANAGER_BACKEND_HOST", None).unwrap_err();
+        assert!(err.contains("MANAGER_BACKEND_HOST"), "names the var: {err}");
+    }
+    #[test]
+    fn require_addr_errors_when_empty() {
+        let err = require_addr("MANAGER_BACKEND_HOST", Some(String::new())).unwrap_err();
+        assert!(err.contains("MANAGER_BACKEND_HOST"), "names the var: {err}");
+    }
+    #[test]
+    fn require_addr_errors_when_whitespace() {
+        let err = require_addr("MANAGER_BACKEND_HOST", Some("  ".to_string())).unwrap_err();
+        assert!(err.contains("MANAGER_BACKEND_HOST"), "names the var: {err}");
+    }
+    #[test]
+    fn require_addr_honors_loopback() {
+        assert_eq!(require_addr("MANAGER_BACKEND_HOST", Some("127.0.0.1".to_string())).unwrap(),
+                   "127.0.0.1");
+    }
+    #[test]
+    fn require_addr_honors_docker_host() {
+        assert_eq!(require_addr("MANAGER_BACKEND_HOST",
+                                Some("host.docker.internal".to_string())).unwrap(),
+                   "host.docker.internal");
+    }
 }
