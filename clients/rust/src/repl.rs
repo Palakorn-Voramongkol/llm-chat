@@ -98,7 +98,7 @@ async fn read_multiline(c: &Ansi) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-fn spawn_spinner(stop: Arc<AtomicBool>, label: String) -> tokio::task::JoinHandle<()> {
+fn spinner(stop: Arc<AtomicBool>, label: String) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         if !std::io::stdout().is_terminal() {
             while !stop.load(Ordering::SeqCst) {
@@ -228,7 +228,7 @@ pub async fn run_repl(client: &mut ChatClient, timeout: Duration, mut render_mod
         }
 
         let stop = Arc::new(AtomicBool::new(false));
-        let spin = spawn_spinner(stop.clone(), c.claude("Claude:"));
+        let spin = spinner(stop.clone(), c.claude("Claude:"));
         let res = client.ask(&user, timeout).await;
         stop.store(true, Ordering::SeqCst);
         let _ = spin.await;

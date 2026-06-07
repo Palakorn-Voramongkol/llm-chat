@@ -160,12 +160,8 @@ fn print_whoami(ts: &TokenSet) {
 // ---------------- subcommands ----------------
 
 fn cmd_login(c: &CommonArgs) -> Result<u8> {
-    let issuer = resolve_issuer(c);
-    let client_id = resolve_client_id(c)?;
-    let project = resolve_project(c)?;
-    let store = TokenStore::new(&issuer, &client_id);
-    let ts = oidc::login(&issuer, &client_id, &project, c.oidc_port, true, Duration::from_secs(300))?;
-    store.save(&ts);
+    let (issuer, client_id, project, store, _endpoints) = user_session(c)?;
+    let ts = login_and_store(&issuer, &client_id, &project, &store, c.oidc_port)?;
     print_whoami(&ts);
     Ok(0)
 }
@@ -186,9 +182,7 @@ fn cmd_logout(c: &CommonArgs) -> Result<u8> {
 }
 
 fn cmd_whoami(c: &CommonArgs) -> Result<u8> {
-    let issuer = resolve_issuer(c);
-    let client_id = resolve_client_id(c)?;
-    let store = TokenStore::new(&issuer, &client_id);
+    let (_issuer, _client_id, _project, store, _endpoints) = user_session(c)?;
     match store.load() {
         Some(ts) => {
             print_whoami(&ts);
@@ -201,115 +195,133 @@ fn cmd_whoami(c: &CommonArgs) -> Result<u8> {
     }
 }
 
-// ---------------- chat / ask ----------------
+// ---------------- credential mode + providers ----------------
 
-fn build_provider(c: &CommonArgs, mode: AuthMode) -> Result<TokenProvider> {
-    match mode {
-        AuthMode::Machine => {
-            let creds = resolve_credentials(
-                c.issuer.as_deref(),
-                c.project.as_deref(),
-                c.key_file.as_deref(),
-            )?;
-            Ok(Arc::new(move || fetch_access_token(&creds)))
-        }
-        AuthMode::User => {
-            let issuer = resolve_issuer(c);
-            let client_id = resolve_client_id(c)?;
-            let project = resolve_project(c)?;
-            let store = TokenStore::new(&issuer, &client_id);
-            let endpoints = oidc::discover(&issuer);
-
-            // Ensure logged in (browser) before connecting.
-            let ep = endpoints.token.clone();
-            let cid = client_id.clone();
-            let ok = store
-                .valid_access_token(|rt| oidc::refresh(&ep, &cid, rt))
-                .is_ok();
-            if !ok {
-                println!("Not logged in — starting browser login…");
-                let ts = oidc::login(
-                    &issuer,
-                    &client_id,
-                    &project,
-                    c.oidc_port,
-                    true,
-                    Duration::from_secs(300),
-                )?;
-                store.save(&ts);
-            }
-
-            let store = Arc::new(store);
-            let token_ep = endpoints.token.clone();
-            let cid2 = client_id.clone();
-            Ok(Arc::new(move || {
-                let ep = token_ep.clone();
-                let cid = cid2.clone();
-                store.valid_access_token(move |rt| oidc::refresh(&ep, &cid, rt))
-            }))
-        }
-    }
+fn auth_mode(c: &CommonArgs, is_chat: bool) -> AuthMode {
+    c.auth
+        .unwrap_or(if is_chat { AuthMode::User } else { AuthMode::Machine })
 }
 
-fn run_session(c: &CommonArgs, send: Option<String>) -> Result<u8> {
-    let is_chat = send.is_none();
-    let mode = c
-        .auth
-        .unwrap_or(if is_chat { AuthMode::User } else { AuthMode::Machine });
+/// Machine (kabytech) token provider: mint a JWT-bearer access token per call.
+fn machine_provider(c: &CommonArgs) -> Result<TokenProvider> {
+    let creds = resolve_credentials(
+        c.issuer.as_deref(),
+        c.project.as_deref(),
+        c.key_file.as_deref(),
+    )?;
+    Ok(Arc::new(move || fetch_access_token(&creds)))
+}
+
+/// (issuer, client_id, project, store, endpoints) for the human path.
+fn user_session(c: &CommonArgs) -> Result<(String, String, String, TokenStore, oidc::Endpoints)> {
+    let issuer = resolve_issuer(c);
+    let client_id = resolve_client_id(c)?;
+    let project = resolve_project(c)?;
+    let endpoints = oidc::discover(&issuer);
+    let store = TokenStore::new(&issuer, &client_id);
+    Ok((issuer, client_id, project, store, endpoints))
+}
+
+/// Human token provider: a cached access token, refreshed on demand.
+fn user_provider(store: TokenStore, token_endpoint: String, client_id: String) -> TokenProvider {
+    let store = Arc::new(store);
+    Arc::new(move || {
+        let ep = token_endpoint.clone();
+        let cid = client_id.clone();
+        store.valid_access_token(move |rt| oidc::refresh(&ep, &cid, rt))
+    })
+}
+
+fn login_and_store(
+    issuer: &str,
+    client_id: &str,
+    project: &str,
+    store: &TokenStore,
+    port: u16,
+) -> Result<TokenSet> {
+    let ts = oidc::login(issuer, client_id, project, port, true, Duration::from_secs(300))?;
+    store.save(&ts);
+    Ok(ts)
+}
+
+// ---------------- run loops ----------------
+
+fn cmd_chat_or_ask(c: &CommonArgs, send: Option<String>) -> Result<u8> {
+    let mode = auth_mode(c, send.is_none());
     let manager_url = resolve_manager(&c.manager);
     let render_mode = resolve_mode(c.plain, c.raw);
     let timeout = Duration::from_secs_f64(c.timeout);
 
-    let provider = build_provider(c, mode)?;
+    let provider = match mode {
+        AuthMode::Machine => machine_provider(c)?,
+        AuthMode::User => {
+            // ensure logged in (browser) before connecting
+            let (issuer, client_id, project, store, endpoints) = user_session(c)?;
+            let ep = endpoints.token.clone();
+            let cid = client_id.clone();
+            if store
+                .valid_access_token(|rt| oidc::refresh(&ep, &cid, rt))
+                .is_err()
+            {
+                println!("Not logged in — starting browser login…");
+                login_and_store(&issuer, &client_id, &project, &store, c.oidc_port)?;
+            }
+            user_provider(store, endpoints.token.clone(), client_id)
+        }
+    };
 
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| Error::ManagerUnavailable(format!("could not start runtime: {e}")))?;
-    rt.block_on(async move {
-        let mut client = ChatClient::new(&manager_url, provider);
-        match send {
-            Some(q) => {
-                client.connect().await?;
-                let answer = client.ask(&q, timeout).await?;
-                println!("Q: {q}");
-                if render_mode == RenderMode::Raw {
-                    println!("A: {}", answer.text);
-                } else {
-                    println!("A:");
-                    render_markdown(&answer.text, render_mode);
-                }
-                client.close().await;
-                Ok(0u8)
-            }
-            None => {
-                let code = run_repl(&mut client, timeout, render_mode).await;
-                client.close().await;
-                Ok(code as u8)
-            }
-        }
-    })
+    match send {
+        Some(q) => rt.block_on(run_ask(provider, &manager_url, &q, timeout, render_mode)),
+        None => rt.block_on(run_chat(provider, &manager_url, timeout, render_mode)),
+    }
+}
+
+async fn run_ask(
+    provider: TokenProvider,
+    manager_url: &str,
+    send: &str,
+    timeout: Duration,
+    render_mode: RenderMode,
+) -> Result<u8> {
+    let mut client = ChatClient::new(manager_url, provider);
+    client.connect().await?;
+    let answer = client.ask(send, timeout).await?;
+    println!("Q: {send}");
+    if render_mode == RenderMode::Raw {
+        println!("A: {}", answer.text);
+    } else {
+        println!("A:");
+        render_markdown(&answer.text, render_mode);
+    }
+    client.close().await;
+    Ok(0)
+}
+
+async fn run_chat(
+    provider: TokenProvider,
+    manager_url: &str,
+    timeout: Duration,
+    render_mode: RenderMode,
+) -> Result<u8> {
+    let mut client = ChatClient::new(manager_url, provider);
+    let code = run_repl(&mut client, timeout, render_mode).await;
+    client.close().await;
+    Ok(code as u8)
 }
 
 // ---------------- dispatch ----------------
 
-/// Parse args, run the command, return the process exit code.
-pub fn run() -> u8 {
-    let cli = Cli::parse();
-    // Bare `llm-chat` → chat (matches cli.py main()).
-    let command = match cli.command {
-        Some(cmd) => cmd,
-        None => Cli::parse_from(["llm-chat", "chat"]).command.expect("chat"),
-    };
-
+fn dispatch(command: Command) -> u8 {
     configure_logging(command.common().verbose);
-
     let result: Result<u8> = match &command {
         Command::Login { common } => cmd_login(common),
         Command::Logout { common } => cmd_logout(common),
         Command::Whoami { common } => cmd_whoami(common),
-        Command::Ask { common, send } => run_session(common, Some(send.clone())),
-        Command::Chat { common } => run_session(common, None),
+        Command::Ask { common, send } => cmd_chat_or_ask(common, Some(send.clone())),
+        Command::Chat { common } => cmd_chat_or_ask(common, None),
     };
-
     match result {
         Ok(code) => code,
         Err(e) => {
@@ -317,6 +329,17 @@ pub fn run() -> u8 {
             e.exit_code()
         }
     }
+}
+
+/// Parse args (bare `llm-chat` → chat, like cli.py `main`) and run the chosen
+/// command. Returns the process exit code.
+pub fn main() -> u8 {
+    let cli = Cli::parse();
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => Cli::parse_from(["llm-chat", "chat"]).command.expect("chat"),
+    };
+    dispatch(command)
 }
 
 #[cfg(test)]
