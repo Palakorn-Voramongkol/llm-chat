@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum UserKind {
     Human,
     Machine,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: String,
     pub user_name: String,
@@ -106,5 +106,20 @@ mod tests {
         assert_eq!(u.kind, UserKind::Machine);
         assert_eq!(u.email, None);
         assert_eq!(u.display_name.as_deref(), Some("chat-admin-api"));
+    }
+
+    #[test]
+    fn user_serializes_camelcase_with_pascal_kind() {
+        let u = User {
+            id: "u1".into(), user_name: "alice".into(), kind: UserKind::Human,
+            state: "ACTIVE".into(), email: Some("a@x.io".into()),
+            display_name: Some("Alice".into()), given_name: Some("Alice".into()),
+            family_name: Some("Stone".into()),
+        };
+        let v = serde_json::to_value(&u).unwrap();
+        assert!(v.get("userName").is_some(), "camelCase userName: {v}");
+        assert!(v.get("displayName").is_some(), "camelCase displayName: {v}");
+        assert!(v.get("user_name").is_none(), "no snake_case: {v}");
+        assert_eq!(v.get("kind").unwrap(), "Human", "PascalCase kind: {v}");
     }
 }

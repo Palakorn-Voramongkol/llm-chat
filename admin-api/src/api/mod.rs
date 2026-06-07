@@ -81,22 +81,25 @@ async fn get_user(_op: Operator, State(st): State<AppState>, Path(id): Path<Stri
 }
 
 #[derive(Deserialize)]
-struct CreateHuman { username: String, given_name: String, family_name: String, email: String, password: String }
+#[serde(rename_all = "camelCase")]
+struct CreateHuman { user_name: String, given_name: String, family_name: String, email: String, password: String }
 async fn create_human(_op: Operator, State(st): State<AppState>, Json(b): Json<CreateHuman>)
     -> Result<Json<Value>, ApiError> {
-    let id = st.zitadel.create_human(&b.username, &b.given_name, &b.family_name, &b.email, &b.password).await?;
+    let id = st.zitadel.create_human(&b.user_name, &b.given_name, &b.family_name, &b.email, &b.password).await?;
     Ok(Json(json!({ "userId": id })))
 }
 
 #[derive(Deserialize)]
-struct CreateMachine { username: String, name: String }
+#[serde(rename_all = "camelCase")]
+struct CreateMachine { user_name: String, name: String }
 async fn create_machine(_op: Operator, State(st): State<AppState>, Json(b): Json<CreateMachine>)
     -> Result<Json<Value>, ApiError> {
-    let id = st.zitadel.create_machine(&b.username, &b.name).await?;
+    let id = st.zitadel.create_machine(&b.user_name, &b.name).await?;
     Ok(Json(json!({ "userId": id })))
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EditProfile { given_name: String, family_name: String }
 async fn edit_profile(_op: Operator, State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<EditProfile>)
     -> Result<Json<Value>, ApiError> {
@@ -105,6 +108,7 @@ async fn edit_profile(_op: Operator, State(st): State<AppState>, Path(id): Path<
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct EditEmail { email: String, #[serde(default)] is_verified: bool }
 async fn edit_email(_op: Operator, State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<EditEmail>)
     -> Result<Json<Value>, ApiError> {
@@ -113,6 +117,7 @@ async fn edit_email(_op: Operator, State(st): State<AppState>, Path(id): Path<St
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SetPassword { password: String, #[serde(default)] change_required: bool }
 async fn set_password(_op: Operator, State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<SetPassword>)
     -> Result<Json<Value>, ApiError> {
@@ -152,6 +157,7 @@ async fn list_grants(_op: Operator, State(st): State<AppState>, Path(id): Path<S
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AddGrant { role_keys: Vec<String> }
 async fn add_grant(_op: Operator, State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<AddGrant>)
     -> Result<Json<Value>, ApiError> {
@@ -160,6 +166,7 @@ async fn add_grant(_op: Operator, State(st): State<AppState>, Path(id): Path<Str
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SetGrant { role_keys: Vec<String> }
 async fn set_grant(_op: Operator, State(st): State<AppState>, Path((id, grant_id)): Path<(String, String)>, Json(b): Json<SetGrant>)
     -> Result<Json<Value>, ApiError> {
@@ -196,4 +203,37 @@ async fn generate_secret(_op: Operator, State(st): State<AppState>, Path(id): Pa
 async fn delete_secret(_op: Operator, State(st): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     st.zitadel.delete_secret(&id).await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn create_human_accepts_camelcase() {
+        let b: CreateHuman = serde_json::from_value(json!({
+            "userName": "alice", "givenName": "Alice", "familyName": "Stone",
+            "email": "a@x.io", "password": "pw"
+        })).expect("camelCase CreateHuman");
+        assert_eq!(b.user_name, "alice");
+        assert_eq!(b.given_name, "Alice");
+        assert_eq!(b.family_name, "Stone");
+    }
+
+    #[test]
+    fn create_machine_accepts_camelcase() {
+        let b: CreateMachine = serde_json::from_value(json!({
+            "userName": "bot", "name": "bot"
+        })).expect("camelCase CreateMachine");
+        assert_eq!(b.user_name, "bot");
+    }
+
+    #[test]
+    fn add_grant_accepts_rolekeys() {
+        let b: AddGrant = serde_json::from_value(json!({
+            "roleKeys": ["chat.user"]
+        })).expect("camelCase AddGrant");
+        assert_eq!(b.role_keys, vec!["chat.user".to_string()]);
+    }
 }

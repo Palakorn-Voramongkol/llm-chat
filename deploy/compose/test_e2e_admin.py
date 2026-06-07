@@ -91,7 +91,7 @@ def test_admin_minted_machine_key_passes_manager_chat_user_gate(tmp_path) -> Non
 
     # 1) operator creates a machine user via the BFF
     r = s.post(f"{ADMIN_API}/api/users/machine",
-               data=json.dumps({"username": uname, "name": uname}))
+               data=json.dumps({"userName": uname, "name": uname}))
     assert r.status_code in (200, 201), r.text
     user_id = r.json()["userId"]
 
@@ -119,7 +119,7 @@ def test_admin_minted_machine_key_passes_manager_chat_user_gate(tmp_path) -> Non
 
     # 3) operator grants chat.user to the new machine user
     r = s.post(f"{ADMIN_API}/api/users/{user_id}/grants",
-               data=json.dumps({"role_keys": ["chat.user"]}))
+               data=json.dumps({"roleKeys": ["chat.user"]}))
     assert r.status_code in (200, 201), r.text
 
     # 4) a FRESH token (role projected) must now pass the manager gate.
