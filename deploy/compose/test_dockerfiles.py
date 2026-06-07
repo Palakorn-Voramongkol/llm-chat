@@ -26,7 +26,9 @@ def test_admin_api_is_multistage_rust_to_debian_slim() -> None:
         "COPY --from=build /src/target/release/llm-chat-admin-api "
         "/usr/local/bin/llm-chat-admin-api" in t
     )
-    assert 'ENTRYPOINT ["/usr/local/bin/llm-chat-admin-api"]' in t
+    # entrypoint sources the generated env + resolves the *_FILE secret
+    # indirection, then exec-s the binary COPYd above (asserted just prior).
+    assert 'admin-api-entrypoint.sh' in t
 
 
 def test_admin_web_is_node_standalone() -> None:

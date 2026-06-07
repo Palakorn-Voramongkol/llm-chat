@@ -20,5 +20,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/llm-chat-admin-api /usr/local/bin/llm-chat-admin-api
+# compose cannot env_file a path that only exists inside a runtime volume, so a
+# tiny entrypoint sources /out/manager.generated.env (project_id / audience) and
+# resolves the OIDC *_FILE secret indirection before exec-ing the binary.
+COPY deploy/compose/admin-api-entrypoint.sh /usr/local/bin/admin-api-entrypoint.sh
+RUN chmod +x /usr/local/bin/admin-api-entrypoint.sh
 EXPOSE 7676
-ENTRYPOINT ["/usr/local/bin/llm-chat-admin-api"]
+ENTRYPOINT ["/usr/local/bin/admin-api-entrypoint.sh"]

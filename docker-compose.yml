@@ -110,6 +110,56 @@ services:
       - genenv:/out:ro
     restart: unless-stopped
 
+  admin-api:
+    build:
+      context: .
+      dockerfile: deploy/compose/admin-api.Dockerfile
+    environment:
+      # Single-issuer linchpin (§3): same literal string the manager uses, so
+      # the JWTs the admin verifies share one `iss`. admin-api fails fast at
+      # startup if the discovery doc's issuer differs.
+      ZITADEL_ISSUER: http://host.docker.internal:8080
+      ADMIN_BIND_ADDR: 0.0.0.0:7676
+      # admin SA JSON key + OIDC client creds written by the provisioner into
+      # the (read-only) secrets mount; never reach the browser or logs. The
+      # entrypoint resolves *_FILE -> value and sources /out for project/audience.
+      ADMIN_SA_KEY_PATH: /secrets/admin-api-key.json
+      ADMIN_OIDC_CLIENT_ID_FILE: /secrets/admin_oidc_client_id
+      ADMIN_OIDC_CLIENT_SECRET_FILE: /secrets/admin_oidc_client_secret
+      # OIDC redirect must match the app registered by provision.py
+      # (create_admin_oidc_app: http://localhost:7676/callback). This is the
+      # admin-api's OWN origin (public_origin), distinct from the web origin.
+      ADMIN_PUBLIC_ORIGIN: http://localhost:7676
+      ADMIN_ALLOWED_ORIGIN: http://localhost:3000
+      ADMIN_SESSION_KEY: ${ADMIN_SESSION_KEY}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "7676:7676"
+    depends_on:
+      zitadel-init:
+        condition: service_completed_successfully
+    volumes:
+      # project_id + audience (manager.generated.env) and the SA/OIDC secrets.
+      - genenv:/out:ro
+      - ./secrets:/secrets:ro
+    restart: unless-stopped
+
+  admin-web:
+    build:
+      context: ./admin-web
+      dockerfile: ../deploy/compose/admin-web.Dockerfile
+    environment:
+      NODE_ENV: production
+      # next.config rewrites /api,/login,/callback,/logout to this origin
+      # (same-origin proxy: no CORS, SameSite=Lax cookie). In-network DNS name.
+      ADMIN_API_ORIGIN: http://admin-api:7676
+    ports:
+      - "3000:3000"
+    depends_on:
+      admin-api:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   pgdata:
   machinekey:
