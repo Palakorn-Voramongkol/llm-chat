@@ -486,11 +486,29 @@ def main() -> int:
     write_secret("demo_user", DEMO_USERNAME)
     write_secret("demo_password", DEMO_PASSWORD)
 
+    # ----- admin-api provisioning (appendix §2, §1.2) -----
+    # Reuses the same bootstrap IAM_OWNER token/headers minted above:
+    # assign_admin_member NEEDS org.member.write (§2.4), which the runtime
+    # least-privilege SA will not have. Role creation stays here so the
+    # runtime SA needs no project.role.write.
+    create_admin_role(token, headers, project_id)
+    admin_sa_id = create_admin_sa(token, headers)
+    admin_sa = generate_admin_key(token, headers, admin_sa_id)
+    assign_admin_member(token, headers, admin_sa_id)
+    admin_cid, admin_secret = create_admin_oidc_app(token, headers, project_id)
+    write_secret("admin-api-key.json", json.dumps(admin_sa))
+    write_secret("admin_api_user_id", admin_sa_id)
+    write_secret("admin_oidc_client_id", admin_cid)
+    write_secret("admin_oidc_client_secret", admin_secret)
+    print(f"[provision] admin: sa_user_id={admin_sa_id} "
+          f"admin_oidc_client_id={admin_cid} role={ADMIN_SA_ROLE}")
+
     write_secret("project_id", project_id)
     write_secret("kabytech_user_id", user_id)
     write_generated_env(project_id)
     print(f"[provision] done: project_id={project_id} userId={user_id} "
-          f"oidc_client_id={client_id} demo_user={DEMO_USERNAME}")
+          f"oidc_client_id={client_id} demo_user={DEMO_USERNAME} "
+          f"admin_sa_id={admin_sa_id}")
     return 0
 
 

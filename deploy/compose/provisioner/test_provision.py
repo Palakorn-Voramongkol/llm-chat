@@ -273,3 +273,54 @@ def test_assign_admin_member_409_is_success():
     with mock.patch.object(provision, "request_with_retry",
                            lambda *a, **k: _FakeResp(409)):
         provision.assign_admin_member("boot-tok", {}, "sa-123")  # must NOT raise
+
+
+# ---------- Task 7: end-to-end main() integration ----------
+
+def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
+    written = {}
+    calls = []
+
+    def fake_write_secret(name, content):
+        written[name] = content
+
+    with mock.patch.object(provision, "load_admin_key",
+                           return_value={"userId": "boot", "keyId": "k",
+                                         "key": "PEM"}), \
+         mock.patch.object(provision, "mint_management_token",
+                           return_value="boot-tok"), \
+         mock.patch.object(provision, "fetch_org_id", return_value="org-1"), \
+         mock.patch.object(provision, "create_project", return_value="proj-1"), \
+         mock.patch.object(provision, "add_role"), \
+         mock.patch.object(provision, "create_machine_user",
+                           return_value="kaby-1"), \
+         mock.patch.object(provision, "read_existing_user_id",
+                           return_value=None), \
+         mock.patch.object(provision, "generate_json_key",
+                           return_value={"userId": "kaby-1"}), \
+         mock.patch.object(provision, "grant_role"), \
+         mock.patch.object(provision, "create_oidc_app",
+                           return_value="cli-cid"), \
+         mock.patch.object(provision, "create_human_user",
+                           return_value="demo-1"), \
+         mock.patch.object(provision, "create_admin_role",
+                           side_effect=lambda *a, **k: calls.append("role")), \
+         mock.patch.object(provision, "create_admin_sa",
+                           return_value="sa-9"), \
+         mock.patch.object(provision, "generate_admin_key",
+                           return_value={"userId": "sa-9", "keyId": "ak"}), \
+         mock.patch.object(provision, "create_admin_oidc_app",
+                           return_value=("admin-cid", "admin-secret")), \
+         mock.patch.object(provision, "assign_admin_member",
+                           side_effect=lambda t, h, uid: calls.append(("member", uid))), \
+         mock.patch.object(provision, "write_secret", fake_write_secret), \
+         mock.patch.object(provision, "write_generated_env"):
+        rc = provision.main()
+
+    assert rc == 0
+    assert json.loads(written["admin-api-key.json"]) == {"userId": "sa-9", "keyId": "ak"}
+    assert written["admin_api_user_id"] == "sa-9"
+    assert written["admin_oidc_client_id"] == "admin-cid"
+    assert written["admin_oidc_client_secret"] == "admin-secret"
+    assert ("member", "sa-9") in calls
+    assert "role" in calls
