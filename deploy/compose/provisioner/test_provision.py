@@ -219,3 +219,57 @@ def test_generate_admin_key_decodes_keydetails():
     with mock.patch.object(provision, "request_with_retry", fake_rwr):
         out = provision.generate_admin_key("tok", {}, "sa-123")
     assert out == sa
+
+
+def test_create_admin_oidc_app_posts_web_basic_with_role_assertion():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"clientId": "cid-1", "clientSecret": "shh-1"})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        cid, secret = provision.create_admin_oidc_app("tok", {"h": "1"}, "proj-1")
+    assert (cid, secret) == ("cid-1", "shh-1")
+    assert captured["url"].endswith("/management/v1/projects/proj-1/apps/oidc")
+    b = captured["body"]
+    assert b["appType"] == "OIDC_APP_TYPE_WEB"
+    assert b["authMethodType"] == "OIDC_AUTH_METHOD_TYPE_BASIC"
+    assert b["accessTokenType"] == "OIDC_TOKEN_TYPE_JWT"
+    assert b["accessTokenRoleAssertion"] is True
+    assert b["idTokenRoleAssertion"] is True
+    assert b["devMode"] is True
+    assert "OIDC_GRANT_TYPE_AUTHORIZATION_CODE" in b["grantTypes"]
+    assert "OIDC_GRANT_TYPE_REFRESH_TOKEN" in b["grantTypes"]
+    assert b["responseTypes"] == ["OIDC_RESPONSE_TYPE_CODE"]
+    assert provision.ADMIN_OIDC_REDIRECT_URI in b["redirectUris"]
+
+
+def test_create_admin_oidc_app_409_is_systemexit():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        with pytest.raises(SystemExit):
+            provision.create_admin_oidc_app("tok", {}, "p")
+
+
+def test_assign_admin_member_posts_org_user_manager():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"details": {}})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.assign_admin_member("boot-tok", {"h": "1"}, "sa-123")
+    assert captured["url"].endswith("/management/v1/orgs/me/members")
+    b = captured["body"]
+    assert b["userId"] == "sa-123"
+    assert b["roles"] == ["ORG_USER_MANAGER"]
+
+
+def test_assign_admin_member_409_is_success():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        provision.assign_admin_member("boot-tok", {}, "sa-123")  # must NOT raise

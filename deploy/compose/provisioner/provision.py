@@ -39,6 +39,15 @@ DEMO_USERNAME = "demo"
 DEMO_EMAIL = "demo@llm-chat.local"
 DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "Demo-Passw0rd!")
 
+# admin-api OIDC WEB app (confidential server / BASIC + PKCE) — distinct from the
+# CLI's public NATIVE app above. Captures BOTH clientId and clientSecret (once).
+ADMIN_OIDC_APP_NAME = "chat-admin-api"
+ADMIN_OIDC_REDIRECT_URI = os.environ.get(
+    "ADMIN_OIDC_REDIRECT_URI", "http://localhost:7676/callback")
+ADMIN_OIDC_POST_LOGOUT_URI = os.environ.get(
+    "ADMIN_OIDC_POST_LOGOUT_URI", "http://localhost:3000/")
+ADMIN_SA_ROLE = "ORG_USER_MANAGER"  # least privilege; bump to ORG_OWNER per §6.2 gate
+
 MAX_ATTEMPTS = 10
 BACKOFF_SECONDS = 3
 REQUEST_TIMEOUT = 15
@@ -330,6 +339,62 @@ def create_oidc_app(token: str, headers: dict, project_id: str) -> str:
             "`docker compose down -v` AND delete ./secrets.")
     resp.raise_for_status()
     raise RuntimeError(f"create_oidc_app unexpected status {resp.status_code}")
+
+
+def create_admin_oidc_app(token: str, headers: dict, project_id: str):
+    """Register the admin-api's confidential OIDC WEB app (appendix §1.2).
+
+    Differs from create_oidc_app (the CLI's public NATIVE client): WEB +
+    BASIC yields a client_secret (combined with PKCE at runtime). The app
+    enum is OIDC_TOKEN_TYPE_JWT — NOT the machine ACCESS_TOKEN_TYPE_JWT (§7
+    enum trap). accessTokenRoleAssertion=true so chat.admin rides in the
+    ACCESS-token JWT even though the project has projectRoleAssertion=false
+    (§6.1 gate). redirectUris uses the admin-api's OWN origin (ADMIN_PUBLIC_ORIGIN
+    / public_origin), not the web origin. Returns (clientId, clientSecret);
+    the secret is shown ONCE.
+    """
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/projects/{project_id}/apps/oidc",
+        headers=headers,
+        json_body={
+            "name": ADMIN_OIDC_APP_NAME,
+            "redirectUris": [ADMIN_OIDC_REDIRECT_URI],
+            "postLogoutRedirectUris": [ADMIN_OIDC_POST_LOGOUT_URI],
+            "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
+            "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE",
+                           "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
+            "appType": "OIDC_APP_TYPE_WEB",
+            "authMethodType": "OIDC_AUTH_METHOD_TYPE_BASIC",
+            "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
+            "devMode": True,
+            "accessTokenRoleAssertion": True,
+            "idTokenRoleAssertion": True,
+        },
+    )
+    if resp.status_code == 200:
+        body = resp.json()
+        return body["clientId"], body["clientSecret"]
+    if resp.status_code == 409:
+        raise SystemExit(
+            "admin OIDC app already exists (409): clean-boot contract — run "
+            "`docker compose down -v` AND delete ./secrets.")
+    resp.raise_for_status()
+    raise RuntimeError(
+        f"create_admin_oidc_app unexpected status {resp.status_code}")
+
+
+def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
+    """Grant the admin SA its org-manager role (appendix §2.4). MUST be called
+    with the BOOTSTRAP IAM_OWNER token (needs org.member.write) — NOT the new
+    least-privilege SA. orgs/me resolves the org from the calling token /
+    x-zitadel-orgid. Idempotent: 409 == already a member. ORG_USER_MANAGER is
+    least privilege; bump to ORG_OWNER only if the §6.2 key-mint gate fails."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/orgs/me/members", headers=headers,
+        json_body={"userId": sa_user_id, "roles": [ADMIN_SA_ROLE]},
+    )
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
 
 
 def create_human_user(token: str, headers: dict, org_id) -> str:
