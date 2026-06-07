@@ -14,6 +14,8 @@
 
 use std::io::{IsTerminal, Write};
 
+use syntect::highlighting::{Theme, ThemeSet};
+use syntect::parsing::SyntaxSet;
 use termimad::MadSkin;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,12 +59,95 @@ pub fn render_markdown(text: &str, mode: RenderMode) {
         RenderMode::Plain => MadSkin::no_style().print_text(text),
         RenderMode::Auto => {
             if color_capable() {
-                MadSkin::default().print_text(text);
+                // Styled: termimad for prose, syntect for fenced code blocks
+                // (so code is syntax-highlighted like the Python client's rich).
+                print_styled(text);
             } else {
                 MadSkin::no_style().print_text(text);
             }
         }
     }
+}
+
+/// Render `md` to a color terminal: prose via termimad, fenced code blocks
+/// syntax-highlighted via syntect. Code blocks are located with pulldown-cmark
+/// (the parser's byte offsets), not by hand-scanning fences.
+fn print_styled(md: &str) {
+    use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
+    let skin = MadSkin::default();
+    let ss = SyntaxSet::load_defaults_newlines();
+    let ts = ThemeSet::load_defaults();
+    let theme = match ts
+        .themes
+        .get("base16-ocean.dark")
+        .or_else(|| ts.themes.values().next())
+    {
+        Some(t) => t,
+        None => {
+            skin.print_text(md);
+            return;
+        }
+    };
+
+    let mut last = 0usize;
+    let mut in_code = false;
+    let mut lang = String::new();
+    let mut code = String::new();
+
+    for (ev, range) in Parser::new_ext(md, Options::all()).into_offset_iter() {
+        match ev {
+            Event::Start(Tag::CodeBlock(kind)) => {
+                // Render the markdown between the previous block and this one.
+                if range.start > last {
+                    let gap = &md[last..range.start];
+                    if !gap.trim().is_empty() {
+                        skin.print_text(gap);
+                    }
+                }
+                in_code = true;
+                code.clear();
+                lang = match kind {
+                    CodeBlockKind::Fenced(l) => l.to_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+            }
+            Event::Text(t) if in_code => code.push_str(&t),
+            Event::End(TagEnd::CodeBlock) => {
+                print_code(&ss, theme, &lang, &code);
+                in_code = false;
+                last = range.end;
+            }
+            _ => {}
+        }
+    }
+    if last < md.len() {
+        let tail = &md[last..];
+        if !tail.trim().is_empty() {
+            skin.print_text(tail);
+        }
+    }
+}
+
+fn print_code(ss: &SyntaxSet, theme: &Theme, lang: &str, code: &str) {
+    use syntect::easy::HighlightLines;
+    use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+
+    // Match the fence's info string to a syntax by token (e.g. "rust", "py")
+    // or extension; fall back to plain text for unknown/absent languages.
+    let syntax = ss
+        .find_syntax_by_token(lang)
+        .or_else(|| ss.find_syntax_by_extension(lang))
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    let mut h = HighlightLines::new(syntax, theme);
+    let mut out = std::io::stdout();
+    for line in LinesWithEndings::from(code) {
+        let ranges = h.highlight_line(line, ss).unwrap_or_default();
+        let _ = write!(out, "{}", as_24_bit_terminal_escaped(&ranges[..], false));
+    }
+    let _ = write!(out, "\x1b[0m"); // reset so following prose isn't tinted
+    let _ = writeln!(out);
+    let _ = out.flush();
 }
 
 /// Render to a string (used by tests). Auto is treated as plain (non-tty).
@@ -120,5 +205,26 @@ mod tests {
         let out = render_to_string(SAMPLE, RenderMode::Auto);
         assert!(!out.contains('\u{1b}'));
         assert!(!out.contains("##"));
+    }
+
+    #[test]
+    fn code_highlighting_produces_multiple_token_colors() {
+        // Proves the syntect path (used by styled `auto`) syntax-highlights —
+        // the capability rich provides in the Python client.
+        use syntect::easy::HighlightLines;
+        use syntect::util::as_24_bit_terminal_escaped;
+        let ss = SyntaxSet::load_defaults_newlines();
+        let ts = ThemeSet::load_defaults();
+        let theme = &ts.themes["base16-ocean.dark"];
+        let syntax = ss.find_syntax_by_token("rust").expect("bundled rust syntax");
+        let mut h = HighlightLines::new(syntax, theme);
+        let ranges = h.highlight_line("fn main() { let x = 1; }\n", &ss).unwrap();
+        let out = as_24_bit_terminal_escaped(&ranges[..], false);
+        assert!(out.contains('\u{1b}'), "highlighted code must contain ANSI color");
+        // ≥2 distinct truecolor codes → tokens colored differently (keyword vs ident).
+        assert!(
+            out.matches("\u{1b}[38;2;").count() >= 2,
+            "expected multiple token colors, got: {out:?}"
+        );
     }
 }

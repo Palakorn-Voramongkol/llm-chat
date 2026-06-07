@@ -39,6 +39,11 @@ sha2 = "0.10"
 rand = "0.8"
 # markdown -> terminal; no_style skin for plain mode.
 termimad = "0.34"
+# fenced code blocks: locate them precisely (pulldown-cmark) and syntax-
+# highlight them (syntect, the pygments analog) so code renders in color like
+# the Python client's rich. fancy-regex backend = pure Rust (no C toolchain).
+pulldown-cmark = { version = "0.12", default-features = false }
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 # one-shot loopback HTTP server for the OIDC redirect (parsed Request, no
 # hand-rolled HTTP parsing).
 tiny_http = "0.12"
