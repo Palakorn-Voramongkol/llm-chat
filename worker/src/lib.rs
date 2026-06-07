@@ -1163,6 +1163,13 @@ fn clean_answer(text: &str) -> String {
                     return false;
                 }
             }
+            // Same model/effort status line when rendered with the ● bullet
+            // (identical glyph to a real answer) or wrapped without its leading
+            // glyph: "● high · /effort" / "high · /effort". Defense-in-depth
+            // mirror of the frontend isChrome() filter.
+            if l.contains("· /effort") || l.contains("·/effort") {
+                return false;
+            }
             // Claude's PATH hint and the export command it suggests
             if l.starts_with("Native installation exists") {
                 return false;
@@ -2476,5 +2483,32 @@ mod ws_bind_tests {
     fn honors_loopback() {
         assert_eq!(worker_bind_addr(Some("127.0.0.1".to_string()), 7878).unwrap(),
                    "127.0.0.1:7878");
+    }
+}
+
+#[cfg(test)]
+mod clean_answer_tests {
+    use super::clean_answer;
+
+    // Regression: claude's "● high · /effort" model/effort status line uses the
+    // same ● bullet as a real answer. It must never survive into the answer —
+    // when scraped during warmup it pre-empted claude's real reply and the
+    // client got "high · /effort" instead of the actual answer.
+    #[test]
+    fn strips_effort_status_line_with_bullet() {
+        assert_eq!(clean_answer("● high · /effort"), "");
+    }
+    #[test]
+    fn strips_effort_status_line_wrapped_without_glyph() {
+        assert_eq!(clean_answer("high · /effort"), "");
+    }
+    #[test]
+    fn keeps_real_answer_drops_trailing_effort_status() {
+        // A real one-line answer followed by the status line on its own row.
+        assert_eq!(clean_answer("4\n● high · /effort"), "4");
+    }
+    #[test]
+    fn keeps_plain_answer() {
+        assert_eq!(clean_answer("BANANA"), "BANANA");
     }
 }

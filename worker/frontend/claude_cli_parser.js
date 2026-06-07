@@ -51,6 +51,11 @@ function createClaudeCliParser(term, fitAddon) {
       if (/^⏵|\(shift\+tab to cycle\)/.test(line)) return true;
       // Model + effort indicator line: "◉ xhigh · /effort"
       if (/^[◉◯]/.test(line)) return true;
+      // Same status line but rendered with the ● bullet (identical to a real
+      // answer bullet) or wrapped without its leading glyph: "● high · /effort"
+      // / "high · /effort". Must be filtered explicitly or it is captured as
+      // the answer — and, scraped during warmup, pre-empts claude's real reply.
+      if (/·\s*\/effort\b/.test(line)) return true;
       if (/^\s*Claude Code/.test(line)) return true;
       if (/Welcome back|Tips for getting|Recent activity|No recent activity|Run \/init|CLAUDE\.md/.test(line)) return true;
       if (/Opus|Claude Max|Organization/.test(line)) return true;
@@ -95,6 +100,10 @@ function createClaudeCliParser(term, fitAddon) {
 
         const aMatch = line.match(/^●\s*(.*)/);
         if (aMatch && currentQ) {
+          // The ● bullet is shared by real answers AND the "● high · /effort"
+          // status line. isChrome() catches the status line (and other chrome
+          // that happens to start with ●); skip it so it is never the answer.
+          if (this.isChrome(line)) continue;
           currentALines.push(aMatch[1].trim());
           continue;
         }
