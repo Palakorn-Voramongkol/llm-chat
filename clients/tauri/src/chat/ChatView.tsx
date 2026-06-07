@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { Fragment, useEffect, useRef } from "react";
 import { LogOut, Sparkles } from "lucide-react";
 import { useAuth } from "../auth/useAuth";
 import { useChat } from "./useChat";
 import { Message } from "./Message";
 import { Composer } from "./Composer";
+import { DayDivider, dayKey, dayLabel } from "./DayDivider";
 
 export function ChatView() {
   const { config, identity, signOut } = useAuth();
@@ -42,6 +43,21 @@ export function ChatView() {
 
   const plantuml = config?.plantuml_server ?? "https://www.plantuml.com/plantuml";
   const name = config?.app_name ?? "Lumina";
+
+  // Insert a day divider before the first message of each calendar day. Messages
+  // without a settled time (a pending assistant reply) don't start a new day.
+  let lastDay: string | null = null;
+  const rows = messages.map((m) => {
+    let divider: string | null = null;
+    if (m.time != null) {
+      const k = dayKey(m.time);
+      if (k !== lastDay) {
+        divider = dayLabel(m.time);
+        lastDay = k;
+      }
+    }
+    return { m, divider };
+  });
 
   return (
     <div className="flex h-full flex-col bg-slate-50 dark:bg-slate-950">
@@ -84,10 +100,13 @@ export function ChatView() {
               </p>
             </div>
           )}
-          {messages.map((m) => (
-            <div key={m.id} className="animate-fade-in">
-              <Message msg={m} plantumlServer={plantuml} />
-            </div>
+          {rows.map(({ m, divider }) => (
+            <Fragment key={m.id}>
+              {divider && <DayDivider label={divider} />}
+              <div className="animate-fade-in">
+                <Message msg={m} plantumlServer={plantuml} />
+              </div>
+            </Fragment>
           ))}
         </div>
       </div>

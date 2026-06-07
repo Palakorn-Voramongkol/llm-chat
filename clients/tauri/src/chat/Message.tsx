@@ -61,7 +61,7 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
   return (
     <div className={`flex items-end gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center self-start rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center self-end rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
           <Sparkles size={15} />
         </div>
       )}
