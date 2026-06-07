@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+  font-family: theme("fontFamily.sans");
+}
+
+/* Thin, unobtrusive scrollbars. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-300 dark:bg-slate-700;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Rendered-markdown ("prose") styling that adapts to the theme. */
+.lumina-prose {
+  @apply text-[15px] leading-relaxed;
+}
+.lumina-prose h1 { @apply mb-3 mt-5 text-2xl font-semibold; }
+.lumina-prose h2 { @apply mb-2 mt-5 text-xl font-semibold; }
+.lumina-prose h3 { @apply mb-2 mt-4 text-lg font-semibold; }
+.lumina-prose p { @apply my-2.5; }
+.lumina-prose ul { @apply my-2.5 list-disc pl-6; }
+.lumina-prose ol { @apply my-2.5 list-decimal pl-6; }
+.lumina-prose li { @apply my-1; }
+.lumina-prose a { @apply text-brand-500 underline underline-offset-2 hover:text-brand-400; }
+.lumina-prose blockquote { @apply my-3 border-l-4 border-slate-300 pl-4 italic text-slate-600 dark:border-slate-700 dark:text-slate-400; }
+.lumina-prose table { @apply my-3 w-full border-collapse text-sm; }
+.lumina-prose th, .lumina-prose td { @apply border border-slate-200 px-3 py-1.5 text-left dark:border-slate-800; }
+.lumina-prose th { @apply bg-slate-100 font-semibold dark:bg-slate-900; }
+.lumina-prose :not(pre) > code {
+  @apply rounded bg-slate-200 px-1.5 py-0.5 font-mono text-[0.85em] dark:bg-slate-800;
+}
+.lumina-prose hr { @apply my-5 border-slate-200 dark:border-slate-800; }

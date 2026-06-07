@@ -1,0 +1,27 @@
+[package]
+name = "lumina"
+version = "0.1.0"
+description = "Lumina — rich desktop client for the llm-chat stack"
+edition = "2021"
+
+[lib]
+name = "lumina_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+base64 = "0.22"
+
+# Standalone product: its own workspace so the repo-root Cargo workspace does
+# not pull in the webview-linked Tauri build.
+[workspace]
