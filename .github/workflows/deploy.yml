@@ -147,7 +147,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install client deps
-        run: pip install --quiet pyjwt cryptography requests websockets
+        run: pip install --quiet -r clients/python/requirements.txt
 
       - name: Materialize kabytech key
         env:
@@ -164,15 +164,11 @@ jobs:
               && echo "kabytech key parses as JSON OK"
 
       - name: Run e2e client
-        env:
-          ZITADEL_ISSUER: ${{ env.ZITADEL_ISSUER }}
-          PROJECT_ID:     ${{ env.PROJECT_ID }}
-          MANAGER_WS:     wss://${{ env.MANAGER_PUBLIC_HOST }}/chat
         run: |
-          python clients/python/llm_chat_client.py \
-            --issuer    "$ZITADEL_ISSUER" \
-            --project   "$PROJECT_ID" \
-            --key-file  "$HOME/.config/llm-chat/kabytech-key.json" \
-            --manager   "$MANAGER_WS" \
-            --send      "hello" \
-            --timeout   60
+          # chat.py defaults: account=kabytech (key auto-resolves to
+          # ~/.config/llm-chat/kabytech-key.json), manager auto-detect
+          # falls through to wss://id.palakorn.com/chat from a GH runner.
+          python clients/python/chat.py \
+            --account kabytech \
+            --send    "hello" \
+            --timeout 60

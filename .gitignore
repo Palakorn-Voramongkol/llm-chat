@@ -6,6 +6,7 @@ manager/target/
 *.env
 .claude/
 secrets/
+.venv/
 __pycache__/
 *.pyc
 *.egg-info/

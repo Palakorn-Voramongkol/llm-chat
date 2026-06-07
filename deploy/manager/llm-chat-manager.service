@@ -13,6 +13,11 @@ User=llm
 Group=llm
 WorkingDirectory=/home/llm
 EnvironmentFile=/etc/llm-chat/manager.env
+# Put the user-local bin (where claude 2.1.x lives via npm/native installer)
+# before the system one so the worker spawns the same claude an interactive
+# shell would, and its first-run "PATH not set" banner doesn't leak into
+# chat answers.
+Environment=PATH=/home/llm/.local/bin:/usr/local/bin:/usr/bin
 ExecStart=/usr/local/bin/llm-chat-manager
 Restart=on-failure
 RestartSec=5s
