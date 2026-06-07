@@ -2,8 +2,13 @@
 // admin. Owns the operator OIDC session + the least-privilege admin service
 // account; the browser only ever holds an opaque session cookie.
 
+use std::sync::Arc;
+
 use llm_chat_admin_api::config::AdminConfig;
-use llm_chat_admin_api::zitadel;
+use llm_chat_admin_api::{api, zitadel, AppState};
+use tower_http::trace::TraceLayer;
+use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
+use zitadel_auth::{JwksCache, ZitadelConfig};
 
 /// PURE: the two issuer strings must match byte-for-byte (single-issuer
 /// linchpin, design §8). `configured` is already trailing-slash-trimmed by
@@ -68,12 +73,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     tracing::info!(target: "admin-api::startup", "issuer-match guard passed");
 
-    let _client = zitadel::ZitadelClient::new(cfg.clone(), http);
-    // Router + serve land in Task 18. For now, bind so the fail-fast guards are
-    // exercised and the process stays up.
+    let zitadel_client = Arc::new(zitadel::ZitadelClient::new(cfg.clone(), http.clone()));
+    let jwks = JwksCache::new(ZitadelConfig {
+        issuer: cfg.issuer.clone(),
+        audience: vec![cfg.audience.clone()],
+        jwks_uri: format!("{}/oauth/v2/keys", cfg.issuer),
+        project_id: cfg.project_id.clone(),
+    });
+    let state = AppState {
+        cfg: cfg.clone(),
+        jwks,
+        zitadel: zitadel_client,
+        http: http.clone(),
+    };
+
+    // tower-sessions: in-memory store, signed cookie, SameSite=Lax (same-origin
+    // proxy means Lax survives the Zitadel 302 back). secure=false for the
+    // plain-HTTP dev origin; flip to true behind TLS.
+    let session_layer = SessionManagerLayer::new(MemoryStore::default())
+        .with_name("id")
+        .with_same_site(tower_sessions::cookie::SameSite::Lax)
+        .with_secure(false)
+        .with_expiry(Expiry::OnInactivity(time::Duration::hours(8)));
+
+    let app = api::router(state)
+        .layer(session_layer)
+        .layer(TraceLayer::new_for_http());
+
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;
-    tracing::info!(target: "admin-api", addr = %cfg.bind_addr, "admin-api listening (router pending Task 18)");
-    let app = axum::Router::new();
+    tracing::info!(target: "admin-api", addr = %cfg.bind_addr, "admin-api listening");
     axum::serve(listener, app).await?;
     Ok(())
 }
