@@ -1550,6 +1550,13 @@ fn lock_token_file_acl(path: &std::path::Path) {
     }
 }
 
+/// Pure: format the worker's WS bind address. `bind` is the raw value of
+/// LLM_CHAT_WS_BIND; None/empty -> loopback (today's behavior).
+fn worker_bind_addr(bind: Option<String>, port: u16) -> String {
+    let host = bind.filter(|s| !s.is_empty()).unwrap_or_else(|| "127.0.0.1".to_string());
+    format!("{}:{}", host, port)
+}
+
 fn load_or_generate_auth_token() -> String {
     if let Ok(t) = std::env::var("LLM_CHAT_AUTH_TOKEN") {
         if !t.is_empty() {
@@ -1650,7 +1657,7 @@ fn start_ws_server(app_handle: tauri::AppHandle, port: u16) {
             }
         }
 
-        let addr = format!("127.0.0.1:{}", port);
+        let addr = worker_bind_addr(std::env::var("LLM_CHAT_WS_BIND").ok(), port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -2360,4 +2367,26 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod ws_bind_tests {
+    use super::worker_bind_addr;
+
+    #[test]
+    fn defaults_to_loopback_when_none() {
+        assert_eq!(worker_bind_addr(None, 7878), "127.0.0.1:7878");
+    }
+    #[test]
+    fn defaults_to_loopback_when_empty() {
+        assert_eq!(worker_bind_addr(Some(String::new()), 7878), "127.0.0.1:7878");
+    }
+    #[test]
+    fn honors_all_interfaces() {
+        assert_eq!(worker_bind_addr(Some("0.0.0.0".to_string()), 7878), "0.0.0.0:7878");
+    }
+    #[test]
+    fn honors_specific_ip_and_port() {
+        assert_eq!(worker_bind_addr(Some("10.0.0.5".to_string()), 9000), "10.0.0.5:9000");
+    }
 }
