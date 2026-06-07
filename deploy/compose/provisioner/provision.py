@@ -200,7 +200,11 @@ def create_machine_user(token: str, headers: dict) -> str:
         "POST", f"{ISSUER}/management/v1/users/machine", headers=headers,
         json_body={"userName": MACHINE_USERNAME, "name": MACHINE_USERNAME,
                    "description": "llm-chat reference client",
-                   "accessTokenType": "ACCESS_TOKEN_TYPE_BEARER"},
+                   # JWT (not BEARER/opaque): the manager validates access
+                   # tokens locally via JWKS, so Zitadel must issue self-
+                   # contained JWTs. BEARER yields opaque 104-char tokens the
+                   # manager cannot verify and rejects with 401.
+                   "accessTokenType": "ACCESS_TOKEN_TYPE_JWT"},
     )
     if resp.status_code == 200:
         return resp.json()["userId"]
