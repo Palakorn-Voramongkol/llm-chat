@@ -3,13 +3,12 @@ import { Check, Copy, Loader2, Sparkles } from "lucide-react";
 import { Markdown } from "../render/Markdown";
 import type { ChatMessage } from "./useChat";
 
-// LINE talk-bubble tail ("horn"), traced from the pixels of the user's real
-// LINE screenshot: an up-right pointed tip with a concave underside scoop.
-// Drawn in a 28×22 viewBox; the left edge (x=14) overlaps the bubble's squared
-// top corner so it merges seamlessly, the rest protrudes. Mirrored via CSS for
-// received bubbles (see .lumina-tail-recv).
-const TAIL_PATH =
-  "M6,4 C11,3.5 14,3 18,2 C22,1 26,2 26.5,4 C25,6 20,7 16,11 C14.5,14 14,16 14,20 L14,4 L6,4 Z";
+// Talk-bubble tail, traced from the pixels of the user's reference chat-bubble
+// icon: a spike that hangs from the bottom corner — near-vertical outer edge,
+// slanted inner edge, pointed tip. Drawn in an 18×16 viewBox with the top edge
+// overlapping the bubble's bottom edge so it merges seamlessly. Sits at the
+// bottom-left for received; mirrored to the bottom-right for sent (see CSS).
+const TAIL_PATH = "M2,0 L17,0 L3,15 Z";
 
 function fmtTime(t?: number): string {
   if (!t) return "";
@@ -44,13 +43,13 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
   };
 
   const widthCls = isUser ? "max-w-[78%]" : "max-w-[88%]";
-  // LINE-style: green sent bubble (horn tail top-right), white/dark received
-  // bubble (horn tail top-left, mirrored). The tail is an SVG horn anchored at
-  // the corner (see styles.css + TAIL_PATH below); ml-1 on received keeps the
-  // left-pointing horn clear of the avatar.
+  // Green sent bubble with the tail at the bottom-right; white/dark received
+  // bubble with the tail at the bottom-left (mirrored). The tail is an SVG
+  // spike anchored at the bottom corner (see styles.css + TAIL_PATH below);
+  // ml-1.5 on received gives a little breathing room from the avatar.
   const bubbleCls = isUser
     ? "lumina-bubble lumina-bubble-sent"
-    : "lumina-bubble lumina-bubble-received ml-2 text-slate-900 dark:text-slate-100";
+    : "lumina-bubble lumina-bubble-received ml-1.5 text-slate-900 dark:text-slate-100";
 
   const TimeLabel = () =>
     time ? (
@@ -75,7 +74,7 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
           className={`lumina-tail ${isUser ? "lumina-tail-sent" : "lumina-tail-recv"}`}
           aria-hidden="true"
         >
-          <svg viewBox="0 0 28 22">
+          <svg viewBox="0 0 18 16">
             <path d={TAIL_PATH} />
           </svg>
         </span>
