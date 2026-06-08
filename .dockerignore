@@ -1,5 +1,8 @@
 .git/
 node_modules/
+# Workspace build output lives in the ROOT target/ now (was per-crate). Exclude
+# it from the build context so the manager image build stays lean and fast.
+/target/
 worker/target/
 worker/node_modules/
 manager/target/
