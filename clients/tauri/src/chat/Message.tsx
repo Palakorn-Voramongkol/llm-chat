@@ -49,7 +49,7 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
   // ml-1.5 on received gives a little breathing room from the avatar.
   const bubbleCls = isUser
     ? "lumina-bubble lumina-bubble-sent"
-    : "lumina-bubble lumina-bubble-received ml-1.5 text-slate-900 dark:text-slate-100";
+    : "lumina-bubble lumina-bubble-received -ml-2 text-slate-900 dark:text-slate-100";
 
   const TimeLabel = () =>
     time ? (
@@ -61,7 +61,7 @@ export function Message({ msg, plantumlServer }: { msg: ChatMessage; plantumlSer
   return (
     <div className={`flex items-end gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center self-end rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
+        <div className="flex h-8 w-8 shrink-0 translate-y-[36px] items-center justify-center self-end rounded-full bg-gradient-to-br from-brand-400 to-brand-600 text-white">
           <Sparkles size={15} />
         </div>
       )}
