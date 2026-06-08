@@ -1020,8 +1020,10 @@ async fn handle_client(
     };
     let path_holder = Arc::new(std::sync::Mutex::new(String::new()));
     let query_holder = Arc::new(std::sync::Mutex::new(String::new()));
+    let user_id_holder = Arc::new(std::sync::Mutex::new(None::<String>));
     let path_capture = path_holder.clone();
     let query_capture = query_holder.clone();
+    let user_id_capture = user_id_holder.clone();
     let cb = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         *path_capture.lock().unwrap() = req.uri().path().to_string();
         *query_capture.lock().unwrap() = req.uri().query().unwrap_or("").to_string();
@@ -1067,6 +1069,7 @@ async fn handle_client(
                     )))
                     .unwrap());
             }
+            *user_id_capture.lock().unwrap() = Some(principal.user_id.clone());
             return Ok(resp);
         }
 
@@ -1090,19 +1093,32 @@ async fn handle_client(
     let ws = tokio_tungstenite::accept_hdr_async(stream, cb).await?;
     let req_path = path_holder.lock().unwrap().clone();
     let req_query = query_holder.lock().unwrap().clone();
+    let user_id = user_id_holder.lock().unwrap().clone();
 
     if req_path == "/control" {
-        return handle_control(ws, state).await;
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
+        return handle_control(ws, state, uid).await;
     }
     if req_path == "/chat" {
         // /chat accepts an optional `?cwd=<urlencoded-path>` so the client
         // can ask claude to run in a specific directory. The worker
         // canonicalizes and trust-marks the path before spawn.
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
         let cwd = parse_query_param(&req_query, "cwd");
-        return handle_chat(ws, state, cwd).await;
+        return handle_chat(ws, state, uid, cwd).await;
     }
     if req_path == "/s/new" {
-        return bridge_session_auto(ws, state).await;
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
+        return bridge_session_auto(ws, state, uid).await;
     }
     if req_path.starts_with("/s/") {
         let sid = &req_path[3..];
@@ -1128,6 +1144,7 @@ async fn handle_client(
 async fn handle_control(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
+    user_id: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut sink, mut stream) = ws.split();
     let _ = sink
@@ -1156,7 +1173,7 @@ async fn handle_control(
                 }
                 serde_json::json!({"ok":true,"ports":ports,"sessionsPerPort":counts})
             }
-            "open" => match cmd_open(&state, None).await {
+            "open" => match cmd_open(&state, &user_id, None).await {
                 Ok((sid, port, transport)) => {
                     serde_json::json!({"ok":true,"sessionId":sid,"backendPort":port,"transport":transport})
                 }
@@ -1380,17 +1397,26 @@ async fn pick_least_loaded_port(state: &SharedState) -> Option<u16> {
     counts.into_iter().min_by_key(|(_, c)| *c).map(|(p, _)| p)
 }
 
+/// Build the worker `open` command body. The user id is REQUIRED (the worker
+/// confines every spawn under {base}/{userId}); the relative subpath is added
+/// only when present.
+fn open_request_body(user_id: &str, subpath: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({"cmd":"open","userId": user_id});
+    if let Some(p) = subpath {
+        body["cwd"] = serde_json::Value::String(p.to_string());
+    }
+    body
+}
+
 async fn cmd_open(
     state: &SharedState,
-    cwd: Option<&str>,
+    user_id: &str,
+    subpath: Option<&str>,
 ) -> Result<(String, u16, String), Box<dyn std::error::Error + Send + Sync>> {
     let port = pick_least_loaded_port(state)
         .await
         .ok_or("no backends configured")?;
-    let mut body = serde_json::json!({"cmd":"open"});
-    if let Some(p) = cwd {
-        body["cwd"] = serde_json::Value::String(p.to_string());
-    }
+    let body = open_request_body(user_id, subpath);
     let resp = call_backend(port, body).await?;
     let sid = resp
         .get("sessionId")
@@ -1490,8 +1516,9 @@ async fn bridge_session(
 async fn bridge_session_auto(
     mut ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
+    user_id: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (sid, port, _transport) = match cmd_open(&state, None).await {
+    let (sid, port, _transport) = match cmd_open(&state, &user_id, None).await {
         Ok(x) => x,
         Err(e) => {
             let _ = ws
@@ -1674,9 +1701,29 @@ fn log_preview(s: &str, max: usize) -> String {
     }
     out
 }
+/// Reject a session that has no authenticated user id (fail closed — the
+/// per-user environment requires one; no fallback). Sends a typed err frame
+/// and closes.
+async fn reject_no_user(
+    mut ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = ws
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "err",
+                "text": "per-user environment requires an authenticated user id"
+            })
+            .to_string(),
+        ))
+        .await;
+    let _ = ws.close(None).await;
+    Ok(())
+}
+
 async fn handle_chat(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
+    user_id: String,
     cwd: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Duration;
@@ -1685,7 +1732,7 @@ async fn handle_chat(
     // 1. Spawn a fresh session in the least-loaded backend. If the client
     //    asked for a specific working directory via `?cwd=…`, the worker
     //    canonicalizes + trust-marks it and runs claude there.
-    let (sid, port, transport) = match cmd_open(&state, cwd.as_deref()).await {
+    let (sid, port, transport) = match cmd_open(&state, &user_id, cwd.as_deref()).await {
         Ok(x) => x,
         Err(e) => {
             let mut ws = ws;
@@ -2441,5 +2488,19 @@ mod tests {
     fn auth_token_generates_when_empty() {
         let gen = || "GENERATED".to_string();
         assert_eq!(resolve_auth_token(Some(String::new()), &gen), "GENERATED");
+    }
+
+    #[test]
+    fn open_body_carries_user_id_and_relative_cwd() {
+        let b = open_request_body("311867081814147073", Some("crm/acct-42"));
+        assert_eq!(b["cmd"], "open");
+        assert_eq!(b["userId"], "311867081814147073");
+        assert_eq!(b["cwd"], "crm/acct-42");
+    }
+    #[test]
+    fn open_body_omits_cwd_when_none() {
+        let b = open_request_body("u1", None);
+        assert_eq!(b["userId"], "u1");
+        assert!(b.get("cwd").is_none());
     }
 }
