@@ -119,3 +119,69 @@ view and reconstructing it): substituting a guess for the real thing.
 stop and get the real answer. If you genuinely can't verify (no access, can't
 see the pixels), say so explicitly and flag the part that's unverified — never
 present a guess as fact.
+
+## Fail closed — no fallbacks, no silent defaults (this is a security-sensitive system)
+
+This system handles authentication, authorization, per-user identity, secrets,
+and resource/path confinement. In **any** security-relevant path, never fall
+back to a weaker behavior and never substitute a silent default for a value that
+is required but missing, invalid, or unprovable. **Fail closed** — reject the
+operation, or refuse to start, loudly.
+
+- do **not** fall back to a shared / anonymous / "default" identity or
+  environment when the real one is absent (e.g. no authenticated user id →
+  reject; never invent a `_shared` user or directory)
+- do **not** default a missing required secret / credential / path / config to
+  some value — require it and **fail fast at startup**, naming exactly what is
+  missing
+- do **not** sanitize-and-continue a dangerous input (path traversal, injection,
+  spoofed identity) — reject it; do not strip the bad part and proceed
+- do **not** proceed when a safety / confinement check cannot be **proven**
+  (canonicalization fails, a bound check is inconclusive, a signature can't be
+  verified) — reject
+
+**Why:** every fallback or silent default in a security boundary is a loophole.
+A "convenient" default identity, a shared fallback directory, or a
+sanitize-and-keep-going path is exactly the gap an attacker walks through.
+Failing closed is occasionally less convenient but never insecure: a missing or
+suspicious value must stop the system loudly, not quietly weaken its guarantees.
+
+**How to apply:** when you are about to write `unwrap_or(<default>)`,
+`x ?? default`, `if missing { use X }`, or "strip the bad part and continue" on
+anything touching auth, identity, secrets, or resource/path boundaries — stop.
+Make the value REQUIRED (fail fast / reject). Reserve defaults strictly for
+non-security, purely behavioral or cosmetic choices, and state them explicitly.
+(This is rule 1 applied to security: a fallback that weakens a guarantee is a
+dirty fix wearing a convenience hat.)
+
+## Never relax security, authentication, or authorization
+
+Do not weaken, loosen, bypass, or "temporarily" disable any security control —
+authentication, authorization, identity/JWT/signature verification, role and
+scope gates, path/resource confinement, TLS, input validation — to make
+something work, pass a test, unblock a demo, or simplify code. The secure path
+is the only path. Tighten, never loosen.
+
+- do **not** disable or skip an auth/authz check (comment it out, `if true`,
+  remove the role gate, accept an unsigned/unverified token) to get past a
+  failure — fix the actual cause
+- do **not** loosen a requirement for convenience: don't widen a role/scope, set
+  a CORS/origin allowlist to `*` with credentials, downgrade to a weaker auth
+  mode, or trust client-supplied identity
+- do **not** add a backdoor, bypass flag, or "dev-only" shortcut around auth —
+  dev and prod use the **same** security model
+- do **not** broaden a confinement boundary or accept input you haven't verified
+
+If a security control genuinely blocks correct behavior, the control or the
+design is what changes — **deliberately, surfaced to the user** — never quietly
+relaxed in passing.
+
+**Why:** relaxed auth/authz is the most expensive class of bug: it doesn't fail
+loudly, it silently grants access. A bypass added "just to test" or "just for
+dev" outlives its excuse and ships. In a sensitive system an unauthorized action
+is worse than a failed one.
+
+**How to apply:** if a change would make an auth/authz/identity check pass more
+often, accept more inputs, or require fewer proofs, treat it as a red flag and
+stop. Confirm the control is still at least as strict as before; if you must
+change it, say so explicitly and let the user decide.
