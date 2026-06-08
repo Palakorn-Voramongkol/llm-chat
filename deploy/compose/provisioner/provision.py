@@ -35,11 +35,11 @@ ADMIN_SA_USERNAME = "chat-admin-api"
 OIDC_APP_NAME = "llm-chat-cli"
 OIDC_REDIRECT_URI = os.environ.get("OIDC_REDIRECT_URI", "http://localhost:8477/callback")
 OIDC_POST_LOGOUT_URI = os.environ.get("OIDC_POST_LOGOUT_URI", "http://localhost:8477/")
-# Username == email so the Zitadel loginName is literally "demo@example.com":
-# the org's domain policy has userLoginMustBeDomain=false (verified against the
-# running instance), so the loginName is the username verbatim (no @org-domain
-# suffix), and the email alone is never a login name.
-DEMO_USERNAME = "demo@example.com"
+# loginName == username: the org has userLoginMustBeDomain=false (verified against
+# the running instance — the demo user's loginNames were ["demo"]), so the login
+# name is just "demo". The email is a separate field and is never itself a login
+# name.
+DEMO_USERNAME = "demo"
 DEMO_EMAIL = "demo@example.com"
 # GogoPure0811! satisfies Zitadel's default password complexity policy
 # (upper + lower + digit + symbol, min 8), so create_human_user accepts it with
