@@ -75,9 +75,53 @@ pub fn confine_path(
     Ok(out)
 }
 
+/// Create + confine the per-user cwd, returning the LEXICAL confined path
+/// (not the verbatim canonical form, so claude gets a clean cwd). The
+/// canonical form is used only to PROVE confinement (defends against
+/// symlinks/races the lexical check can't see). Fail closed on any error.
+pub fn resolve_user_cwd(
+    base: &Path,
+    user_id: &str,
+    subpath: Option<&str>,
+) -> Result<PathBuf, ResolveError> {
+    let candidate = confine_path(base, user_id, subpath)?;
+    std::fs::create_dir_all(&candidate)
+        .map_err(|e| ResolveError::Io(format!("create {}: {e}", candidate.display())))?;
+    let real = candidate
+        .canonicalize()
+        .map_err(|e| ResolveError::Escape(format!("canonicalize candidate: {e}")))?;
+    let root = base
+        .join(user_id)
+        .canonicalize()
+        .map_err(|e| ResolveError::Escape(format!("canonicalize root: {e}")))?;
+    if !real.starts_with(&root) {
+        return Err(ResolveError::Escape(format!(
+            "{} not under {}", real.display(), root.display()
+        )));
+    }
+    Ok(candidate)
+}
+
+/// The open-command gate: a user id is MANDATORY (no fallback). None/empty →
+/// reject. Otherwise resolve + confine.
+pub fn open_cwd(
+    base: &Path,
+    user_id: Option<&str>,
+    subpath: Option<&str>,
+) -> Result<PathBuf, ResolveError> {
+    let uid = user_id.unwrap_or("").trim();
+    if uid.is_empty() {
+        return Err(ResolveError::BadUser(
+            "per-user environment requires an authenticated user id".into(),
+        ));
+    }
+    resolve_user_cwd(base, uid, subpath)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn require_base_rejects_missing() {
@@ -122,5 +166,48 @@ mod tests {
         assert!(matches!(confine_path(&base(), "u1", Some("a\\b")), Err(ResolveError::BadPath(_))));
         assert!(matches!(confine_path(&base(), "u1", Some("C:")), Err(ResolveError::BadPath(_))));
         assert!(matches!(confine_path(&base(), "u1", Some("a\0b")), Err(ResolveError::BadPath(_))));
+    }
+
+    #[test]
+    fn resolve_creates_and_returns_confined_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = resolve_user_cwd(tmp.path(), "u1", Some("svc/a")).unwrap();
+        assert!(p.is_dir(), "dir auto-created");
+        assert!(p.ends_with("u1/svc/a") || p.ends_with("u1\\svc\\a"));
+        assert!(p.starts_with(tmp.path().join("u1")));
+    }
+
+    #[test]
+    fn resolve_rejects_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(matches!(resolve_user_cwd(tmp.path(), "u1", Some("../escape")), Err(ResolveError::BadPath(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let user_root = tmp.path().join("u1");
+        fs::create_dir_all(&user_root).unwrap();
+        symlink(&outside, user_root.join("link")).unwrap();
+        let err = resolve_user_cwd(tmp.path(), "u1", Some("link")).unwrap_err();
+        assert!(matches!(err, ResolveError::Escape(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn open_cwd_rejects_missing_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(matches!(open_cwd(tmp.path(), None, Some("svc")), Err(ResolveError::BadUser(_))));
+        assert!(matches!(open_cwd(tmp.path(), Some(""), Some("svc")), Err(ResolveError::BadUser(_))));
+    }
+
+    #[test]
+    fn open_cwd_ok_for_valid_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = open_cwd(tmp.path(), Some("u1"), None).unwrap();
+        assert!(p.is_dir());
     }
 }
