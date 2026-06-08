@@ -121,6 +121,7 @@ pub fn open_cwd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs;
 
     #[test]

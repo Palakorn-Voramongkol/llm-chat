@@ -2666,6 +2666,7 @@ dependencies = [
  "subtle",
  "tauri",
  "tauri-build",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
  "tracing",
