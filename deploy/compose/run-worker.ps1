@@ -70,10 +70,16 @@ function Invoke-RunWorker {
     Write-Host "[run-worker] NOTE: Windows Defender Firewall may prompt for the 0.0.0.0 bind."
     Write-Host "[run-worker]       Approve it (PRIVATE networks only) or the manager cannot reach :$Port."
 
-    $env:LLM_CHAT_AUTH_TOKEN = $Token
-    $env:LLM_CHAT_WS_PORT     = "$Port"
-    $env:LLM_CHAT_WS_BIND     = $Bind
+    $env:LLM_CHAT_AUTH_TOKEN    = $Token
+    $env:LLM_CHAT_WS_PORT       = "$Port"
+    $env:LLM_CHAT_WS_BIND       = $Bind
+    $env:LLM_CHAT_USER_ENV_BASE = (Join-Path $repoRoot ".user-envs")
     if ($ClaudeToken) { $env:CLAUDE_CODE_OAUTH_TOKEN = $ClaudeToken }
+
+    # Ensure the per-user env base directory exists so the worker's first spawn
+    # doesn't race on directory creation.
+    New-Item -ItemType Directory -Force -Path $env:LLM_CHAT_USER_ENV_BASE | Out-Null
+    Write-Host "[run-worker] user-envs = $($env:LLM_CHAT_USER_ENV_BASE)"
 
     # Foreground/blocking by design: holds the session for the GUI worker's
     # lifetime so Ctrl-C stops the worker.

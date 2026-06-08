@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
-    "dev": "cross-env LLM_CHAT_WS_BIND=127.0.0.1 LLM_CHAT_WS_PORT=7878 tauri dev",
-    "build": "cross-env LLM_CHAT_WS_BIND=127.0.0.1 LLM_CHAT_WS_PORT=7878 tauri build"
+    "dev": "cross-env LLM_CHAT_WS_BIND=127.0.0.1 LLM_CHAT_WS_PORT=7878 LLM_CHAT_USER_ENV_BASE=./.user-envs tauri dev",
+    "build": "cross-env LLM_CHAT_WS_BIND=127.0.0.1 LLM_CHAT_WS_PORT=7878 LLM_CHAT_USER_ENV_BASE=./.user-envs tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

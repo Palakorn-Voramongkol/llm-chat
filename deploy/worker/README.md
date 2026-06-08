@@ -54,9 +54,45 @@ LLM_CHAT_AUTH_TOKEN=<shared-token-the-manager-also-has> \
 | `LLM_CHAT_WS_BIND` | listen address (required; no default) |
 | `LLM_CHAT_WS_PORT` | listen port (default 7878) |
 | `LLM_CHAT_AUTH_TOKEN` | shared token for the manager↔worker WS auth |
+| **`LLM_CHAT_USER_ENV_BASE`** | **required** — per-user Claude environment root (see below) |
 | `LLM_CHAT_TRANSPORT` | `stream-json` (default) or `pty` (legacy TUI scrape) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | long-lived Claude login (see below); inherited by the spawned `claude` |
 | `RUST_LOG` | e.g. `info,backend::qa=debug` |
+
+## Per-user environment confinement (`LLM_CHAT_USER_ENV_BASE`)
+
+`LLM_CHAT_USER_ENV_BASE` is **required**. The worker exits at startup if it is
+unset. Set it to a writable host directory; the worker will create one
+subdirectory per authenticated user under it:
+
+```
+<base>/
+  <user_id>/          ← per-user root; owned by that user's sessions
+    <project-path>/   ← Claude project dir
+```
+
+**`/chat?cwd=` is relative to `{base}/{user_id}/`.** The path you pass is
+interpreted as a sub-path inside that user's root — absolute paths and `..`
+traversals are rejected with an error. This confines every Claude session to
+its owner's directory and prevents cross-user path access.
+
+**Chat sessions require a Zitadel-authenticated user identity.** The legacy
+shared-token-only mode no longer spawns sessions; every `/chat` connection must
+carry a valid Zitadel JWT so the worker can derive the user's `{user_id}` and
+route it to the correct subdirectory.
+
+Example (Linux):
+
+```bash
+LLM_CHAT_USER_ENV_BASE=/var/llm-chat/user-envs \
+LLM_CHAT_WS_BIND=0.0.0.0 \
+LLM_CHAT_WS_PORT=7878 \
+LLM_CHAT_AUTH_TOKEN=<token> \
+./target/release/llm-chat-headless
+```
+
+In the compose dev stack `run-worker.ps1` sets this to `<repo-root>/.user-envs`
+and creates the directory before launching the binary.
 
 The default **stream-json** transport reads claude's real structured output —
 the worker needs no terminal/TUI and produces clean answers. (`pty` mode exists
