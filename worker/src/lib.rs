@@ -2438,10 +2438,15 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                 // error rejects with NO spawn (CLAUDE.md fail closed).
                                 let user_id = req.get("userId").and_then(|v| v.as_str());
                                 let subpath = req.get("cwd").and_then(|v| v.as_str());
+                                tracing::info!(target: "backend::open", user_id = ?user_id, subpath = ?subpath, "open command received");
                                 let base = USER_ENV_BASE.get().expect("validated at startup");
                                 match crate::user_env::open_cwd(base, user_id, subpath) {
-                                    Err(e) => serde_json::json!({"ok":false,"error":format!("env: {e}")}),
+                                    Err(e) => {
+                                        tracing::warn!(target: "backend::open", error = %e, "open REJECTED — no spawn (fail closed)");
+                                        serde_json::json!({"ok":false,"error":format!("env: {e}")})
+                                    }
                                     Ok(p) => {
+                                        tracing::info!(target: "backend::open", cwd = %p.display(), "open cwd confined; spawning claude");
                                         let cwd = Some(p.to_string_lossy().into_owned());
                                         match do_spawn_session(id.clone(), 120, 30, cwd, st_handle, &sink_ctrl) {
                                             Ok(_) => {

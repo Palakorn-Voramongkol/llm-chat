@@ -1069,6 +1069,7 @@ async fn handle_client(
                     )))
                     .unwrap());
             }
+            tracing::info!(target: "manager::auth", user_id = %principal.user_id, roles = ?principal.roles, "JWT verified; capturing user id");
             *user_id_capture.lock().unwrap() = Some(principal.user_id.clone());
             return Ok(resp);
         }
@@ -1094,6 +1095,7 @@ async fn handle_client(
     let req_path = path_holder.lock().unwrap().clone();
     let req_query = query_holder.lock().unwrap().clone();
     let user_id = user_id_holder.lock().unwrap().clone();
+    tracing::info!(target: "manager", path = %req_path, query = %req_query, user_id = ?user_id, "post-handshake routing");
 
     if req_path == "/control" {
         let uid = match user_id {
@@ -1417,7 +1419,9 @@ async fn cmd_open(
         .await
         .ok_or("no backends configured")?;
     let body = open_request_body(user_id, subpath);
+    tracing::info!(target: "manager", port, user_id, subpath = ?subpath, "cmd_open → worker (open)");
     let resp = call_backend(port, body).await?;
+    tracing::info!(target: "manager", resp = %resp, "cmd_open ← worker response");
     let sid = resp
         .get("sessionId")
         .and_then(|v| v.as_str())
