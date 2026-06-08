@@ -6,6 +6,11 @@ use tokio::sync::broadcast;
 
 mod user_env;
 
+// Per-user Claude environment root, validated once at startup (REQUIRED, no
+// default — CLAUDE.md "fail closed"). The open handler confines every spawn
+// under {base}/{user_id}.
+static USER_ENV_BASE: OnceLock<std::path::PathBuf> = OnceLock::new();
+
 // ---------- SQLite-backed PTY input FIFO ----------
 //
 // One file per backend instance:
@@ -2135,6 +2140,21 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                     std::process::exit(1);
                 }
             };
+
+        // Per-user Claude environment root — REQUIRED, no default (CLAUDE.md
+        // "fail closed"). Validate once at startup; the open handler confines
+        // every spawn under {base}/{user_id}.
+        match crate::user_env::require_user_env_base(std::env::var("LLM_CHAT_USER_ENV_BASE").ok()) {
+            Ok(base) => {
+                let _ = USER_ENV_BASE.set(base);
+            }
+            Err(msg) => {
+                tracing::error!(target: "worker", error = %msg, "cannot start");
+                eprintln!("{msg}");
+                std::process::exit(1);
+            }
+        };
+
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
             Err(e) => {
@@ -2413,27 +2433,27 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                         .map(|d| d.as_micros())
                                         .unwrap_or(0)
                                 );
-                                let cwd = req
-                                    .get("cwd")
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| s.to_string());
-                                let res = do_spawn_session(
-                                    id.clone(),
-                                    120,
-                                    30,
-                                    cwd,
-                                    st_handle,
-                                    &sink_ctrl,
-                                );
-                                match res {
-                                    Ok(_) => {
-                                        let _ = sink_ctrl.emit(
-                                            "external-session-added",
-                                            serde_json::json!({"sessionId": id}),
-                                        );
-                                        serde_json::json!({"ok":true,"sessionId":id,"transport":transport})
+                                // Confine every spawn under {base}/{userId}/{subpath}.
+                                // user id is MANDATORY (no fallback); any resolve
+                                // error rejects with NO spawn (CLAUDE.md fail closed).
+                                let user_id = req.get("userId").and_then(|v| v.as_str());
+                                let subpath = req.get("cwd").and_then(|v| v.as_str());
+                                let base = USER_ENV_BASE.get().expect("validated at startup");
+                                match crate::user_env::open_cwd(base, user_id, subpath) {
+                                    Err(e) => serde_json::json!({"ok":false,"error":format!("env: {e}")}),
+                                    Ok(p) => {
+                                        let cwd = Some(p.to_string_lossy().into_owned());
+                                        match do_spawn_session(id.clone(), 120, 30, cwd, st_handle, &sink_ctrl) {
+                                            Ok(_) => {
+                                                let _ = sink_ctrl.emit(
+                                                    "external-session-added",
+                                                    serde_json::json!({"sessionId": id}),
+                                                );
+                                                serde_json::json!({"ok":true,"sessionId":id,"transport":transport})
+                                            }
+                                            Err(e) => serde_json::json!({"ok":false,"error":e}),
+                                        }
                                     }
-                                    Err(e) => serde_json::json!({"ok":false,"error":e}),
                                 }
                             }
                             "close" => {
