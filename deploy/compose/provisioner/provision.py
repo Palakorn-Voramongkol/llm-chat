@@ -36,11 +36,12 @@ OIDC_APP_NAME = "llm-chat-cli"
 OIDC_REDIRECT_URI = os.environ.get("OIDC_REDIRECT_URI", "http://localhost:8477/callback")
 OIDC_POST_LOGOUT_URI = os.environ.get("OIDC_POST_LOGOUT_URI", "http://localhost:8477/")
 DEMO_USERNAME = "demo"
-DEMO_EMAIL = "demo@llm-chat.local"
+DEMO_EMAIL = "demo@example.com"
 # NOTE: Zitadel's default password complexity policy requires upper+lower+digit+
-# symbol (min 8). The plain "password" below will be REJECTED by create_human_user
-# (400) unless the instance password policy is relaxed — see the flag in chat.
-DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "password")
+# symbol (min 8). "GogoPure0811" has upper+lower+digit but NO symbol, so it may be
+# REJECTED by create_human_user (400) unless the instance password policy drops the
+# symbol requirement — see the flag in chat.
+DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "GogoPure0811")
 
 # admin-api OIDC WEB app (confidential server / BASIC + PKCE) — distinct from the
 # CLI's public NATIVE app above. Captures BOTH clientId and clientSecret (once).
