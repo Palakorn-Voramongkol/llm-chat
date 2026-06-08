@@ -54,10 +54,17 @@ The **demo** sign-in credentials are written to `secrets/demo_user` and
 | Command | Auth | Purpose |
 |---|---|---|
 | `llm-chat chat` | human | interactive multi-turn REPL (default subcommand) |
+| `llm-chat chat SUBPATH` | human | REPL with cwd set to SUBPATH under the per-user env root |
 | `llm-chat ask --send TEXT` | machine | send one question, print the answer, exit |
 | `llm-chat login` | human | browser sign-in; cache the session |
 | `llm-chat logout` | human | revoke the refresh token + clear the cache |
 | `llm-chat whoami` | human | show the cached identity + roles |
+
+> **`?cwd` contract:** the optional positional `SUBPATH` is sent to the worker
+> as `?cwd=SUBPATH` and is resolved **relative to your per-user environment root**
+> on the server (`{base}/{user_id}/SUBPATH`). Absolute paths (leading `/`, `~`,
+> or a Windows drive such as `C:\`) and `..` segments are rejected by the worker.
+> Example: `llm-chat chat my-project/api` is valid; `/home/user/code` is not.
 
 ### Human login (Auth Code + PKCE)
 

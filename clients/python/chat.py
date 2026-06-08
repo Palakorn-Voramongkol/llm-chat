@@ -323,10 +323,11 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     p.add_argument(
         "cwd", nargs="?", default=None,
-        help="optional working directory the worker should spawn claude in. "
-             "Resolved to an absolute path on the client side and sent to "
-             "the manager as `?cwd=...`. The worker auto-trusts it in "
-             "~/.claude.json so claude skips its trust dialog.",
+        help="optional working sub-directory (RELATIVE to the per-user env "
+             "root on the worker) the worker should spawn claude in. "
+             "Sent as `?cwd=...`. Must be a relative subpath — absolute "
+             "paths (leading '/', '~', or a drive like 'C:\\') and '..' "
+             "segments are rejected by the worker.",
     )
     p.add_argument(
         "--account", default=None,
@@ -357,8 +358,10 @@ def main() -> None:
     manager_url = pick_manager_url()
     if args.cwd:
         from urllib.parse import quote
-        absolute = str(Path(args.cwd).expanduser().resolve())
-        manager_url = f"{manager_url}?cwd={quote(absolute, safe='')}"
+        # Send the subpath as-is; the worker confines it under {base}/{user_id}/.
+        # Absolute paths (leading '/', '~', drive letters) and '..' are rejected
+        # server-side — do NOT resolve() or expanduser() here.
+        manager_url = f"{manager_url}?cwd={quote(args.cwd, safe='')}"
     token = mint_access_token(key_path)
     print(f"-- auth:    {label} ({key_path})", file=sys.stderr)
     print(f"-- manager: {manager_url}", file=sys.stderr)
