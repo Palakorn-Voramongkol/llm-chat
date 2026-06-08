@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::broadcast;
 
+mod user_env;
+
 // ---------- SQLite-backed PTY input FIFO ----------
 //
 // One file per backend instance:
