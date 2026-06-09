@@ -9,6 +9,7 @@ pub mod keys;
 pub mod model;
 pub mod policies;
 pub mod project;
+pub mod stats;
 pub mod token;
 pub mod users;
 
