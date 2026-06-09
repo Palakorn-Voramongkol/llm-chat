@@ -2,6 +2,7 @@
 //! Phase C: error (gRPC->HTTP mapping), token (SA JWT-bearer + cache), model,
 //! users, grants, keys. Task 12 lands `error`.
 
+pub mod apps;
 pub mod error;
 pub mod grants;
 pub mod keys;
