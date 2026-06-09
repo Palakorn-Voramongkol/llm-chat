@@ -16,10 +16,11 @@ interface DataTableProps<TData, TValue> {
   data: TData[];
   filterColumn?: string;
   filterPlaceholder?: string;
+  emptyMessage?: string;
 }
 
 export function DataTable<TData, TValue>({
-  columns, data, filterColumn, filterPlaceholder,
+  columns, data, filterColumn, filterPlaceholder, emptyMessage = "No results.",
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -75,7 +76,7 @@ export function DataTable<TData, TValue>({
             ) : (
               <TableRow>
                 <TableCell colSpan={columns.length} className="h-24 text-center">
-                  No users.
+                  {emptyMessage}
                 </TableCell>
               </TableRow>
             )}
