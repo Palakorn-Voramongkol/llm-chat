@@ -17,12 +17,22 @@ test.describe("authenticated operator flow", () => {
   test.skip(!FULL, "requires running stack: set ADMIN_IT=1 + a logged-in chat.admin session");
 
   test("login -> list users -> create machine user", async ({ page }) => {
-    // Real login against Zitadel (operator with chat.admin). Credentials from env.
+    // Real login against the Zitadel v3 hosted UI (operator with chat.admin).
+    // Classic flow: login name -> Next, then password -> Next. Field names come
+    // from the live /ui/login form (loginName, password); buttons read "Next".
     await page.goto("/login");
-    await page.getByLabel(/username|loginname/i).fill(process.env.ADMIN_IT_USER!);
+    await page.locator('input[name="loginName"]').fill(process.env.ADMIN_IT_USER!);
     await page.getByRole("button", { name: /next|continue/i }).click();
-    await page.getByLabel(/password/i).fill(process.env.ADMIN_IT_PASS!);
+    await page.locator('input[name="password"]').fill(process.env.ADMIN_IT_PASS!);
     await page.getByRole("button", { name: /next|continue|sign in/i }).click();
+
+    // New users are nudged to set up 2FA; the operator skips it (optional on the
+    // local stack). If login went straight through, this button never appears.
+    const skip2fa = page.getByRole("button", { name: /skip/i });
+    await skip2fa
+      .waitFor({ state: "visible", timeout: 8000 })
+      .then(() => skip2fa.click())
+      .catch(() => {});
 
     // Lands back on the dashboard (BFF set its session cookie, 302 -> admin-web).
     await page.waitForURL(/\/users/);
