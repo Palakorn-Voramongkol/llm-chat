@@ -15,3 +15,6 @@ __pycache__/
 build/
 dist/
 .user-envs/
+# Tooling/build artifacts (Playwright MCP traces; stray root Tauri scaffold).
+.playwright-mcp/
+/src-tauri/
