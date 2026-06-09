@@ -103,4 +103,46 @@ test.describe("authenticated operator flow", () => {
     await page.getByTestId("grants-save").click();
     await expect(page.getByText("Access updated")).toBeVisible();
   });
+
+  test("create OIDC app reveals the client secret exactly once", async ({ page }) => {
+    await page.goto("/login");
+    await page.locator('input[name="loginName"]').fill(process.env.ADMIN_IT_USER!);
+    await page.getByRole("button", { name: /next|continue/i }).click();
+    await page.locator('input[name="password"]').fill(process.env.ADMIN_IT_PASS!);
+    await page.getByRole("button", { name: /next|continue|sign in/i }).click();
+    const skip2fa = page.getByRole("button", { name: /skip/i });
+    await skip2fa
+      .waitFor({ state: "visible", timeout: 8000 })
+      .then(() => skip2fa.click())
+      .catch(() => {});
+
+    // Canonical route is /apps (NAV.href in components/shell/nav.ts); the page
+    // heading is "Applications".
+    await page.goto("/apps");
+    await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
+
+    const appName = `pw-app-${Date.now()}`;
+    await page.getByTestId("create-app").click();
+    await page.getByLabel("Name").fill(appName);
+    await page.getByLabel(/redirect uris/i).fill("https://example.localhost/callback");
+    // appType defaults to Web (confidential) + Basic -> server returns a secret.
+    await page.getByRole("button", { name: "Create" }).click();
+
+    // the secret is revealed once, with a copy affordance.
+    const secret = page.getByTestId("reveal-client-secret");
+    await expect(secret).toBeVisible();
+    const secretValue = await secret.inputValue();
+    expect(secretValue.length).toBeGreaterThan(0);
+    await expect(
+      page.getByText(/shown once and cannot be retrieved again/i),
+    ).toBeVisible();
+
+    // dismiss -> the secret is gone and NOT recoverable from the list page.
+    await page.getByTestId("reveal-done").click();
+    await expect(page.getByTestId("reveal-client-secret")).toHaveCount(0);
+    await page.getByPlaceholder(/filter by name/i).fill(appName);
+    await expect(page.getByText(appName)).toBeVisible();
+    // the row shows clientId but never the secret value.
+    await expect(page.getByText(secretValue)).toHaveCount(0);
+  });
 });
