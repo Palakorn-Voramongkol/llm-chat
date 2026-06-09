@@ -45,6 +45,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/users/{id}/keys", get(list_keys).post(create_key))
         .route("/api/users/{id}/keys/{keyId}", delete(delete_key))
         .route("/api/users/{id}/secret", post(generate_secret).delete(delete_secret))
+        .route("/api/apps", get(list_apps).post(create_oidc_app))
+        .route("/api/apps/{appId}", get(get_app).put(update_oidc_config).delete(delete_app))
+        .route("/api/apps/{appId}/secret", post(regenerate_app_secret))
         .with_state(state)
 }
 
@@ -228,6 +231,63 @@ async fn delete_secret(_op: Operator, State(st): State<AppState>, Path(id): Path
     Ok(Json(json!({ "ok": true })))
 }
 
+async fn list_apps(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(json!({ "result": st.zitadel.list_apps().await? })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateOidcApp {
+    name: String,
+    redirect_uris: Vec<String>,
+    response_types: Vec<String>,
+    grant_types: Vec<String>,
+    app_type: String,
+    auth_method_type: String,
+}
+// clientSecret (WEB+BASIC) returned ONCE; streamed straight to the operator,
+// never persisted/logged server-side (design §3 secret invariant).
+async fn create_oidc_app(_op: Operator, State(st): State<AppState>, Json(b): Json<CreateOidcApp>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(st.zitadel.create_oidc_app(
+        &b.name, &b.redirect_uris, &b.response_types, &b.grant_types, &b.app_type, &b.auth_method_type,
+    ).await?))
+}
+
+async fn get_app(_op: Operator, State(st): State<AppState>, Path(app_id): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(st.zitadel.get_app(&app_id).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOidcConfig {
+    redirect_uris: Vec<String>,
+    response_types: Vec<String>,
+    grant_types: Vec<String>,
+    app_type: String,
+    auth_method_type: String,
+}
+async fn update_oidc_config(_op: Operator, State(st): State<AppState>, Path(app_id): Path<String>, Json(b): Json<UpdateOidcConfig>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.update_oidc_config(
+        &app_id, &b.redirect_uris, &b.response_types, &b.grant_types, &b.app_type, &b.auth_method_type,
+    ).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+// clientSecret returned ONCE on regenerate; streamed straight through (design §3).
+async fn regenerate_app_secret(_op: Operator, State(st): State<AppState>, Path(app_id): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(st.zitadel.regenerate_app_secret(&app_id).await?))
+}
+
+async fn delete_app(_op: Operator, State(st): State<AppState>, Path(app_id): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.delete_app(&app_id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[cfg(test)]
 mod contract_tests {
     use super::*;
@@ -276,5 +336,34 @@ mod contract_tests {
             "roleKey": "chat.viewer", "displayName": "Chat Viewer"
         })).expect("CreateRole without group");
         assert_eq!(b.group, "");
+    }
+
+    #[test]
+    fn create_oidc_app_accepts_camelcase() {
+        let b: CreateOidcApp = serde_json::from_value(json!({
+            "name": "Chat",
+            "redirectUris": ["https://x/cb"],
+            "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
+            "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE"],
+            "appType": "OIDC_APP_TYPE_WEB",
+            "authMethodType": "OIDC_AUTH_METHOD_TYPE_BASIC"
+        })).expect("camelCase CreateOidcApp");
+        assert_eq!(b.name, "Chat");
+        assert_eq!(b.redirect_uris, vec!["https://x/cb".to_string()]);
+        assert_eq!(b.app_type, "OIDC_APP_TYPE_WEB");
+        assert_eq!(b.auth_method_type, "OIDC_AUTH_METHOD_TYPE_BASIC");
+    }
+
+    #[test]
+    fn update_oidc_config_accepts_camelcase() {
+        let b: UpdateOidcConfig = serde_json::from_value(json!({
+            "redirectUris": ["https://x/cb"],
+            "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
+            "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE"],
+            "appType": "OIDC_APP_TYPE_NATIVE",
+            "authMethodType": "OIDC_AUTH_METHOD_TYPE_NONE"
+        })).expect("camelCase UpdateOidcConfig");
+        assert_eq!(b.app_type, "OIDC_APP_TYPE_NATIVE");
+        assert_eq!(b.response_types, vec!["OIDC_RESPONSE_TYPE_CODE".to_string()]);
     }
 }
