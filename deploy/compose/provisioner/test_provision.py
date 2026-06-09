@@ -253,7 +253,7 @@ def test_create_admin_oidc_app_409_is_systemexit():
             provision.create_admin_oidc_app("tok", {}, "p")
 
 
-def test_assign_admin_member_posts_org_owner():
+def test_assign_admin_member_posts_user_manager():
     captured = {}
 
     def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
@@ -266,7 +266,24 @@ def test_assign_admin_member_posts_org_owner():
     assert captured["url"].endswith("/management/v1/orgs/me/members")
     b = captured["body"]
     assert b["userId"] == "sa-123"
-    assert b["roles"] == ["ORG_OWNER"]
+    assert b["roles"] == ["ORG_USER_MANAGER"]  # least privilege, NOT ORG_OWNER
+
+
+def test_assign_admin_project_member_posts_project_owner():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"details": {}})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.assign_admin_project_member(
+            "boot-tok", {"h": "1"}, "proj-1", "sa-123")
+    assert captured["url"].endswith("/management/v1/projects/proj-1/members")
+    b = captured["body"]
+    assert b["userId"] == "sa-123"
+    assert b["roles"] == ["PROJECT_OWNER"]  # scoped to one project, not the org
 
 
 def test_assign_admin_member_409_is_success():
@@ -277,7 +294,7 @@ def test_assign_admin_member_409_is_success():
 
 # ---------- live update-member one-shot (already-provisioned instance, §5) ----------
 
-def test_update_admin_member_puts_org_owner_to_member_path():
+def test_update_admin_member_puts_user_manager_to_member_path():
     captured = {}
 
     def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
@@ -290,7 +307,7 @@ def test_update_admin_member_puts_org_owner_to_member_path():
         provision.update_admin_member("boot-tok", {"h": "1"}, "sa-123")
     assert captured["method"] == "PUT"
     assert captured["url"].endswith("/management/v1/orgs/me/members/sa-123")
-    assert captured["body"]["roles"] == ["ORG_OWNER"]
+    assert captured["body"]["roles"] == ["ORG_USER_MANAGER"]
 
 
 def test_update_admin_member_raises_on_hard_error():
@@ -338,6 +355,8 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
                            return_value=("admin-cid", "admin-secret")), \
          mock.patch.object(provision, "assign_admin_member",
                            side_effect=lambda t, h, uid: calls.append(("member", uid))), \
+         mock.patch.object(provision, "assign_admin_project_member",
+                           side_effect=lambda t, h, pid, uid: calls.append(("proj-member", pid, uid))), \
          mock.patch.object(provision, "write_secret", fake_write_secret), \
          mock.patch.object(provision, "write_generated_env"):
         rc = provision.main()

@@ -53,7 +53,14 @@ ADMIN_OIDC_REDIRECT_URI = os.environ.get(
     "ADMIN_OIDC_REDIRECT_URI", "http://localhost:3000/callback")
 ADMIN_OIDC_POST_LOGOUT_URI = os.environ.get(
     "ADMIN_OIDC_POST_LOGOUT_URI", "http://localhost:3000/")
-ADMIN_SA_ROLE = "ORG_OWNER"  # full org ownership; bumped from ORG_USER_MANAGER per spec §3/§5
+# Least privilege (security review, spec §3/§5): the runtime admin-api SA is a
+# long-lived principal whose key is persisted to ./secrets, so it must NOT hold
+# standing ORG_OWNER. It gets only ORG_USER_MANAGER at the org level (users +
+# grants) plus PROJECT_OWNER on the llm-chat project (apps + roles). Org policies
+# are written by THIS one-time provisioner (bootstrap IAM_OWNER token), never by
+# the runtime SA.
+ADMIN_SA_ROLE = "ORG_USER_MANAGER"
+ADMIN_SA_PROJECT_ROLE = "PROJECT_OWNER"
 
 MAX_ATTEMPTS = 10
 BACKOFF_SECONDS = 3
@@ -395,11 +402,12 @@ def create_admin_oidc_app(token: str, headers: dict, project_id: str):
 
 
 def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
-    """Grant the admin SA org ownership (spec §3/§5). MUST be called with the
-    BOOTSTRAP IAM_OWNER token (needs org.member.write) — NOT the new SA itself.
-    orgs/me resolves the org from the calling token / x-zitadel-orgid.
-    Idempotent: 409 == already a member. ORG_OWNER is required so the admin-api
-    can write policies, the project, roles, and apps (ORG_USER_MANAGER 403'd)."""
+    """Add the admin SA as an ORG member with ORG_USER_MANAGER — users + grants
+    only, NOT org ownership (least privilege; spec §3/§5). MUST be called with
+    the BOOTSTRAP IAM_OWNER token (needs org.member.write) — NOT the new SA
+    itself. orgs/me resolves the org from the calling token / x-zitadel-orgid.
+    Idempotent: 409 == already a member. Project-level powers (apps/roles) come
+    from assign_admin_project_member (PROJECT_OWNER), not from org ownership."""
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/orgs/me/members", headers=headers,
         json_body={"userId": sa_user_id, "roles": [ADMIN_SA_ROLE]},
@@ -408,13 +416,30 @@ def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
         resp.raise_for_status()
 
 
-def update_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
-    """Live-bump an EXISTING org member's roles to [ORG_OWNER] (spec §5).
+def assign_admin_project_member(token: str, headers: dict, project_id: str,
+                                sa_user_id: str) -> None:
+    """Add the admin SA as a PROJECT member with PROJECT_OWNER on the llm-chat
+    project (spec §3/§5). This is what lets the runtime admin-api manage this
+    project's apps and roles — scoped to ONE project, not the whole org.
+    Idempotent: 409 == already a project member. MUST be called with the
+    BOOTSTRAP IAM_OWNER token (needs project.member.write)."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/projects/{project_id}/members",
+        headers=headers,
+        json_body={"userId": sa_user_id, "roles": [ADMIN_SA_PROJECT_ROLE]},
+    )
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
 
-    A bare provisioner re-run no-ops (assign_admin_member POSTs and Zitadel
-    409s == already a member), so the already-provisioned instance keeps its
-    old ORG_USER_MANAGER role. This PUT *updates* the existing member. MUST be
-    called with the BOOTSTRAP IAM_OWNER token (org.member.write)."""
+
+def update_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
+    """Idempotently set an EXISTING org member's roles to [ADMIN_SA_ROLE]
+    (ORG_USER_MANAGER). On the already-provisioned instance the SA is already an
+    ORG_USER_MANAGER member, so this is a no-op there; it exists so a re-run can
+    correct the org role if it ever drifted. The NEW least-privilege capability a
+    live instance needs is the PROJECT member grant — apply
+    assign_admin_project_member live with the bootstrap token. MUST use the
+    BOOTSTRAP IAM_OWNER token (org.member.write)."""
     resp = request_with_retry(
         "PUT", f"{ISSUER}/management/v1/orgs/me/members/{sa_user_id}",
         headers=headers, json_body={"roles": [ADMIN_SA_ROLE]},
@@ -527,13 +552,15 @@ def main() -> int:
     admin_sa_id = create_admin_sa(token, headers)
     admin_sa = generate_admin_key(token, headers, admin_sa_id)
     assign_admin_member(token, headers, admin_sa_id)
+    assign_admin_project_member(token, headers, project_id, admin_sa_id)
     admin_cid, admin_secret = create_admin_oidc_app(token, headers, project_id)
     write_secret("admin-api-key.json", json.dumps(admin_sa))
     write_secret("admin_api_user_id", admin_sa_id)
     write_secret("admin_oidc_client_id", admin_cid)
     write_secret("admin_oidc_client_secret", admin_secret)
     print(f"[provision] admin: sa_user_id={admin_sa_id} "
-          f"admin_oidc_client_id={admin_cid} role={ADMIN_SA_ROLE}")
+          f"admin_oidc_client_id={admin_cid} "
+          f"org_role={ADMIN_SA_ROLE} project_role={ADMIN_SA_PROJECT_ROLE}")
 
     write_secret("project_id", project_id)
     write_secret("kabytech_user_id", user_id)
