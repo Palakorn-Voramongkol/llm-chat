@@ -48,6 +48,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps", get(list_apps).post(create_oidc_app))
         .route("/api/apps/{appId}", get(get_app).put(update_oidc_config).delete(delete_app))
         .route("/api/apps/{appId}/secret", post(regenerate_app_secret))
+        .route("/api/project", get(get_project).put(update_project))
+        .route("/api/org/policies/login", get(get_login_policy))
+        .route("/api/org/policies/password-complexity", get(get_password_complexity_policy))
+        .route("/api/org/policies/lockout", get(get_lockout_policy))
         .with_state(state)
 }
 
@@ -288,6 +292,42 @@ async fn delete_app(_op: Operator, State(st): State<AppState>, Path(app_id): Pat
     Ok(Json(json!({ "ok": true })))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProject {
+    name: String,
+    #[serde(default)] project_role_assertion: bool,
+    #[serde(default)] project_role_check: bool,
+    #[serde(default)] has_project_check: bool,
+}
+
+async fn get_project(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(st.zitadel.get_project().await?))
+}
+async fn update_project(_op: Operator, State(st): State<AppState>, Json(b): Json<UpdateProject>) -> Result<Json<Value>, ApiError> {
+    st.zitadel.update_project(&b.name, b.project_role_assertion, b.project_role_check, b.has_project_check).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+// Read-only policy handlers: Unavailable (degraded 403) surfaces as a 200
+// envelope { available:false, policy:null }, never an HTTP error (design §9).
+fn policy_envelope(p: crate::zitadel::policies::PolicyRead) -> Json<Value> {
+    use crate::zitadel::policies::PolicyRead;
+    match p {
+        PolicyRead::Available(v) => Json(json!({ "available": true, "policy": v })),
+        PolicyRead::Unavailable => Json(json!({ "available": false, "policy": Value::Null })),
+    }
+}
+async fn get_login_policy(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(policy_envelope(st.zitadel.get_login_policy().await?))
+}
+async fn get_password_complexity_policy(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(policy_envelope(st.zitadel.get_password_complexity_policy().await?))
+}
+async fn get_lockout_policy(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    Ok(policy_envelope(st.zitadel.get_lockout_policy().await?))
+}
+
 #[cfg(test)]
 mod contract_tests {
     use super::*;
@@ -365,5 +405,16 @@ mod contract_tests {
         })).expect("camelCase UpdateOidcConfig");
         assert_eq!(b.app_type, "OIDC_APP_TYPE_NATIVE");
         assert_eq!(b.response_types, vec!["OIDC_RESPONSE_TYPE_CODE".to_string()]);
+    }
+
+    #[test]
+    fn update_project_accepts_camelcase() {
+        let b: UpdateProject = serde_json::from_value(json!({
+            "name":"llm-chat","projectRoleAssertion":true,"projectRoleCheck":false,"hasProjectCheck":true
+        })).expect("camelCase UpdateProject");
+        assert_eq!(b.name, "llm-chat");
+        assert!(b.project_role_assertion);
+        assert!(!b.project_role_check);
+        assert!(b.has_project_check);
     }
 }
