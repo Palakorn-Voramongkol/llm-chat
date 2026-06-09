@@ -100,3 +100,68 @@ async fn create_grant_key_lifecycle_full_coverage() {
     let _ = z.resend_init(&h_id).await;
     z.delete_user(&h_id).await.expect("delete human (irreversible)");
 }
+
+/// GATE for design §8: the two endpoints marked verified:false —
+/// PUT .../apps/{appId}/oidc_config and
+/// POST .../apps/{appId}/oidc_config/_generate_client_secret. We create a
+/// throwaway OIDC app (the provisioner-proven create path), then exercise the
+/// two unknowns and assert the live response shapes before any handler relies
+/// on them. Driven straight through ZitadelClient (the source of truth).
+#[tokio::test]
+async fn it_verify_oidc_config_put_and_secret_regen() {
+    if !it_enabled() {
+        eprintln!("ADMIN_IT!=1 — skipping OIDC endpoint verification (design §8)");
+        return;
+    }
+    let cfg = llm_chat_admin_api_cfg();
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let z = admin_client(cfg, http);
+
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let name = format!("it-oidc-app-{suffix}");
+
+    // create (provisioner-proven, design §8 ✅): WEB+BASIC yields a clientSecret.
+    let created = z.create_oidc_app(
+        &name,
+        &["https://example.localhost/callback".into()],
+        &["OIDC_RESPONSE_TYPE_CODE".into()],
+        &["OIDC_GRANT_TYPE_AUTHORIZATION_CODE".into()],
+        "OIDC_APP_TYPE_WEB",
+        "OIDC_AUTH_METHOD_TYPE_BASIC",
+    ).await.expect("create_oidc_app");
+    let app_id = created.get("appId").and_then(|v| v.as_str())
+        .expect("create returns appId").to_string();
+    assert!(created.get("clientId").and_then(|v| v.as_str()).is_some(),
+        "create returns clientId");
+    assert!(created.get("clientSecret").and_then(|v| v.as_str()).is_some(),
+        "WEB+BASIC create returns clientSecret once");
+
+    // get (design §8 ✅): reads back the oidc_config under the app.
+    let app = z.get_app(&app_id).await.expect("get_app");
+    assert!(app.get("oidcConfig").is_some() || app.get("app").is_some(),
+        "get_app returns the app with its oidcConfig");
+
+    // UNKNOWN #1 — PUT .../apps/{appId}/oidc_config (read-modify-write whole config).
+    z.update_oidc_config(
+        &app_id,
+        &["https://example.localhost/callback".into(),
+          "https://example.localhost/cb2".into()],
+        &["OIDC_RESPONSE_TYPE_CODE".into()],
+        &["OIDC_GRANT_TYPE_AUTHORIZATION_CODE".into()],
+        "OIDC_APP_TYPE_WEB",
+        "OIDC_AUTH_METHOD_TYPE_BASIC",
+    ).await.expect("update_oidc_config (PUT oidc_config) — design §8 unknown #1");
+
+    // UNKNOWN #2 — POST .../apps/{appId}/oidc_config/_generate_client_secret.
+    let regen = z.regenerate_app_secret(&app_id).await
+        .expect("regenerate_app_secret — design §8 unknown #2");
+    assert!(regen.get("clientSecret").and_then(|v| v.as_str()).is_some(),
+        "_generate_client_secret returns clientSecret once");
+
+    // cleanup (design §8 ✅).
+    z.delete_app(&app_id).await.expect("delete_app");
+}
