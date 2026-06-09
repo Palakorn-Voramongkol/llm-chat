@@ -9,7 +9,7 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::auth;
@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/users/{id}/grants", get(list_grants).post(add_grant))
         .route("/api/users/{id}/grants/{grantId}", put(set_grant).delete(remove_grant))
         .route("/api/roles", get(list_roles).post(create_role))
+        .route("/api/stats", get(stats))
         .route("/api/roles/{roleKey}", delete(delete_role))
         .route("/api/roles/{roleKey}/holders", get(list_role_holders))
         .route("/api/users/{id}/keys", get(list_keys).post(create_key))
@@ -159,6 +160,36 @@ async fn delete_user(_op: Operator, State(st): State<AppState>, Path(id): Path<S
 
 async fn list_roles(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "result": st.zitadel.list_roles().await? })))
+}
+
+/// Dashboard counts (design §10). Each count is `Option<u64>` — `null` in JSON
+/// when its own fan-out call failed, so the card shows an em-dash, never a false
+/// `0` (§12). camelCase preserved for the frontend `Stats` type.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StatsResponse {
+    humans: Option<u64>,
+    machines: Option<u64>,
+    roles: Option<u64>,
+    grants: Option<u64>,
+    apps: Option<u64>,
+    token_healthy: bool,
+}
+
+/// GET /api/stats — fan out the per-area `totalResult` counts + a SA-token
+/// health self-check. Counts run concurrently; `valid_token()` proves the BFF
+/// can still mint a Management token (no new Zitadel surface beyond apps search).
+async fn stats(_op: Operator, State(st): State<AppState>) -> Json<Value> {
+    let (humans, machines, roles, grants, apps) = tokio::join!(
+        st.zitadel.count_humans(),
+        st.zitadel.count_machines(),
+        st.zitadel.count_roles(),
+        st.zitadel.count_grants(),
+        st.zitadel.count_apps(),
+    );
+    let token_healthy = st.zitadel.valid_token().await.is_ok();
+    let body = StatsResponse { humans, machines, roles, grants, apps, token_healthy };
+    Json(serde_json::to_value(body).unwrap_or_else(|_| json!({})))
 }
 
 #[derive(Deserialize)]
@@ -416,5 +447,27 @@ mod contract_tests {
         assert!(b.project_role_assertion);
         assert!(!b.project_role_check);
         assert!(b.has_project_check);
+    }
+
+    #[test]
+    fn stats_response_serializes_camelcase() {
+        let s = StatsResponse {
+            humans: Some(18),
+            machines: Some(6),
+            roles: Some(3),
+            grants: Some(40),
+            apps: Some(3),
+            token_healthy: true,
+        };
+        let v = serde_json::to_value(&s).expect("serialize StatsResponse");
+        assert_eq!(v.get("humans").and_then(|x| x.as_u64()), Some(18));
+        assert!(v.get("tokenHealthy").and_then(|x| x.as_bool()).unwrap(), "camelCase tokenHealthy: {v}");
+        assert!(v.get("token_healthy").is_none(), "no snake_case: {v}");
+        // A failed count must serialize as JSON null (em-dash on the card), not 0.
+        let degraded = serde_json::to_value(StatsResponse {
+            humans: None, machines: None, roles: None, grants: None, apps: None,
+            token_healthy: false,
+        }).unwrap();
+        assert!(degraded.get("humans").unwrap().is_null(), "null count: {degraded}");
     }
 }
