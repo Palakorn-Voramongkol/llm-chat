@@ -17,7 +17,6 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
@@ -111,7 +110,6 @@ struct JwkInner {
 
 struct CacheInner {
     keys: HashMap<String, DecodingKey>,
-    fetched_at: Instant,
 }
 
 /// JWKS cache. Cheap to clone; wraps an Arc internally.
@@ -148,10 +146,7 @@ impl JwksCache {
             keys.insert(k.kid, dk);
         }
         let n = keys.len();
-        *self.inner.write().unwrap() = Some(CacheInner {
-            keys,
-            fetched_at: Instant::now(),
-        });
+        *self.inner.write().unwrap() = Some(CacheInner { keys });
         Ok(n)
     }
 
