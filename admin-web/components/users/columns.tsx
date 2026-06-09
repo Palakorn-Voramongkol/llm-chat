@@ -16,6 +16,7 @@ export interface ColumnHandlers {
   onEdit: (u: User) => void;
   onDelete: (u: User) => void;
   onLifecycle: (u: User, action: Lifecycle) => void;
+  onGrants: (u: User) => void;
 }
 
 export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
@@ -54,6 +55,8 @@ export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
                   Edit profile
                 </DropdownMenuItem>
               )}
+              <DropdownMenuItem data-testid="action-grants"
+                onSelect={() => h.onGrants(u)}>Access (grants)</DropdownMenuItem>
               <DropdownMenuItem data-testid="action-deactivate"
                 onSelect={() => h.onLifecycle(u, "deactivate")}>Deactivate</DropdownMenuItem>
               <DropdownMenuItem data-testid="action-reactivate"

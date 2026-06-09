@@ -6,6 +6,7 @@ import { buildColumns, type Lifecycle } from "@/components/users/columns";
 import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
+import { GrantsDialog } from "@/components/users/grants-dialog";
 import { api, ApiError } from "@/lib/api";
 import type { User, UserList } from "@/lib/types";
 
@@ -13,6 +14,7 @@ export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [editTarget, setEditTarget] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
+  const [grantsTarget, setGrantsTarget] = useState<User | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -56,6 +58,7 @@ export default function UsersPage() {
     onEdit: setEditTarget,
     onDelete: setDeleteTarget,
     onLifecycle,
+    onGrants: setGrantsTarget,
   });
 
   return (
@@ -79,6 +82,8 @@ export default function UsersPage() {
         title="Delete user?"
         description="This is irreversible and removes the user and any machine keys. Already-issued tokens stay valid until their TTL expires."
         confirmLabel="Delete" onConfirm={confirmDelete} />
+      <GrantsDialog user={grantsTarget} open={!!grantsTarget}
+        onOpenChange={(o) => !o && setGrantsTarget(null)} onSaved={load} />
     </div>
   );
 }

@@ -11,7 +11,7 @@ const human: User = {
 
 function renderCell(colId: string, user: User) {
   const cols = buildColumns({
-    onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle: vi.fn(),
+    onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle: vi.fn(), onGrants: vi.fn(),
   });
   const col = cols.find((c) => ("accessorKey" in c ? c.accessorKey : c.id) === colId);
   if (!col) throw new Error(`no column ${colId}`);
@@ -23,7 +23,7 @@ function renderCell(colId: string, user: User) {
 
 describe("user columns", () => {
   it("has the expected columns", () => {
-    const ids = buildColumns({ onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle: vi.fn() })
+    const ids = buildColumns({ onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle: vi.fn(), onGrants: vi.fn() })
       .map((c) => ("accessorKey" in c ? (c as any).accessorKey : c.id));
     expect(ids).toEqual(
       expect.arrayContaining(["userName", "kind", "state", "email", "actions"]),
@@ -37,7 +37,7 @@ describe("user columns", () => {
 
   it("fires onLifecycle('deactivate') from the row action menu", async () => {
     const onLifecycle = vi.fn();
-    const cols = buildColumns({ onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle });
+    const cols = buildColumns({ onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle, onGrants: vi.fn() });
     const actions = cols.find((c) => c.id === "actions")!;
     const ctx = { row: { original: human } };
     render(<>{flexRender((actions as any).cell, ctx as any)}</>);
