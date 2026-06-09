@@ -60,7 +60,47 @@ test.describe("authenticated operator flow", () => {
     await page.getByLabel("Role key").fill(key);
     await page.getByLabel("Display name").fill("PW Role");
     await page.getByRole("button", { name: "Create" }).click();
+
     await page.getByPlaceholder(/filter by key/i).fill(key);
     await expect(page.getByText(key)).toBeVisible();
+
+    // Delete via the row action -> cascade confirm.
+    await page.getByRole("row", { name: new RegExp(key) })
+      .getByRole("button", { name: /open menu/i }).click();
+    await page.getByTestId("role-delete").click();
+    await page.getByRole("button", { name: "Delete role" }).click();
+    await expect(page.getByText(key)).toHaveCount(0);
+  });
+
+  test("grant assign then revoke round-trip", async ({ page }) => {
+    // Create a throwaway machine user, then toggle a grant on/off via the
+    // one-grant-per-project branch (POST create -> DELETE revoke-all).
+    await page.goto("/users");
+    const uname = `pw-grant-${Date.now()}`;
+    await page.getByTestId("create-user").click();
+    await page.getByRole("combobox").click();
+    await page.getByRole("option", { name: "Machine" }).click();
+    await page.getByLabel("Username").fill(uname);
+    await page.getByLabel("Display name").fill(uname);
+    await page.getByRole("button", { name: "Create" }).click();
+    await page.getByPlaceholder(/filter by username/i).fill(uname);
+    await expect(page.getByText(uname)).toBeVisible();
+
+    // Open Access (grants), assign chat.user (POST create grant).
+    await page.getByRole("row", { name: new RegExp(uname) })
+      .getByRole("button", { name: /open menu/i }).click();
+    await page.getByTestId("action-grants").click();
+    await page.getByTestId("grant-role-chat.user").click();
+    await page.getByTestId("grants-save").click();
+    await expect(page.getByText("Access updated")).toBeVisible();
+
+    // Re-open, unselect everything, save (DELETE revoke-all). The dialog
+    // reloads the now-checked chat.user; unchecking + save deletes the grant.
+    await page.getByRole("row", { name: new RegExp(uname) })
+      .getByRole("button", { name: /open menu/i }).click();
+    await page.getByTestId("action-grants").click();
+    await page.getByTestId("grant-role-chat.user").click(); // uncheck
+    await page.getByTestId("grants-save").click();
+    await expect(page.getByText("Access updated")).toBeVisible();
   });
 });
