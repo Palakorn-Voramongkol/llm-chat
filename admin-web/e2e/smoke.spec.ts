@@ -51,4 +51,16 @@ test.describe("authenticated operator flow", () => {
     await page.getByPlaceholder(/filter by username/i).fill(uname);
     await expect(page.getByText(uname)).toBeVisible();
   });
+
+  test("create then delete a role (cascade confirm)", async ({ page }) => {
+    await page.goto("/roles");
+    await expect(page.getByRole("heading", { name: "Roles" })).toBeVisible();
+    const key = `pw.role.${Date.now()}`;
+    await page.getByTestId("create-role").click();
+    await page.getByLabel("Role key").fill(key);
+    await page.getByLabel("Display name").fill("PW Role");
+    await page.getByRole("button", { name: "Create" }).click();
+    await page.getByPlaceholder(/filter by key/i).fill(key);
+    await expect(page.getByText(key)).toBeVisible();
+  });
 });
