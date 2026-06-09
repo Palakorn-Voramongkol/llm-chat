@@ -117,3 +117,13 @@ export interface AppSecret {
   clientId?: string;
   clientSecret: string;
 }
+
+// ---- Project & Org settings (design §9) ----
+export interface Project { id: string; name: string; projectRoleAssertion?: boolean; projectRoleCheck?: boolean; hasProjectCheck?: boolean; }
+export interface UpdateProjectInput { name: string; projectRoleAssertion: boolean; projectRoleCheck: boolean; hasProjectCheck: boolean; }
+// Org policies are READ-ONLY (design §9): no Update*Policy type. Duration fields
+// are protobuf STRINGS ("240h0m0s","0s"), typed string.
+export interface LoginPolicy { allowUsernamePassword?: boolean; allowRegister?: boolean; allowExternalIdp?: boolean; forceMfa?: boolean; passwordlessType?: string; mfaInitSkipLifetime?: string; }
+export interface PasswordComplexityPolicy { minLength?: string; hasUppercase?: boolean; hasLowercase?: boolean; hasNumber?: boolean; hasSymbol?: boolean; }
+export interface LockoutPolicy { maxPasswordAttempts?: string; }
+export interface PolicyEnvelope<T> { available: boolean; policy: T | null; }
