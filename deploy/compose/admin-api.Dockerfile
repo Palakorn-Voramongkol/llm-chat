@@ -13,6 +13,11 @@ COPY worker/Cargo.toml worker/build.rs ./worker/
 COPY worker/src ./worker/src
 COPY admin-api/Cargo.toml ./admin-api/Cargo.toml
 COPY admin-api/src ./admin-api/src
+# clients/rust is also a workspace member: cargo must see every member's
+# manifest + sources to resolve the workspace, even though only the admin-api
+# package (and its deps) compile here.
+COPY clients/rust/Cargo.toml ./clients/rust/Cargo.toml
+COPY clients/rust/src ./clients/rust/src
 RUN cargo build --release --locked -p llm-chat-admin-api
 
 FROM debian:bookworm-slim
