@@ -10,7 +10,7 @@ export function Sidebar() {
   return (
     <nav
       aria-label="Primary"
-      className="flex w-[60px] shrink-0 flex-col items-center gap-1.5 bg-gradient-to-b from-[#5b53e8] to-[#8b3df0] py-3 shadow-[2px_0_16px_rgba(91,83,232,0.22)]"
+      className="flex w-[60px] shrink-0 flex-col items-center gap-1.5 bg-linear-to-b from-[#5b53e8] to-[#8b3df0] py-3 shadow-[2px_0_16px_rgba(91,83,232,0.22)]"
     >
       <div className="mb-3 flex size-[34px] items-center justify-center rounded-[10px] bg-white/15 text-white">
         <Boxes className="size-5" />

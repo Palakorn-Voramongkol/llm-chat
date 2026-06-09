@@ -22,7 +22,7 @@ export function OperatorBadge() {
   return (
     <div className="flex items-center gap-3">
       <span className="flex items-center gap-2 text-sm font-semibold">
-        <span className="flex size-8 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 text-xs font-bold text-white">
+        <span className="flex size-8 items-center justify-center rounded-full bg-linear-to-br from-indigo-500 to-violet-500 text-xs font-bold text-white">
           {initials(me?.name ?? "")}
         </span>
         {me?.name ?? "—"}
