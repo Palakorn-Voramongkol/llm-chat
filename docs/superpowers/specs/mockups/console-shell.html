@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Console — VS Code-style shell (color)</title>
+<style>
+  :root{
+    --bg:#eef0f8; --card:#ffffff; --border:#e6e8f2;
+    --text:#1d2030; --muted:#6a7088; --dim:#9aa0b8;
+    --indigo:#6366f1; --violet:#8b5cf6; --blue:#3b82f6; --emerald:#10b981;
+    --amber:#f59e0b; --rose:#f43f5e; --cyan:#06b6d4;
+    --rail-a:#5b53e8; --rail-b:#8b3df0;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+  .app{display:flex;height:100vh;overflow:hidden}
+
+  /* ---------- Activity bar (VS Code icon ribbon) — brand gradient ---------- */
+  .rail{width:60px;background:linear-gradient(180deg,var(--rail-a),var(--rail-b));display:flex;flex-direction:column;align-items:center;padding:12px 0;flex:0 0 60px;box-shadow:2px 0 16px rgba(91,83,232,.22)}
+  .rail .group{display:flex;flex-direction:column;align-items:center;gap:6px;width:100%}
+  .rail .spacer{flex:1}
+  .brand{width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;color:#fff;margin-bottom:12px}
+  .item{position:relative;width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.72);cursor:pointer;border-radius:12px}
+  .item svg{width:22px;height:22px}
+  .item:hover{color:#fff;background:rgba(255,255,255,.12)}
+  .item.active{color:#fff;background:rgba(255,255,255,.20)}
+  .item.active::before{content:"";position:absolute;left:-12px;top:10px;bottom:10px;width:3px;background:#fff;border-radius:0 3px 3px 0}
+  .item .badge{position:absolute;top:4px;right:4px;min-width:16px;height:16px;padding:0 4px;background:var(--rose);color:#fff;font-size:10px;font-weight:700;border-radius:8px;display:flex;align-items:center;justify-content:center;border:2px solid #7c45ee}
+  .item .tip{position:absolute;left:54px;top:50%;transform:translateY(-50%);background:#2b2f44;color:#fff;font-size:12px;padding:5px 9px;border-radius:6px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .08s;box-shadow:0 6px 18px rgba(20,20,50,.35);z-index:50}
+  .item:hover .tip{opacity:1}
+  .avatar{width:34px;height:34px;border-radius:50%;background:#fff;color:#6d3bf0;font-size:13px;font-weight:800;display:flex;align-items:center;justify-content:center}
+
+  /* ---------- Side panel ---------- */
+  .panel{width:250px;background:var(--card);border-right:1px solid var(--border);flex:0 0 250px;display:flex;flex-direction:column}
+  .panel .hdr{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;color:var(--text);font-size:13px;font-weight:700;border-bottom:1px solid var(--border)}
+  .panel .hdr .ic{width:26px;height:26px;border-radius:8px;background:rgba(59,130,246,.12);color:var(--blue);display:flex;align-items:center;justify-content:center;margin-right:9px}
+  .panel .hdr .lft{display:flex;align-items:center}
+  .add{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);cursor:pointer}
+  .add:hover{background:var(--bg);color:var(--text)}
+  .search{margin:12px;display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:8px 11px;color:var(--muted)}
+  .search input{border:0;background:transparent;outline:0;color:var(--text);font-size:13px;width:100%}
+  .nav{padding:2px 10px;display:flex;flex-direction:column;gap:2px;overflow:auto}
+  .nav .lbl{color:var(--dim);font-size:10.5px;font-weight:800;letter-spacing:.7px;padding:14px 8px 5px}
+  .nav a{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;color:var(--text);text-decoration:none;font-size:13px}
+  .nav a svg{width:16px;height:16px;color:var(--muted)}
+  .nav a .count{margin-left:auto;color:var(--dim);font-size:11px;font-weight:600}
+  .nav a:hover{background:var(--bg)}
+  .nav a.sel{background:rgba(99,102,241,.10);color:var(--indigo);font-weight:600}
+  .nav a.sel svg{color:var(--indigo)}
+  .nav a.sel .count{color:var(--indigo)}
+  .swatch{width:9px;height:9px;border-radius:3px;display:inline-block}
+
+  /* ---------- Main ---------- */
+  .main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .topbar{height:60px;background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 22px}
+  .crumb{font-size:13px;color:var(--muted)}.crumb b{color:var(--text);font-weight:650}
+  .topbar .grow{flex:1}
+  .gsearch{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:8px 12px;color:var(--muted);width:300px}
+  .gsearch input{border:0;background:transparent;outline:0;color:var(--text);font-size:13px;width:100%}
+  .me{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--text);font-weight:600}
+  .me .av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center}
+
+  .body{padding:24px 26px;overflow:auto}
+  .h1{font-size:20px;font-weight:700;margin:0 0 3px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 20px}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+  .stat{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:15px 16px;position:relative;overflow:hidden}
+  .stat .ic{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+  .stat .n{font-size:24px;font-weight:750;letter-spacing:-.5px}
+  .stat .t{color:var(--muted);font-size:12.5px;margin-top:1px}
+  .stat .trend{position:absolute;top:15px;right:15px;font-size:11px;font-weight:700;padding:3px 7px;border-radius:7px}
+
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .btn{display:inline-flex;align-items:center;gap:7px;background:linear-gradient(135deg,var(--indigo),var(--violet));color:#fff;border:0;border-radius:10px;padding:9px 15px;font-size:13px;font-weight:650;cursor:pointer;box-shadow:0 6px 16px rgba(99,102,241,.30)}
+  .filterpill{display:inline-flex;gap:7px;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:8px 12px;color:var(--muted);font-size:13px;cursor:pointer}
+
+  table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--border);border-radius:14px;overflow:hidden}
+  thead th{text-align:left;font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:var(--dim);font-weight:800;padding:13px 16px;border-bottom:1px solid var(--border)}
+  tbody td{padding:13px 16px;border-bottom:1px solid var(--border);font-size:13px}
+  tbody tr:last-child td{border-bottom:0}
+  tbody tr:hover{background:#fafbff}
+  .u{display:flex;align-items:center;gap:11px}
+  .u .av{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:800}
+  .u .nm{font-weight:650}.u .em{color:var(--muted);font-size:12px}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;padding:4px 9px;border-radius:999px}
+  .chip.human{background:rgba(59,130,246,.12);color:#2563eb}
+  .chip.machine{background:rgba(100,116,139,.14);color:#475569}
+  .rolewrap{display:flex;gap:6px;flex-wrap:wrap}
+  .appchip{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:650;padding:4px 9px 4px 7px;border-radius:8px}
+  .appchip .sw{width:8px;height:8px;border-radius:3px}
+  .appchip.chat{background:rgba(16,185,129,.12);color:#0e9f6e}
+  .appchip.admin{background:rgba(59,130,246,.12);color:#2563eb}
+  .appchip.lumina{background:rgba(245,158,11,.14);color:#b45309}
+  .state{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+  .kebab{color:var(--dim);cursor:pointer;font-weight:700}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ACTIVITY BAR -->
+  <nav class="rail">
+    <div class="brand"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></div>
+    <div class="group">
+      <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg><span class="tip">Dashboard</span></div>
+      <div class="item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="tip">Users</span></div>
+      <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg><span class="tip">Roles</span></div>
+      <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg><span class="badge">3</span><span class="tip">Applications</span></div>
+      <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4"/></svg><span class="tip">Project &amp; Org</span></div>
+      <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg><span class="tip">Audit log</span></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="group">
+      <div class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="tip">Settings</span></div>
+      <div class="item"><span class="avatar">PV</span><span class="tip">palakorn — sign out</span></div>
+    </div>
+  </nav>
+
+  <!-- SIDE PANEL -->
+  <aside class="panel">
+    <div class="hdr"><span class="lft"><span class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></span>Users</span><span class="add"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span></div>
+    <div class="search"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Filter users…"/></div>
+    <div class="nav">
+      <a class="sel" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg> All users <span class="count">24</span></a>
+      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg> Humans <span class="count">18</span></a>
+      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg> Machines <span class="count">6</span></a>
+      <a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Locked <span class="count">1</span></a>
+      <div class="lbl">BY APP</div>
+      <a href="#"><span class="swatch" style="background:var(--emerald)"></span> Chat <span class="count">22</span></a>
+      <a href="#"><span class="swatch" style="background:var(--blue)"></span> Admin Console <span class="count">3</span></a>
+      <a href="#"><span class="swatch" style="background:var(--amber)"></span> Lumina <span class="count">9</span></a>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div class="topbar">
+      <span class="crumb">Console / <b>Users</b></span>
+      <span class="grow"></span>
+      <div class="gsearch"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="Search everything…"/></div>
+      <div class="me"><span>palakorn</span><span class="av">PV</span></div>
+    </div>
+
+    <div class="body">
+      <h1 class="h1">Users</h1>
+      <p class="sub">People and machine accounts across every app on the platform.</p>
+
+      <div class="stats">
+        <div class="stat"><div class="ic" style="background:rgba(99,102,241,.12);color:var(--indigo)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div><div class="n">24</div><div class="t">Total users</div><span class="trend" style="background:rgba(16,185,129,.14);color:#0e9f6e">+3</span></div>
+        <div class="stat"><div class="ic" style="background:rgba(59,130,246,.12);color:var(--blue)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="7" r="4"/><path d="M5.5 21a6.5 6.5 0 0 1 13 0"/></svg></div><div class="n">18</div><div class="t">Humans</div></div>
+        <div class="stat"><div class="ic" style="background:rgba(6,182,212,.14);color:var(--cyan)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg></div><div class="n">6</div><div class="t">Machine accounts</div></div>
+        <div class="stat"><div class="ic" style="background:rgba(139,92,246,.14);color:var(--violet)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></div><div class="n">3</div><div class="t">Apps</div></div>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> New user</button>
+        <span class="filterpill">Type: All <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span>
+        <span class="filterpill">App: Any <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+
+      <table>
+        <thead><tr><th>User</th><th>Type</th><th>App access &amp; roles</th><th>Status</th><th style="width:36px"></th></tr></thead>
+        <tbody>
+          <tr>
+            <td><div class="u"><div class="av" style="background:linear-gradient(135deg,#6366f1,#a855f7)">DE</div><div><div class="nm">Demo User</div><div class="em">demo@moonholidaysthai.com</div></div></div></td>
+            <td><span class="chip human">Human</span></td>
+            <td><div class="rolewrap"><span class="appchip chat"><span class="sw" style="background:var(--emerald)"></span>Chat · user</span><span class="appchip admin"><span class="sw" style="background:var(--blue)"></span>Admin Console · admin</span></div></td>
+            <td><span class="state" style="color:#0e9f6e"><span class="dot" style="background:var(--emerald)"></span>Active</span></td>
+            <td><span class="kebab">⋯</span></td>
+          </tr>
+          <tr>
+            <td><div class="u"><div class="av" style="background:linear-gradient(135deg,#0ea5e9,#22c55e)">KB</div><div><div class="nm">kabytech</div><div class="em">service account · M2M</div></div></div></td>
+            <td><span class="chip machine">Machine</span></td>
+            <td><div class="rolewrap"><span class="appchip chat"><span class="sw" style="background:var(--emerald)"></span>Chat · user</span></div></td>
+            <td><span class="state" style="color:#0e9f6e"><span class="dot" style="background:var(--emerald)"></span>Active</span></td>
+            <td><span class="kebab">⋯</span></td>
+          </tr>
+          <tr>
+            <td><div class="u"><div class="av" style="background:linear-gradient(135deg,#f59e0b,#f43f5e)">AC</div><div><div class="nm">Anchana C.</div><div class="em">anchana@moonholidaysthai.com</div></div></div></td>
+            <td><span class="chip human">Human</span></td>
+            <td><div class="rolewrap"><span class="appchip lumina"><span class="sw" style="background:var(--amber)"></span>Lumina · app</span><span class="appchip chat"><span class="sw" style="background:var(--emerald)"></span>Chat · user</span></div></td>
+            <td><span class="state" style="color:#b45309"><span class="dot" style="background:var(--amber)"></span>Init</span></td>
+            <td><span class="kebab">⋯</span></td>
+          </tr>
+          <tr>
+            <td><div class="u"><div class="av" style="background:linear-gradient(135deg,#64748b,#94a3b8)">CR</div><div><div class="nm">corridraw</div><div class="em">service account · M2M</div></div></div></td>
+            <td><span class="chip machine">Machine</span></td>
+            <td><div class="rolewrap"><span class="appchip chat"><span class="sw" style="background:var(--emerald)"></span>Chat · user</span></div></td>
+            <td><span class="state" style="color:#e11d48"><span class="dot" style="background:var(--rose)"></span>Locked</span></td>
+            <td><span class="kebab">⋯</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+</body>
+</html>
