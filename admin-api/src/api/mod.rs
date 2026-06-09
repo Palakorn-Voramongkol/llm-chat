@@ -39,7 +39,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/users/{id}/unlock", post(unlock))
         .route("/api/users/{id}/grants", get(list_grants).post(add_grant))
         .route("/api/users/{id}/grants/{grantId}", put(set_grant).delete(remove_grant))
-        .route("/api/roles", get(list_roles))
+        .route("/api/roles", get(list_roles).post(create_role))
+        .route("/api/roles/{roleKey}", delete(delete_role))
+        .route("/api/roles/{roleKey}/holders", get(list_role_holders))
         .route("/api/users/{id}/keys", get(list_keys).post(create_key))
         .route("/api/users/{id}/keys/{keyId}", delete(delete_key))
         .route("/api/users/{id}/secret", post(generate_secret).delete(delete_secret))
@@ -152,6 +154,27 @@ async fn list_roles(_op: Operator, State(st): State<AppState>) -> Result<Json<Va
     Ok(Json(json!({ "result": st.zitadel.list_roles().await? })))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateRole { role_key: String, display_name: String, #[serde(default)] group: String }
+async fn create_role(_op: Operator, State(st): State<AppState>, Json(b): Json<CreateRole>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.create_role(&b.role_key, &b.display_name, &b.group).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+// DELETE cascades — strips this role from every grant (design §7).
+async fn delete_role(_op: Operator, State(st): State<AppState>, Path(role_key): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.delete_role(&role_key).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_role_holders(_op: Operator, State(st): State<AppState>, Path(role_key): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(json!({ "result": st.zitadel.list_role_holders(&role_key).await? })))
+}
+
 async fn list_grants(_op: Operator, State(st): State<AppState>, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "result": st.zitadel.list_user_grants(&id).await? })))
 }
@@ -235,5 +258,23 @@ mod contract_tests {
             "roleKeys": ["chat.user"]
         })).expect("camelCase AddGrant");
         assert_eq!(b.role_keys, vec!["chat.user".to_string()]);
+    }
+
+    #[test]
+    fn create_role_accepts_camelcase() {
+        let b: CreateRole = serde_json::from_value(json!({
+            "roleKey": "chat.viewer", "displayName": "Chat Viewer", "group": "chat"
+        })).expect("camelCase CreateRole");
+        assert_eq!(b.role_key, "chat.viewer");
+        assert_eq!(b.display_name, "Chat Viewer");
+        assert_eq!(b.group, "chat");
+    }
+
+    #[test]
+    fn create_role_group_defaults_empty() {
+        let b: CreateRole = serde_json::from_value(json!({
+            "roleKey": "chat.viewer", "displayName": "Chat Viewer"
+        })).expect("CreateRole without group");
+        assert_eq!(b.group, "");
     }
 }
