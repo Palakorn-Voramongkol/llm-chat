@@ -12,8 +12,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # GUI binary (Tauri window). Built only with the `gui` feature; a
 # `--no-default-features` build skips it (required-features unmet) and produces
 # ONLY the headless binary — with no tauri / WebKitGTK linked at all.
+# Named llm-chat-worker (not llm-chat) so it does not collide with the rust
+# CLI client's bin (clients/rust, also "llm-chat") in the shared workspace
+# target/ — and to match the deploy artifact name (/usr/local/bin/llm-chat-worker).
 [[bin]]
-name = "llm-chat"
+name = "llm-chat-worker"
 path = "src/main.rs"
 required-features = ["gui"]
 

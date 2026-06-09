@@ -14,8 +14,8 @@
 //   MANAGER_INSTANCES     — number of backends to spawn (default 2)
 //   MANAGER_START_PORT    — first backend port; consecutive ports are used
 //                            (default 7878)
-//   LLM_CHAT_EXE          — path to llm-chat.exe (default
-//                            "../worker/target/debug/llm-chat.exe"
+//   LLM_CHAT_EXE          — path to the worker exe (default
+//                            "../worker/target/debug/llm-chat-worker.exe"
 //                            relative to manager.exe location)
 
 use std::collections::HashMap;
@@ -761,9 +761,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Default backend lives at sibling crate's target dir. We're usually
         // built in release, but fall back to debug if release isn't present.
         let backend_name = if cfg!(windows) {
-            "llm-chat.exe"
+            "llm-chat-worker.exe"
         } else {
-            "llm-chat"
+            "llm-chat-worker"
         };
         let project_root = exe_dir.join("..").join("..").join("..");
         let release = project_root

@@ -35,8 +35,8 @@ function Read-DotEnvValue([string]$Path, [string]$Key) {
 
 function Resolve-WorkerExe([string]$RepoRoot, [string]$Override) {
     if ($Override) { return $Override }
-    $release = Join-Path $RepoRoot "worker\target\release\llm-chat.exe"
-    $debug   = Join-Path $RepoRoot "worker\target\debug\llm-chat.exe"
+    $release = Join-Path $RepoRoot "worker\target\release\llm-chat-worker.exe"
+    $debug   = Join-Path $RepoRoot "worker\target\debug\llm-chat-worker.exe"
     if (Test-Path $release) { return $release }
     if (Test-Path $debug)   { return $debug }
     throw "worker binary not found. Build it first (cargo build --release in worker/) or pass -WorkerExe."

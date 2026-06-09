@@ -300,7 +300,7 @@ spawns the worker backend(s) itself.
 ```bash
 # from manager/  (debug binary already at manager/target/debug/)
 MANAGER_INSTANCES=1 \
-LLM_CHAT_EXE=../worker/target/debug/llm-chat.exe \
+LLM_CHAT_EXE=../worker/target/debug/llm-chat-worker.exe \
   ./target/debug/llm-chat-manager
 ```
 

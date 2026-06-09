@@ -12,7 +12,7 @@ The whole thing hinges on one literal issuer string,
 ## Prerequisites
 - Docker Desktop for Windows.
 - The worker built: `cargo build --release` in `worker/` (produces
-  `worker/target/release/llm-chat.exe`).
+  `worker/target/release/llm-chat-worker.exe`).
 - Python 3 with `pyjwt[crypto]`, `requests`, `websockets` for the client.
 
 ## Run (§9)

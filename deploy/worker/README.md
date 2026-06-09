@@ -8,7 +8,7 @@ There are two binaries (same crate):
 
 | Binary | Window | Use |
 |---|---|---|
-| `llm-chat` | opens a Tauri webview window | desktop / standalone |
+| `llm-chat-worker` | opens a Tauri webview window | desktop / standalone |
 | **`llm-chat-headless`** | **no window** | servers, CLI-only Linux |
 
 ## Does it run on a CLI-only Linux server?

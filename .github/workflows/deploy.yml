@@ -57,7 +57,7 @@ jobs:
         id: hash
         run: |
           echo "manager=$(sha256sum manager/target/release/llm-chat-manager | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "worker=$(sha256sum worker/target/release/llm-chat | awk '{print $1}')"           >> "$GITHUB_OUTPUT"
+          echo "worker=$(sha256sum worker/target/release/llm-chat-worker | awk '{print $1}')"    >> "$GITHUB_OUTPUT"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -65,7 +65,7 @@ jobs:
           name: release-binaries
           path: |
             manager/target/release/llm-chat-manager
-            worker/target/release/llm-chat
+            worker/target/release/llm-chat-worker
           if-no-files-found: error
           retention-days: 7
 
@@ -108,7 +108,7 @@ jobs:
           # The forced command on the server allows scp into the staging dirs.
           $SCP manager/target/release/llm-chat-manager \
               "deploy@${{ secrets.SSH_HOST }}:/var/lib/deploy/llm-chat/manager/llm-chat-manager"
-          $SCP worker/target/release/llm-chat \
+          $SCP worker/target/release/llm-chat-worker \
               "deploy@${{ secrets.SSH_HOST }}:/var/lib/deploy/llm-chat/worker/llm-chat-worker"
 
       - name: Install binaries + restart manager

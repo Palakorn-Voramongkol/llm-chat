@@ -56,5 +56,5 @@ the manager round-robins correctly.
 pkill -f llm-chat-manager
 pkill -f xvfb-run
 pkill -f Xvfb
-pkill -f "release/llm-chat$"
+pkill -f "release/llm-chat-worker$"
 ```
