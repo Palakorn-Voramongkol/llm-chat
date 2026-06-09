@@ -80,6 +80,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         jwks_uri: format!("{}/oauth/v2/keys", cfg.issuer),
         project_id: cfg.project_id.clone(),
     });
+    // Preload the JWKS so the first /callback can verify the operator's token.
+    // verify_sync is sync (reads the cache, never fetches), so without a preload
+    // the cache stays empty and every verify fails "JWKS fetch failed: cache
+    // empty". Mirror the manager: preload now, then refresh hourly in the
+    // background.
+    match jwks.refresh().await {
+        Ok(n) => tracing::info!(target: "admin-api::startup", keys = n, "JWKS preloaded"),
+        Err(e) => tracing::error!(target: "admin-api::startup", error = %e,
+            "JWKS preload failed — operators will be rejected until refresh succeeds"),
+    }
+    {
+        let bg = jwks.clone();
+        tokio::spawn(async move {
+            let mut t = tokio::time::interval(std::time::Duration::from_secs(3600));
+            t.tick().await; // skip the immediate tick
+            loop {
+                t.tick().await;
+                if let Err(e) = bg.refresh().await {
+                    tracing::warn!(target: "admin-api::startup", error = %e, "JWKS refresh failed");
+                } else {
+                    tracing::debug!(target: "admin-api::startup", "JWKS refreshed");
+                }
+            }
+        });
+    }
     let state = AppState {
         cfg: cfg.clone(),
         jwks,
