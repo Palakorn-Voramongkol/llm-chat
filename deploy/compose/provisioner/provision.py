@@ -303,10 +303,12 @@ def generate_admin_key(token: str, headers: dict, user_id: str) -> dict:
     return decode_key_details(resp.json()["keyDetails"])
 
 
-def grant_role(token: str, headers: dict, user_id: str, project_id: str) -> None:
+def grant_role(token: str, headers: dict, user_id: str, project_id: str,
+               role_keys=None) -> None:
+    keys = role_keys if role_keys is not None else [ROLE_KEY]
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/users/{user_id}/grants", headers=headers,
-        json_body={"projectId": project_id, "roleKeys": [ROLE_KEY]},
+        json_body={"projectId": project_id, "roleKeys": keys},
     )
     if not is_success(resp.status_code):
         resp.raise_for_status()
@@ -486,11 +488,12 @@ def main() -> int:
     grant_role(token, headers, user_id, project_id)
 
     # Interactive human-login path: an OIDC public app (PKCE) + a demo human
-    # user with the same chat.user role. The kabytech machine path above is for
-    # M2M callers; this is for a person logging in through the browser.
+    # user. The kabytech machine path above is for M2M callers; this is for a
+    # person logging in through the browser. The demo user is also the admin
+    # test operator, so its role grant is deferred until after the chat.admin
+    # role is created below.
     client_id = create_oidc_app(token, headers, project_id)
     demo_user_id = create_human_user(token, headers, org_id)
-    grant_role(token, headers, demo_user_id, project_id)
     write_secret("oidc_client_id", client_id)
     write_secret("demo_user", DEMO_USERNAME)
     write_secret("demo_password", DEMO_PASSWORD)
@@ -501,6 +504,11 @@ def main() -> int:
     # least-privilege SA will not have. Role creation stays here so the
     # runtime SA needs no project.role.write.
     create_admin_role(token, headers, project_id)
+    # The demo human is the test operator: chat.user lets it use /chat,
+    # chat.admin lets it sign in to admin-web. One grant carries both roles, so
+    # it must run after create_admin_role (the chat.admin role must exist).
+    grant_role(token, headers, demo_user_id, project_id,
+               role_keys=[ROLE_KEY, ADMIN_ROLE_KEY])
     admin_sa_id = create_admin_sa(token, headers)
     admin_sa = generate_admin_key(token, headers, admin_sa_id)
     assign_admin_member(token, headers, admin_sa_id)
