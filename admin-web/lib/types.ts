@@ -72,3 +72,48 @@ export interface RoleHolderList {
 export interface GrantList {
   result: UserGrant[];
 }
+
+export type OidcAppType = "OIDC_APP_TYPE_WEB" | "OIDC_APP_TYPE_NATIVE" | "OIDC_APP_TYPE_USER_AGENT";
+export type OidcAuthMethod =
+  | "OIDC_AUTH_METHOD_TYPE_BASIC" | "OIDC_AUTH_METHOD_TYPE_POST"
+  | "OIDC_AUTH_METHOD_TYPE_NONE" | "OIDC_AUTH_METHOD_TYPE_PRIVATE_KEY_JWT";
+export type OidcResponseType = "OIDC_RESPONSE_TYPE_CODE" | "OIDC_RESPONSE_TYPE_ID_TOKEN" | "OIDC_RESPONSE_TYPE_ID_TOKEN_TOKEN";
+export type OidcGrantType =
+  | "OIDC_GRANT_TYPE_AUTHORIZATION_CODE" | "OIDC_GRANT_TYPE_IMPLICIT"
+  | "OIDC_GRANT_TYPE_REFRESH_TOKEN" | "OIDC_GRANT_TYPE_DEVICE_CODE" | "OIDC_GRANT_TYPE_TOKEN_EXCHANGE";
+
+export interface OidcConfig {
+  clientId?: string;
+  redirectUris?: string[];
+  responseTypes?: OidcResponseType[];
+  grantTypes?: OidcGrantType[];
+  appType?: OidcAppType;
+  authMethodType?: OidcAuthMethod;
+}
+
+export interface OidcApp {
+  id: string;
+  name: string;
+  state?: string;
+  oidcConfig?: OidcConfig;
+}
+
+export interface OidcAppList {
+  result: OidcApp[];
+}
+
+export interface CreateOidcAppInput {
+  name: string;
+  redirectUris: string[];
+  responseTypes: OidcResponseType[];
+  grantTypes: OidcGrantType[];
+  appType: OidcAppType;
+  authMethodType: OidcAuthMethod;
+}
+
+// Returned ONCE on create + secret regenerate; never readable again.
+export interface AppSecret {
+  appId?: string;
+  clientId?: string;
+  clientSecret: string;
+}
