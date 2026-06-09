@@ -145,4 +145,18 @@ test.describe("authenticated operator flow", () => {
     // the row shows clientId but never the secret value.
     await expect(page.getByText(secretValue)).toHaveCount(0);
   });
+
+  test("Project & Org settings renders editable project + read-only policies", async ({ page }) => {
+    await page.goto("/settings"); // NAV href is /settings (nav.ts), not /project
+    await expect(page.getByRole("heading", { name: "Project & Org" })).toBeVisible();
+    await expect(page.getByTestId("project-card")).toBeVisible();
+    await expect(page.getByTestId("project-name")).toBeVisible();
+    await expect(page.getByTestId("project-save")).toBeVisible();
+    const loginCard = page.getByTestId("policy-card-login-policy");
+    await expect(loginCard).toBeVisible();
+    await expect(loginCard.getByText("Read-only")).toBeVisible();
+    await expect(page.getByTestId("policy-card-password-complexity")).toBeVisible();
+    await expect(page.getByTestId("policy-card-lockout-policy")).toBeVisible();
+    await expect(page.getByTestId("project-save")).toHaveCount(1); // only the project is mutable
+  });
 });
