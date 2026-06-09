@@ -70,14 +70,16 @@ ShieldCheck, AppWindow, Building2, ScrollText`.
 
 - **Operator gate (unchanged, fail-closed):** every `/api/*` route runs behind
   the `Operator` extractor; `/callback` requires `chat.admin` or 403. No relaxation.
-- **SA permission bump → `ORG_OWNER` (approved).** Today the runtime SA is
-  `ORG_USER_MANAGER`, which **cannot** write policies, the project, roles, or
-  apps — those calls 403 until the bump. `ORG_OWNER` grants full org ownership
-  (all members/managers, roles, policies, apps, users). **Blast radius is
-  material**; it is mitigated by (a) the admin-api being the only holder of the
-  SA key, (b) every action still gated behind a human `chat.admin` operator
-  session, and (c) the SA key never leaving the BFF. Documented here as a
-  deliberate, surfaced choice.
+- **SA scope → least privilege (revised after security review; NOT `ORG_OWNER`).**
+  The runtime admin-api SA is long-lived and its key is persisted to `./secrets`,
+  so it must **not** hold standing `ORG_OWNER` (that key becomes an org-wide
+  escalation target). Instead it gets exactly two scoped grants: `ORG_USER_MANAGER`
+  at the org level (users + grants) and `PROJECT_OWNER` on the `llm-chat` project
+  (apps + roles). **Org policies are NOT writable by the runtime SA** — they are
+  written by the one-time provisioner with the bootstrap `IAM_OWNER` token (§9),
+  and the Console's policy view is read-only. Still defense-in-depth: every action
+  is also gated behind a human `chat.admin` operator session, and the SA key never
+  leaves the BFF.
 - **Audit needs MORE than ORG_OWNER (blocker — see §11).** The event log
   (`/admin/v1/events/_search`) requires **`IAM_OWNER_VIEWER`** (instance-level),
   which `ORG_OWNER` does not include. Audit is therefore **capability-gated**:
@@ -119,15 +121,17 @@ ShieldCheck, AppWindow, Building2, ScrollText`.
 
 ## 5. Service-Account Permission Bump (provisioner)
 
-- **`deploy/compose/provisioner/provision.py`**: change `ADMIN_SA_ROLE` from
-  `ORG_USER_MANAGER` → `ORG_OWNER` in `assign_admin_member`
-  (`POST /management/v1/orgs/me/members`, idempotent — 409 == already a member).
-- **Live-instance application (no clean re-provision needed):** for the
-  *already-provisioned* instance, run a one-shot `PUT
-  /management/v1/orgs/me/members/{saUserId}` with the bootstrap IAM_OWNER key to
-  **update** the existing member's roles to `[ORG_OWNER]`. (A bare re-run of the
-  provisioner no-ops on the existing member — must use update-member.)
-- Update `test_provision.py`'s `ADMIN_SA_ROLE` assertion.
+- **`deploy/compose/provisioner/provision.py`**: keep `ADMIN_SA_ROLE =
+  "ORG_USER_MANAGER"` in `assign_admin_member` (`POST .../orgs/me/members`), and
+  add `assign_admin_project_member` granting `PROJECT_OWNER`
+  (`POST /management/v1/projects/{pid}/members`, idempotent — 409 == already a
+  member). Both run on a clean boot with the bootstrap token.
+- **Live-instance application (no clean re-provision needed):** the SA already has
+  `ORG_USER_MANAGER`; apply the missing **project** grant via a one-shot
+  `POST /management/v1/projects/{pid}/members {userId, roles:[PROJECT_OWNER]}` with
+  the bootstrap IAM_OWNER key (see `deploy/compose/provisioner/README.md`).
+- Update `test_provision.py` to assert the scoped roles
+  (`ORG_USER_MANAGER` + `PROJECT_OWNER`).
 
 ## 6. Users (refactor — reference implementation)
 
@@ -184,28 +188,31 @@ delete. **Edit is read-modify-write** the full `oidc_config`. Confirm dialogs:
 
 ## 9. Project & Org Settings
 
-New `zitadel/project.rs` (get/update) + `zitadel/policies.rs` (6 policy methods).
-All endpoints **verified**.
+New `zitadel/project.rs` (get/update — the SA's `PROJECT_OWNER` covers this) +
+`zitadel/policies.rs` (**read-only** get methods).
 
-| Route | Zitadel call |
-|---|---|
-| `GET/PUT /api/project` | `GET/PUT /management/v1/projects/{id}` |
-| `GET/PUT /api/org/policies/login` | `GET` then `PUT`(custom)/`POST`(add) `/management/v1/policies/login` |
-| `GET/PUT /api/org/policies/password-complexity` | `/management/v1/policies/password/complexity` |
-| `GET/PUT /api/org/policies/lockout` | `/management/v1/policies/lockout` |
+| Route | Zitadel call | Writable at runtime? |
+|---|---|---|
+| `GET/PUT /api/project` | `GET/PUT /management/v1/projects/{id}` | ✅ (PROJECT_OWNER) |
+| `GET /api/org/policies/login` | `GET /management/v1/policies/login` | ❌ read-only |
+| `GET /api/org/policies/password-complexity` | `GET /management/v1/policies/password/complexity` | ❌ read-only |
+| `GET /api/org/policies/lockout` | `GET /management/v1/policies/lockout` | ❌ read-only |
 
-**Upsert trap:** an org may be on the *default* policy (`isDefault==true`); a
-`PUT` then fails (it updates an existing custom policy). Branch: `PUT`, and on
-NotFound fall back to `POST` (add custom). The exact error shape (404 vs 400) is
-**unverified** — confirm with an ADMIN_IT test.
+**Why no policy writes at runtime (security review):** org policies are
+org-level and would require `ORG_OWNER`, which the least-privilege runtime SA
+deliberately does NOT have. So policy **reads** are best-effort (capability-probed
+like Audit — if the SA can't even read a policy, the card shows "managed
+out-of-band"), and policy **changes** are made by the one-time **provisioner**
+with the bootstrap `IAM_OWNER` token, not the Console.
 
-**Demo-login fix exposed here:** the login policy's `mfaInitSkipLifetime` (the
-2FA-setup nudge) — surface a toggle/"skip lifetime" control so an operator can
-turn off the prompt that interrupted the demo login. **Protobuf `Duration`
-serializes as a string** (e.g. `"0s"`) — handle string durations in the form.
+**Demo-login fix moves to the provisioner:** the login policy's
+`mfaInitSkipLifetime` (the 2FA-setup nudge that interrupted the demo login) is set
+by the provisioner on boot, not edited live. (**Protobuf `Duration` serializes as
+a string**, e.g. `"0s"` — handle that where the value is read/displayed.)
 
-**UI:** a Settings page of cards (Project, Login policy, Password complexity,
-Lockout) with edit forms (`switch`/`input`/`select`).
+**UI:** a Settings page of cards — **Project** (editable: name, settings) and the
+three **policy cards read-only** (display current state + a note that policy
+changes are provisioner-managed).
 
 ## 10. Dashboard
 
@@ -265,8 +272,9 @@ Correct per-area empty messages via the new `emptyMessage` prop (§4).
 ## 15. Build Sequence & Dependencies
 
 - **Phase 0 — Foundation:** `(dash)/layout.tsx` shell + `components/shell/*` +
-  the 3 missing primitives + the `emptyMessage` DataTable fix + the **ORG_OWNER
-  bump** (live update-member). Refactor Users into the shell. *Everything else
+  the 3 missing primitives + the `emptyMessage` DataTable fix + the
+  **least-privilege SA grant** (ORG_USER_MANAGER + PROJECT_OWNER, applied live).
+  Refactor Users into the shell. *Everything else
   depends on this.*
 - **Phase 1 — Roles & Grants** (backend mostly exists → fast).
 - **Phase 2 — OIDC Applications** (verify the 2 endpoints first).
