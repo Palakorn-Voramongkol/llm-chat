@@ -408,6 +408,21 @@ def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
         resp.raise_for_status()
 
 
+def update_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
+    """Live-bump an EXISTING org member's roles to [ORG_OWNER] (spec §5).
+
+    A bare provisioner re-run no-ops (assign_admin_member POSTs and Zitadel
+    409s == already a member), so the already-provisioned instance keeps its
+    old ORG_USER_MANAGER role. This PUT *updates* the existing member. MUST be
+    called with the BOOTSTRAP IAM_OWNER token (org.member.write)."""
+    resp = request_with_retry(
+        "PUT", f"{ISSUER}/management/v1/orgs/me/members/{sa_user_id}",
+        headers=headers, json_body={"roles": [ADMIN_SA_ROLE]},
+    )
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
+
+
 def create_human_user(token: str, headers: dict, org_id) -> str:
     """Create the demo human user via the v2 user API.
 

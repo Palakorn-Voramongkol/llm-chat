@@ -275,6 +275,31 @@ def test_assign_admin_member_409_is_success():
         provision.assign_admin_member("boot-tok", {}, "sa-123")  # must NOT raise
 
 
+# ---------- live update-member one-shot (already-provisioned instance, §5) ----------
+
+def test_update_admin_member_puts_org_owner_to_member_path():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["method"] = method
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"details": {}})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.update_admin_member("boot-tok", {"h": "1"}, "sa-123")
+    assert captured["method"] == "PUT"
+    assert captured["url"].endswith("/management/v1/orgs/me/members/sa-123")
+    assert captured["body"]["roles"] == ["ORG_OWNER"]
+
+
+def test_update_admin_member_raises_on_hard_error():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(400)):
+        with pytest.raises(RuntimeError):
+            provision.update_admin_member("boot-tok", {}, "sa-123")
+
+
 # ---------- Task 7: end-to-end main() integration ----------
 
 def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
