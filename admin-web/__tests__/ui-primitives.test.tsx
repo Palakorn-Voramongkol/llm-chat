@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { Card, CardHeader, CardTitle, CardContent } from "../components/ui/card";
 import { Switch } from "../components/ui/switch";
+import { Checkbox } from "../components/ui/checkbox";
 
 describe("Card primitive", () => {
   it("renders title and content", () => {
@@ -22,5 +23,14 @@ describe("Switch primitive", () => {
     const s = screen.getByRole("switch", { name: "Skip MFA prompt" });
     expect(s).toBeInTheDocument();
     expect(s).toHaveAttribute("aria-checked", "false");
+  });
+});
+
+describe("Checkbox primitive", () => {
+  it("renders an unchecked checkbox role", () => {
+    render(<Checkbox aria-label="chat.user" />);
+    const c = screen.getByRole("checkbox", { name: "chat.user" });
+    expect(c).toBeInTheDocument();
+    expect(c).toHaveAttribute("aria-checked", "false");
   });
 });
