@@ -127,3 +127,15 @@ export interface LoginPolicy { allowUsernamePassword?: boolean; allowRegister?: 
 export interface PasswordComplexityPolicy { minLength?: string; hasUppercase?: boolean; hasLowercase?: boolean; hasNumber?: boolean; hasSymbol?: boolean; }
 export interface LockoutPolicy { maxPasswordAttempts?: string; }
 export interface PolicyEnvelope<T> { available: boolean; policy: T | null; }
+
+// ---- Dashboard stats (design §10) ----
+// camelCase mirror of the /api/stats BFF JSON. Counts are number|null: a null
+// count means that sub-query failed/degraded and renders as an em-dash (—).
+export interface Stats {
+  humans: number | null;
+  machines: number | null;
+  roles: number | null;
+  grants: number | null;
+  apps: number | null;
+  tokenHealthy: boolean;
+}

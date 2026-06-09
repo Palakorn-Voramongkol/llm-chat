@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { api, ApiError } from "../lib/api";
+import type { Stats } from "../lib/types";
 
 function mockFetch(status: number, body: unknown, ok = status < 400) {
   return vi.fn().mockResolvedValue({
@@ -58,5 +59,19 @@ describe("api client", () => {
     vi.stubGlobal("fetch", f);
     await expect(api.get("/api/me")).rejects.toBeInstanceOf(ApiError);
     expect(window.location.assign).toHaveBeenCalledWith("/login");
+  });
+});
+
+describe("stats type", () => {
+  it("parses a /api/stats body into Stats (null counts allowed)", () => {
+    const body: Stats = {
+      humans: 18, machines: 6, roles: 3, grants: 40, apps: 3, tokenHealthy: true,
+    };
+    expect(body.humans).toBe(18);
+    const degraded: Stats = {
+      humans: null, machines: null, roles: null, grants: null, apps: null,
+      tokenHealthy: false,
+    };
+    expect(degraded.apps).toBeNull();
   });
 });
