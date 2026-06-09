@@ -52,3 +52,23 @@ export interface EditProfileInput {
   familyName: string;
   displayName?: string;
 }
+
+export interface RoleList {
+  result: Role[];
+}
+
+export interface RoleHolder {
+  id: string;
+  userId: string;
+  roleKeys: string[];
+  displayName?: string;
+  userName?: string;
+}
+
+export interface RoleHolderList {
+  result: RoleHolder[];
+}
+
+export interface GrantList {
+  result: UserGrant[];
+}
