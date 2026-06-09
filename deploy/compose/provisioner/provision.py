@@ -53,7 +53,7 @@ ADMIN_OIDC_REDIRECT_URI = os.environ.get(
     "ADMIN_OIDC_REDIRECT_URI", "http://localhost:3000/callback")
 ADMIN_OIDC_POST_LOGOUT_URI = os.environ.get(
     "ADMIN_OIDC_POST_LOGOUT_URI", "http://localhost:3000/")
-ADMIN_SA_ROLE = "ORG_USER_MANAGER"  # least privilege; bump to ORG_OWNER per §6.2 gate
+ADMIN_SA_ROLE = "ORG_OWNER"  # full org ownership; bumped from ORG_USER_MANAGER per spec §3/§5
 
 MAX_ATTEMPTS = 10
 BACKOFF_SECONDS = 3
@@ -395,11 +395,11 @@ def create_admin_oidc_app(token: str, headers: dict, project_id: str):
 
 
 def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
-    """Grant the admin SA its org-manager role (appendix §2.4). MUST be called
-    with the BOOTSTRAP IAM_OWNER token (needs org.member.write) — NOT the new
-    least-privilege SA. orgs/me resolves the org from the calling token /
-    x-zitadel-orgid. Idempotent: 409 == already a member. ORG_USER_MANAGER is
-    least privilege; bump to ORG_OWNER only if the §6.2 key-mint gate fails."""
+    """Grant the admin SA org ownership (spec §3/§5). MUST be called with the
+    BOOTSTRAP IAM_OWNER token (needs org.member.write) — NOT the new SA itself.
+    orgs/me resolves the org from the calling token / x-zitadel-orgid.
+    Idempotent: 409 == already a member. ORG_OWNER is required so the admin-api
+    can write policies, the project, roles, and apps (ORG_USER_MANAGER 403'd)."""
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/orgs/me/members", headers=headers,
         json_body={"userId": sa_user_id, "roles": [ADMIN_SA_ROLE]},

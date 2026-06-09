@@ -253,7 +253,7 @@ def test_create_admin_oidc_app_409_is_systemexit():
             provision.create_admin_oidc_app("tok", {}, "p")
 
 
-def test_assign_admin_member_posts_org_user_manager():
+def test_assign_admin_member_posts_org_owner():
     captured = {}
 
     def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
@@ -266,7 +266,7 @@ def test_assign_admin_member_posts_org_user_manager():
     assert captured["url"].endswith("/management/v1/orgs/me/members")
     b = captured["body"]
     assert b["userId"] == "sa-123"
-    assert b["roles"] == ["ORG_USER_MANAGER"]
+    assert b["roles"] == ["ORG_OWNER"]
 
 
 def test_assign_admin_member_409_is_success():
