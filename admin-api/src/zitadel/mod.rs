@@ -7,6 +7,7 @@ pub mod error;
 pub mod grants;
 pub mod keys;
 pub mod model;
+pub mod policies;
 pub mod project;
 pub mod token;
 pub mod users;
