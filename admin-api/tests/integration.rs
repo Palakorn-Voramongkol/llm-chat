@@ -165,3 +165,44 @@ async fn it_verify_oidc_config_put_and_secret_regen() {
     // cleanup (design §8 ✅).
     z.delete_app(&app_id).await.expect("delete_app");
 }
+
+/// LIVE confinement smoke (§11/§14). The instance event log is instance-wide and
+/// must NEVER leak another org's events: every returned event is asserted to
+/// carry the SA's own resourceOwner. The audit grant (IAM_OWNER_VIEWER) is a
+/// pending decision (§14 #1) so the test tolerates either capability outcome,
+/// but the confinement invariant is enforced whenever events ARE readable.
+#[tokio::test]
+async fn it_audit_capability_and_confinement() {
+    if !it_enabled() {
+        eprintln!("ADMIN_IT!=1 — skipping audit capability test");
+        return;
+    }
+    let cfg = llm_chat_admin_api_cfg();
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let z = admin_client(cfg, http);
+
+    // The SA org must resolve (confinement anchor) — this is independent of the
+    // event-read grant.
+    let org = z.sa_org_id().await.expect("sa_org_id resolves the SA org");
+    assert!(!org.is_empty(), "resourceOwner must be non-empty");
+
+    // Capability probe must not panic and returns a definite boolean (§3/§11).
+    let can = z.can_read_events().await.expect("capability probe returns Ok");
+    if can {
+        // When readable, every returned event is confined to the SA's org.
+        let q = llm_chat_admin_api::zitadel::events::EventQuery {
+            editor_user_id: None, aggregate_id: None, from: None, asc: false, limit: 20,
+        };
+        let events = z.search_events(&q).await.expect("confined search");
+        for e in &events {
+            if let Some(owner) = e.get("editor").and_then(|x| x.get("resourceOwner")).and_then(|v| v.as_str()) {
+                assert_eq!(owner, org, "event leaked from another org (confinement broken)");
+            }
+        }
+    } else {
+        eprintln!("audit capability OFF (IAM_OWNER_VIEWER not granted) — banner path, §14 #1");
+    }
+}
