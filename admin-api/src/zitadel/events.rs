@@ -5,10 +5,45 @@
 //! `resourceOwner` to the SA's own org — the instance log is instance-wide and
 //! must never leak other orgs' events (fail-closed confinement, §11).
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::error::ZitadelError;
 use super::ZitadelClient;
+
+/// One audit query (mapped from /api/events query params). Pure input to
+/// `build_events_body`; HTTP-agnostic so it is unit-testable.
+pub struct EventQuery {
+    pub editor_user_id: Option<String>,
+    pub aggregate_id: Option<String>,
+    /// Lower-bound creationDate (RFC3339) — the sequence cursor for paging.
+    pub from: Option<String>,
+    pub asc: bool,
+    pub limit: u32,
+}
+
+/// PURE: build the POST /admin/v1/events/_search body. `resourceOwner` is ALWAYS
+/// set to the SA's org so the instance-wide log is confined to one org (§11);
+/// absent filters are omitted (no guessed defaults), present ones mapped to the
+/// exact admin-API field names.
+pub fn build_events_body(org_id: &str, q: &EventQuery) -> Value {
+    let mut body = json!({
+        "limit": q.limit,
+        "asc": q.asc,
+        "resourceOwner": org_id,
+    });
+    let obj = body.as_object_mut().expect("object");
+    if let Some(e) = q.editor_user_id.as_ref().filter(|s| !s.is_empty()) {
+        obj.insert("editorUserId".into(), json!(e));
+    }
+    if let Some(a) = q.aggregate_id.as_ref().filter(|s| !s.is_empty()) {
+        // aggregateId is a repeated field on the events search.
+        obj.insert("aggregateId".into(), json!([a]));
+    }
+    if let Some(d) = q.from.as_ref().filter(|s| !s.is_empty()) {
+        obj.insert("creationDate".into(), json!(d));
+    }
+    body
+}
 
 /// PURE: extract the SA's org id from a GET /auth/v1/users/me body. The org is
 /// at user.details.resourceOwner (provision.py:fetch_org_id, §11).
@@ -29,6 +64,16 @@ impl ZitadelClient {
         let v = self.get_json(&url).await?;
         org_id_from_me(&v).ok_or(ZitadelError::NotFound)
     }
+
+    /// Search the audit log: POST /admin/v1/events/_search, CONFINED to the SA's
+    /// org via resourceOwner (§11). Returns the `events` array passed through
+    /// (camelCase preserved). Needs IAM_OWNER_VIEWER — gate via can_read_events.
+    pub async fn search_events(&self, q: &EventQuery) -> Result<Vec<Value>, ZitadelError> {
+        let org_id = self.sa_org_id().await?;
+        let url = format!("{}/admin/v1/events/_search", self.cfg.issuer);
+        let v = self.post_json(&url, &build_events_body(&org_id, q)).await?;
+        Ok(v.get("events").and_then(Value::as_array).cloned().unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
@@ -48,5 +93,38 @@ mod tests {
     #[test]
     fn org_id_from_me_is_none_when_missing() {
         assert_eq!(org_id_from_me(&json!({ "user": { "details": {} } })), None);
+    }
+
+    #[test]
+    fn events_body_confines_to_org_and_carries_filters() {
+        let b = build_events_body(
+            "org-123",
+            &EventQuery {
+                editor_user_id: Some("u-9".into()),
+                aggregate_id: Some("agg-7".into()),
+                from: Some("2026-06-01T00:00:00Z".into()),
+                asc: false,
+                limit: 50,
+            },
+        );
+        assert_eq!(b["asc"], json!(false));
+        assert_eq!(b["limit"], json!(50));
+        // resourceOwner confinement is ALWAYS present (§11).
+        assert_eq!(b["resourceOwner"], json!("org-123"));
+        assert_eq!(b["editorUserId"], json!("u-9"));
+        assert_eq!(b["aggregateId"], json!(["agg-7"]));
+        assert_eq!(b["creationDate"], json!("2026-06-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn events_body_omits_absent_filters_but_keeps_confinement() {
+        let b = build_events_body(
+            "org-123",
+            &EventQuery { editor_user_id: None, aggregate_id: None, from: None, asc: false, limit: 100 },
+        );
+        assert_eq!(b["resourceOwner"], json!("org-123"));
+        assert!(b.get("editorUserId").is_none());
+        assert!(b.get("aggregateId").is_none());
+        assert!(b.get("creationDate").is_none());
     }
 }
