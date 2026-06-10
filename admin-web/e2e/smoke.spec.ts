@@ -8,8 +8,11 @@ test("unauthenticated visit to /users redirects toward /login (BFF nav)", async 
   // which the same-origin proxy forwards to admin-api -> Zitadel /authorize.
   const resp = await page.goto("/users");
   // Either the client redirected us to /login, or (full stack) on to Zitadel.
+  // The redirect is client-side (hydrate -> fetch /api/users -> 401 ->
+  // location.assign('/login')); allow 15s so a slow hydration under full-suite
+  // load doesn't flake (passes ~1.2s in isolation).
   await expect
-    .poll(() => page.url())
+    .poll(() => page.url(), { timeout: 15000 })
     .toMatch(/\/login|\/oauth\/v2\/authorize/);
   expect(resp).not.toBeNull();
 });
