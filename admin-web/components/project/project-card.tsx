@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
+import { FolderKanban } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -71,7 +72,13 @@ export function ProjectCard({
   return (
     <Card data-testid="project-card">
       <CardHeader>
-        <CardTitle>Project</CardTitle>
+        <div className="flex items-center gap-2.5">
+          <span aria-hidden
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600">
+            <FolderKanban className="size-4" />
+          </span>
+          <CardTitle>Project</CardTitle>
+        </div>
         <CardDescription>
           The platform project that owns every OIDC app and role grant.
         </CardDescription>

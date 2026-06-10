@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { DataTable } from "@/components/ui/data-table";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { auditColumns } from "@/components/audit/columns";
 import { api, ApiError } from "@/lib/api";
 import type { AuditEvent, Capabilities, EventList } from "@/lib/types";
@@ -30,18 +31,16 @@ export default function AuditPage() {
   }, [load]);
 
   return (
-    <div className="space-y-4 px-6 py-6">
-      <div>
-        <h1 className="text-xl font-bold">Audit</h1>
-        <p className="text-muted-foreground text-sm">
-          Org-scoped event log from Zitadel.
-        </p>
-      </div>
+    <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
+      <PageHeader
+        title="Audit"
+        description="Org-scoped event log from Zitadel."
+      />
 
       {caps && !caps.events ? (
         <div
           role="alert"
-          className="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
+          className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-200"
         >
           <p className="font-medium">Audit unavailable</p>
           <p>Audit requires IAM_OWNER_VIEWER on the service account.</p>
@@ -52,13 +51,15 @@ export default function AuditPage() {
           </p>
         </div>
       ) : (
-        <DataTable
-          columns={auditColumns}
-          data={events}
-          filterColumn="editor"
-          filterPlaceholder="Filter by editor..."
-          emptyMessage="No events."
-        />
+        <div className="flex-1 min-h-0">
+          <DataTable
+            columns={auditColumns}
+            data={events}
+            filterColumn="editor"
+            filterPlaceholder="Filter by editor..."
+            emptyMessage="No events."
+          />
+        </div>
       )}
     </div>
   );

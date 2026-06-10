@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { DataTable } from "@/components/ui/data-table";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { buildRoleColumns } from "@/components/roles/columns";
 import { CreateRoleDialog } from "@/components/roles/create-role-dialog";
 import { HoldersDialog } from "@/components/roles/holders-dialog";
@@ -49,19 +50,17 @@ export default function RolesPage() {
   });
 
   return (
-    <div className="space-y-4 px-6 py-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">Roles</h1>
-          <p className="text-muted-foreground text-sm">
-            Project roles and the users who hold them across the platform.
-          </p>
-        </div>
-        <CreateRoleDialog onCreated={load} />
+    <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
+      <PageHeader
+        title="Roles"
+        description="Project roles and the users who hold them across the platform."
+        actions={<CreateRoleDialog onCreated={load} />}
+      />
+      <div className="flex-1 min-h-0">
+        <DataTable columns={columns} data={roles}
+          filterColumn="key" filterPlaceholder="Filter by key..."
+          emptyMessage="No roles." />
       </div>
-      <DataTable columns={columns} data={roles}
-        filterColumn="key" filterPlaceholder="Filter by key..."
-        emptyMessage="No roles." />
       <HoldersDialog role={holdersTarget} open={!!holdersTarget}
         onOpenChange={(o) => !o && setHoldersTarget(null)} />
       <ConfirmDialog open={!!deleteTarget}

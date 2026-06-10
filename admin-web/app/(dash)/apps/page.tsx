@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { DataTable } from "@/components/ui/data-table";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { buildAppColumns } from "@/components/apps/columns";
 import { AppFormDialog } from "@/components/apps/app-form-dialog";
 import { SecretRevealDialog } from "@/components/apps/secret-reveal-dialog";
@@ -66,20 +67,20 @@ export default function ApplicationsPage() {
   });
 
   return (
-    <div className="space-y-4 px-6 py-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">Applications</h1>
-          <p className="text-muted-foreground text-sm">
-            OIDC clients registered against the platform project.
-          </p>
-        </div>
-        <AppFormDialog mode="create" app={null} open={createOpen} onOpenChange={setCreateOpen}
-          onSaved={load} onSecret={setRevealed} />
+    <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
+      <PageHeader
+        title="Applications"
+        description="OIDC clients registered against the platform project."
+        actions={
+          <AppFormDialog mode="create" app={null} open={createOpen} onOpenChange={setCreateOpen}
+            onSaved={load} onSecret={setRevealed} />
+        }
+      />
+      <div className="flex-1 min-h-0">
+        <DataTable columns={columns} data={apps}
+          filterColumn="name" filterPlaceholder="Filter by name..."
+          emptyMessage="No applications." />
       </div>
-      <DataTable columns={columns} data={apps}
-        filterColumn="name" filterPlaceholder="Filter by name..."
-        emptyMessage="No applications." />
       <AppFormDialog mode="edit" app={editTarget} open={!!editTarget}
         onOpenChange={(o) => !o && setEditTarget(null)} onSaved={load} onSecret={setRevealed} />
       <SecretRevealDialog clientId={revealed?.clientId}

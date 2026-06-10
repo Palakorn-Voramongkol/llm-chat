@@ -47,7 +47,7 @@ export function CreateRoleDialog({ onCreated }: { onCreated: () => void }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button data-testid="create-role">Create role</Button>
+        <Button variant="brand" data-testid="create-role">Create role</Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader><DialogTitle>Create role</DialogTitle></DialogHeader>

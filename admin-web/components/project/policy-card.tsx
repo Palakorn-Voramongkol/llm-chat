@@ -1,3 +1,4 @@
+import type { LucideIcon } from "lucide-react";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/card";
@@ -12,18 +13,29 @@ export interface PolicyRow {
 // provisioner out-of-band, so there is NO write path here — only a display and a
 // degrade note when the policy could not be read.
 export function PolicyCard({
-  title, description, available, rows,
+  title, description, available, rows, icon: Icon, iconClass,
 }: {
   title: string;
   description: string;
   available: boolean;
   rows: PolicyRow[];
+  /** Optional header icon tile (lucide icon + tint classes). */
+  icon?: LucideIcon;
+  iconClass?: string;
 }) {
   return (
     <Card data-testid={`policy-card-${title.toLowerCase().replace(/\s+/g, "-")}`}>
       <CardHeader>
         <div className="flex items-center justify-between gap-2">
-          <CardTitle>{title}</CardTitle>
+          <div className="flex items-center gap-2.5">
+            {Icon && (
+              <span aria-hidden
+                className={`flex size-8 shrink-0 items-center justify-center rounded-lg ${iconClass ?? "bg-slate-500/10 text-slate-600"}`}>
+                <Icon className="size-4" />
+              </span>
+            )}
+            <CardTitle>{title}</CardTitle>
+          </div>
           <Badge variant="secondary">Read-only</Badge>
         </div>
         {description ? <CardDescription>{description}</CardDescription> : null}

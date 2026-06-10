@@ -1,6 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { KeyRound, Lock, LogIn } from "lucide-react";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { ProjectCard } from "@/components/project/project-card";
 import { PolicyCard, type PolicyRow } from "@/components/project/policy-card";
 import { api, ApiError } from "@/lib/api";
@@ -91,13 +93,10 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-4 px-6 py-6">
-      <div>
-        <h1 className="text-xl font-bold">Project &amp; Org</h1>
-        <p className="text-muted-foreground text-sm">
-          The platform project is editable here. Org policies are read-only and
-          provisioner-managed — changes are made out-of-band, not in the Console.
-        </p>
-      </div>
+      <PageHeader
+        title="Project & Org"
+        description="The platform project is editable here. Org policies are read-only and provisioner-managed — changes are made out-of-band, not in the Console."
+      />
       <ProjectCard project={project} onSaved={load} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <PolicyCard
@@ -105,18 +104,24 @@ export default function SettingsPage() {
           description="How users authenticate into the platform org."
           available={login.available}
           rows={loginRows}
+          icon={LogIn}
+          iconClass="bg-blue-500/10 text-blue-600"
         />
         <PolicyCard
           title="Password complexity"
           description="Strength requirements enforced on org passwords."
           available={complexity.available}
           rows={complexityRows}
+          icon={KeyRound}
+          iconClass="bg-violet-500/10 text-violet-600"
         />
         <PolicyCard
           title="Lockout policy"
           description="Failed-attempt thresholds before an account locks."
           available={lockout.available}
           rows={lockoutRows}
+          icon={Lock}
+          iconClass="bg-amber-500/10 text-amber-700"
         />
       </div>
     </div>

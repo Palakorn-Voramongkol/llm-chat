@@ -152,7 +152,7 @@ export function AppFormDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button data-testid="create-app">Create application</Button>
+        <Button variant="brand" data-testid="create-app">Create application</Button>
       </DialogTrigger>
       {inner}
     </Dialog>

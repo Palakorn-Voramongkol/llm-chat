@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { DataTable } from "@/components/ui/data-table";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { buildColumns, type Lifecycle } from "@/components/users/columns";
 import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
@@ -62,19 +63,17 @@ export default function UsersPage() {
   });
 
   return (
-    <div className="space-y-4 px-6 py-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold">Users</h1>
-          <p className="text-muted-foreground text-sm">
-            People and machine accounts across every app on the platform.
-          </p>
-        </div>
-        <CreateUserDialog onCreated={load} />
+    <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
+      <PageHeader
+        title="Users"
+        description="People and machine accounts across every app on the platform."
+        actions={<CreateUserDialog onCreated={load} />}
+      />
+      <div className="flex-1 min-h-0">
+        <DataTable columns={columns} data={users}
+          filterColumn="userName" filterPlaceholder="Filter by username..."
+          emptyMessage="No users." />
       </div>
-      <DataTable columns={columns} data={users}
-        filterColumn="userName" filterPlaceholder="Filter by username..."
-        emptyMessage="No users." />
       <EditUserDialog user={editTarget} open={!!editTarget}
         onOpenChange={(o) => !o && setEditTarget(null)} onSaved={load} />
       <ConfirmDialog open={!!deleteTarget}

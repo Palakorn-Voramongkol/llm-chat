@@ -68,7 +68,7 @@ export function CreateUserDialog({ onCreated }: { onCreated: () => void }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button data-testid="create-user">Create user</Button>
+        <Button variant="brand" data-testid="create-user">Create user</Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader><DialogTitle>Create user</DialogTitle></DialogHeader>
