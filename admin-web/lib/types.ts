@@ -139,3 +139,24 @@ export interface Stats {
   apps: number | null;
   tokenHealthy: boolean;
 }
+
+// ---- Audit / event log (design §11) ----
+// Whether the service account can read the org event log (requires
+// IAM_OWNER_VIEWER). When false the audit page fails closed and shows a banner.
+export interface Capabilities {
+  events: boolean;
+}
+
+// camelCase passthrough from /admin/v1/events/_search — editor, aggregate,
+// type, creationDate are the Zitadel event fields.
+export interface AuditEvent {
+  sequence?: string;
+  creationDate?: string;
+  type?: { type?: string; localized?: { localizedMessage?: string } };
+  editor?: { userId?: string; displayName?: string };
+  aggregate?: { id?: string; type?: string };
+}
+
+export interface EventList {
+  result: AuditEvent[];
+}
