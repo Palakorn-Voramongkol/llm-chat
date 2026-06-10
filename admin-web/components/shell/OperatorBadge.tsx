@@ -2,14 +2,12 @@
 import { useEffect, useState } from "react";
 import { LogOut } from "lucide-react";
 import { api } from "@/lib/api";
+import { initials } from "@/lib/avatar";
 import type { Me } from "@/lib/types";
 
-/** First letter of up to two words, uppercased; "?" when empty. */
-export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  return parts.slice(0, 2).map((p) => p[0]!.toUpperCase()).join("");
-}
+// Re-exported for callers/tests that import `initials` from here; the
+// canonical implementation lives in lib/avatar.ts.
+export { initials };
 
 export function OperatorBadge() {
   const [me, setMe] = useState<Me | null>(null);

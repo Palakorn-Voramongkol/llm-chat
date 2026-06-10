@@ -7,11 +7,11 @@ import { Topbar } from "@/components/shell/Topbar";
 // (Next 16 route-groups), so /users etc. render inside this chrome unchanged.
 export default function DashLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-dvh overflow-hidden">
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
-        <main className="flex-1 overflow-auto">{children}</main>
+        <main className="flex-1 min-h-0 overflow-auto">{children}</main>
       </div>
     </div>
   );
