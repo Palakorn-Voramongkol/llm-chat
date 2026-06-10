@@ -40,6 +40,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/users/{id}/grants", get(list_grants).post(add_grant))
         .route("/api/users/{id}/grants/{grantId}", put(set_grant).delete(remove_grant))
         .route("/api/roles", get(list_roles).post(create_role))
+        .route("/api/events", get(list_events))
+        .route("/api/capabilities", get(list_capabilities))
         .route("/api/stats", get(stats))
         .route("/api/roles/{roleKey}", delete(delete_role))
         .route("/api/roles/{roleKey}/holders", get(list_role_holders))
@@ -160,6 +162,42 @@ async fn delete_user(_op: Operator, State(st): State<AppState>, Path(id): Path<S
 
 async fn list_roles(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "result": st.zitadel.list_roles().await? })))
+}
+
+#[derive(Deserialize)]
+struct EventListQuery {
+    editor: Option<String>,
+    aggregate: Option<String>,
+    from: Option<String>,
+    #[serde(default)]
+    asc: bool,
+    #[serde(default = "default_event_limit")]
+    limit: u32,
+}
+fn default_event_limit() -> u32 { 100 }
+
+/// PURE: the /api/capabilities body. One field today (events); a fail-closed
+/// boolean the audit page branches on (§11).
+fn capabilities_json(events: bool) -> Value {
+    json!({ "events": events })
+}
+
+async fn list_capabilities(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let events = st.zitadel.can_read_events().await?;
+    Ok(Json(capabilities_json(events)))
+}
+
+async fn list_events(_op: Operator, State(st): State<AppState>, Query(qp): Query<EventListQuery>)
+    -> Result<Json<Value>, ApiError> {
+    let q = crate::zitadel::events::EventQuery {
+        editor_user_id: qp.editor,
+        aggregate_id: qp.aggregate,
+        from: qp.from,
+        asc: qp.asc,
+        limit: qp.limit,
+    };
+    let events = st.zitadel.search_events(&q).await?;
+    Ok(Json(json!({ "result": events })))
 }
 
 /// Dashboard counts (design §10). Each count is `Option<u64>` — `null` in JSON
@@ -447,6 +485,27 @@ mod contract_tests {
         assert!(b.project_role_assertion);
         assert!(!b.project_role_check);
         assert!(b.has_project_check);
+    }
+
+    #[test]
+    fn event_list_query_parses_filters_with_defaults() {
+        // editor/aggregate/from optional; asc + limit defaulted when absent.
+        let q: EventListQuery = serde_urlencoded::from_str(
+            "editor=u-9&aggregate=agg-7&from=2026-06-01T00:00:00Z"
+        ).expect("parse event query");
+        assert_eq!(q.editor.as_deref(), Some("u-9"));
+        assert_eq!(q.aggregate.as_deref(), Some("agg-7"));
+        assert_eq!(q.from.as_deref(), Some("2026-06-01T00:00:00Z"));
+        assert!(!q.asc, "asc defaults to false (newest-first)");
+        assert_eq!(q.limit, 100, "limit defaults to 100");
+    }
+
+    #[test]
+    fn capabilities_payload_shape() {
+        // The /api/capabilities body the audit page reads.
+        let v = capabilities_json(false);
+        assert_eq!(v.get("events").and_then(Value::as_bool), Some(false));
+        assert_eq!(capabilities_json(true).get("events").and_then(Value::as_bool), Some(true));
     }
 
     #[test]
