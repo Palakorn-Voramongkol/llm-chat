@@ -13,6 +13,27 @@ test("unauthenticated visit to /users redirects toward /login (BFF nav)", async 
   expect(resp).not.toBeNull();
 });
 
+test("audit page fails closed: capabilities.events=false shows the IAM_OWNER_VIEWER banner", async ({ page }) => {
+  // Force the capability probe to report "no events" — the page must not error,
+  // it must show the fail-closed banner (design §11).
+  await page.route("**/api/me", (r) =>
+    r.fulfill({ json: { userId: "op-1", name: "operator", roles: ["chat.admin"] } }),
+  );
+  await page.route("**/api/capabilities", (r) => r.fulfill({ json: { events: false } }));
+  // If the page ever calls /api/events with the capability off, fail loudly.
+  let eventsCalled = false;
+  await page.route("**/api/events*", (r) => {
+    eventsCalled = true;
+    return r.fulfill({ json: { result: [] } });
+  });
+
+  await page.goto("/audit");
+  await expect(
+    page.getByText("Audit requires IAM_OWNER_VIEWER on the service account"),
+  ).toBeVisible();
+  expect(eventsCalled, "must not fetch events when capability is false").toBe(false);
+});
+
 test.describe("authenticated operator flow", () => {
   test.skip(!FULL, "requires running stack: set ADMIN_IT=1 + a logged-in chat.admin session");
 
