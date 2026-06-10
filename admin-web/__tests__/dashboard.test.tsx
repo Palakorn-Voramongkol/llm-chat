@@ -40,3 +40,13 @@ describe("dashboard cards", () => {
     expect(await screen.findByText("—")).toBeInTheDocument();
   });
 });
+
+describe("dash index landing", () => {
+  it("redirects / to /dashboard", async () => {
+    const redirect = vi.fn();
+    vi.doMock("next/navigation", () => ({ redirect }));
+    const { default: DashIndex } = await import("../app/(dash)/page");
+    DashIndex();
+    expect(redirect).toHaveBeenCalledWith("/dashboard");
+  });
+});
