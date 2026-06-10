@@ -1021,9 +1021,11 @@ async fn handle_client(
     let path_holder = Arc::new(std::sync::Mutex::new(String::new()));
     let query_holder = Arc::new(std::sync::Mutex::new(String::new()));
     let user_id_holder = Arc::new(std::sync::Mutex::new(None::<String>));
+    let roles_holder = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let path_capture = path_holder.clone();
     let query_capture = query_holder.clone();
     let user_id_capture = user_id_holder.clone();
+    let roles_capture = roles_holder.clone();
     let cb = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         *path_capture.lock().unwrap() = req.uri().path().to_string();
         *query_capture.lock().unwrap() = req.uri().query().unwrap_or("").to_string();
@@ -1071,6 +1073,7 @@ async fn handle_client(
             }
             tracing::info!(target: "manager::auth", user_id = %principal.user_id, roles = ?principal.roles, "JWT verified; capturing user id");
             *user_id_capture.lock().unwrap() = Some(principal.user_id.clone());
+            *roles_capture.lock().unwrap() = principal.roles.clone();
             return Ok(resp);
         }
 
@@ -1102,6 +1105,13 @@ async fn handle_client(
             Some(u) => u,
             None => return reject_no_user(ws).await,
         };
+        // /control is an OPS surface: `list` exposes every user's session ids,
+        // `close` kills any session, `history` reads any session's transcript.
+        // chat.user alone must NOT reach it — require chat.admin (fail closed).
+        let roles = roles_holder.lock().unwrap().clone();
+        if !roles.iter().any(|r| r == "chat.admin") {
+            return reject_forbidden(ws, "control requires the chat.admin role").await;
+        }
         return handle_control(ws, state, uid).await;
     }
     if req_path == "/chat" {
@@ -1718,6 +1728,21 @@ async fn reject_no_user(
                 "text": "per-user environment requires an authenticated user id"
             })
             .to_string(),
+        ))
+        .await;
+    let _ = ws.close(None).await;
+    Ok(())
+}
+
+/// Reject an authenticated-but-unauthorized connection (e.g. /control without
+/// chat.admin). Mirrors reject_no_user: one typed err frame, then close.
+async fn reject_forbidden(
+    mut ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    why: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = ws
+        .send(Message::Text(
+            serde_json::json!({ "type": "err", "text": why }).to_string(),
         ))
         .await;
     let _ = ws.close(None).await;
