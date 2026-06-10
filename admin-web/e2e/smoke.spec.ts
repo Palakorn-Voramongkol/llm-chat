@@ -34,6 +34,38 @@ test("audit page fails closed: capabilities.events=false shows the IAM_OWNER_VIE
   expect(eventsCalled, "must not fetch events when capability is false").toBe(false);
 });
 
+test("audit page with capability on lists events", async ({ page }) => {
+  // Capability ON: the page must fetch /api/events and render the row through
+  // auditColumns into the DataTable (the non-banner branch, design §11).
+  await page.route("**/api/me", (r) =>
+    r.fulfill({ json: { userId: "op-1", name: "operator", roles: ["chat.admin"] } }),
+  );
+  await page.route("**/api/capabilities", (r) => r.fulfill({ json: { events: true } }));
+  await page.route("**/api/events*", (r) =>
+    r.fulfill({
+      json: {
+        result: [
+          {
+            sequence: "42",
+            creationDate: "2026-06-01T10:00:00Z",
+            type: { type: "user.human.added", localized: { localizedMessage: "User added" } },
+            editor: { userId: "u-9", displayName: "Operator One" },
+            aggregate: { id: "u-9", type: "user" },
+          },
+        ],
+      },
+    }),
+  );
+
+  await page.goto("/audit");
+  await expect(page.getByText("User added")).toBeVisible();
+  await expect(page.getByText("Operator One")).toBeVisible();
+  // The banner must NOT be present on the capability-on path.
+  await expect(
+    page.getByText("Audit requires IAM_OWNER_VIEWER on the service account"),
+  ).toHaveCount(0);
+});
+
 test.describe("authenticated operator flow", () => {
   test.skip(!FULL, "requires running stack: set ADMIN_IT=1 + a logged-in chat.admin session");
 
