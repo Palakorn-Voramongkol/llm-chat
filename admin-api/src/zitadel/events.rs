@@ -55,6 +55,18 @@ pub fn org_id_from_me(body: &Value) -> Option<String> {
         .map(String::from)
 }
 
+/// PURE: is this event type sign-in/token activity? Used by /api/signins to
+/// derive "recent sign-ins" from the audit log — the honest source on this
+/// stack (verified live: the classic hosted login creates NO v2 session-API
+/// sessions, so /v2/sessions/search is empty; sign-ins ARE visible as
+/// oidc_session.* / user.token.* / password.check events).
+pub fn is_signin_event(event_type: &str) -> bool {
+    event_type.starts_with("oidc_session.")
+        || event_type.starts_with("user.token")
+        || event_type.contains("password.check")
+        || event_type.contains("refresh_token")
+}
+
 /// PURE: classify an events probe result into a capability boolean. Only the
 /// permission errors (Forbidden = missing IAM_OWNER_VIEWER, NotFound = endpoint
 /// unavailable) mean "no capability"; everything else is a genuine failure and
@@ -172,5 +184,17 @@ mod tests {
             capability_from(Err(ZitadelError::Upstream)),
             Err(ZitadelError::Upstream)
         );
+    }
+
+    #[test]
+    fn signin_classifier_matches_login_activity_only() {
+        assert!(is_signin_event("oidc_session.added"));
+        assert!(is_signin_event("oidc_session.access_token.added"));
+        assert!(is_signin_event("user.token.v2.added"));
+        assert!(is_signin_event("user.human.password.check.succeeded"));
+        assert!(is_signin_event("user.human.password.check.failed"));
+        assert!(!is_signin_event("user.human.added"));
+        assert!(!is_signin_event("project.role.added"));
+        assert!(!is_signin_event("org.policy.login.changed"));
     }
 }

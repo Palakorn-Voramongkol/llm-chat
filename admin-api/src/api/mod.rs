@@ -55,6 +55,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/org/policies/login", get(get_login_policy))
         .route("/api/org/policies/password-complexity", get(get_password_complexity_policy))
         .route("/api/org/policies/lockout", get(get_lockout_policy))
+        .route("/api/status", get(status))
+        .route("/api/chat-sessions", get(chat_sessions))
+        .route("/api/signins", get(list_signins))
         .with_state(state)
 }
 
@@ -185,6 +188,77 @@ fn capabilities_json(events: bool) -> Value {
 async fn list_capabilities(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     let events = st.zitadel.can_read_events().await?;
     Ok(Json(capabilities_json(events)))
+}
+
+/// Sessions page (§Sessions): the operator's own session + platform health in
+/// one read. Health values DEGRADE to false (this is a status view — a probe
+/// failure is itself the signal); identity comes from the verified session.
+async fn status(
+    op: Operator,
+    session: tower_sessions::Session,
+    State(st): State<AppState>,
+) -> Result<Json<Value>, ApiError> {
+    let zitadel_ok = st.zitadel.valid_token().await.is_ok();
+    let events_cap = st.zitadel.can_read_events().await.unwrap_or(false);
+    let expires_at = session
+        .expiry_date()
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok();
+    Ok(Json(json!({
+        "operator": { "userId": op.user_id, "name": op.name, "roles": op.roles },
+        "session": { "expiresAt": expires_at },
+        "health": { "zitadel": zitadel_ok },
+        "capabilities": {
+            "events": events_cap,
+            "chatSessions": st.cfg.manager_control_url.is_some(),
+        },
+    })))
+}
+
+/// Active chat sessions via the manager's /control (read-only "list" +
+/// "instances"). Capability-gated on MANAGER_CONTROL_URL; each reply degrades
+/// independently so one failing backend never blanks the panel.
+async fn chat_sessions(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let Some(url) = st.cfg.manager_control_url.clone() else {
+        return Ok(Json(json!({ "configured": false })));
+    };
+    let token = st.zitadel.mint_chat_token().await?;
+    let list = crate::manager::control_query(&url, &token, "list")
+        .await
+        .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
+    let instances = crate::manager::control_query(&url, &token, "instances")
+        .await
+        .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
+    Ok(Json(crate::manager::combine_control_replies(list, instances)))
+}
+
+/// Recent sign-ins derived from the audit event log (the honest source on this
+/// stack — the classic hosted login creates no v2 session-API sessions, which
+/// was verified live to return an empty search). Same capability gate as Audit.
+async fn list_signins(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    use crate::zitadel::events::{is_signin_event, EventQuery};
+    if !st.zitadel.can_read_events().await.unwrap_or(false) {
+        return Ok(Json(json!({ "available": false, "result": [] })));
+    }
+    let q = EventQuery {
+        editor_user_id: None,
+        aggregate_id: None,
+        from: None,
+        asc: false,
+        limit: 100,
+    };
+    let events = st.zitadel.search_events(&q).await?;
+    let signins: Vec<Value> = events
+        .into_iter()
+        .filter(|e| {
+            e.get("type")
+                .and_then(|t| t.get("type"))
+                .and_then(Value::as_str)
+                .map(is_signin_event)
+                .unwrap_or(false)
+        })
+        .collect();
+    Ok(Json(json!({ "available": true, "result": signins })))
 }
 
 async fn list_events(_op: Operator, State(st): State<AppState>, Query(qp): Query<EventListQuery>)

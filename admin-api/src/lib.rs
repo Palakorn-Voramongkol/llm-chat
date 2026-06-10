@@ -2,6 +2,7 @@
 pub mod api;
 pub mod auth;
 pub mod config;
+pub mod manager;
 pub mod session;
 pub mod zitadel;
 

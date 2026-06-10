@@ -98,6 +98,52 @@ impl ZitadelClient {
     }
 }
 
+impl ZitadelClient {
+    /// Mint a token the MANAGER accepts (Sessions page → manager /control):
+    /// audience = OUR project + asserted project roles, mirroring the working
+    /// python client's machine flow (clients/python auth.py). This is a
+    /// DIFFERENT scope from the Management-API token above (`zitadel` project)
+    /// and is deliberately not cached — the Sessions page polls infrequently.
+    pub async fn mint_chat_token(&self) -> Result<String, ZitadelError> {
+        let raw = std::fs::read_to_string(&self.cfg.sa_key_path)
+            .map_err(|e| ZitadelError::Transport(format!("read sa key: {e}")))?;
+        let sa: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| ZitadelError::Invalid(format!("sa key json: {e}")))?;
+        let user_id = sa["userId"].as_str().unwrap_or_default();
+        let key_id = sa["keyId"].as_str().unwrap_or_default();
+        let pem = sa["key"].as_str().unwrap_or_default();
+        let assertion = build_assertion(user_id, key_id, pem, &self.cfg.issuer, now_secs())
+            .map_err(ZitadelError::Invalid)?;
+        let scope = format!(
+            "openid urn:zitadel:iam:org:project:id:{}:aud urn:zitadel:iam:org:projects:roles",
+            self.cfg.project_id
+        );
+        let url = format!("{}/oauth/v2/token", self.cfg.issuer);
+        let resp = self
+            .http
+            .post(&url)
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                ("assertion", assertion.as_str()),
+                ("scope", scope.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|e| ZitadelError::Transport(e.to_string()))?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        if status != 200 {
+            return Err(map_status(status, &body));
+        }
+        let json: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| ZitadelError::Invalid(format!("token json: {e}")))?;
+        json["access_token"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| ZitadelError::Invalid("no access_token in mint response".into()))
+    }
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

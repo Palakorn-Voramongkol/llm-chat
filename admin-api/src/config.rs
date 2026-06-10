@@ -28,6 +28,11 @@ pub struct AdminConfig {
     pub public_origin: String,
     pub allowed_origin: String,
     pub session_key: String,
+    /// Optional manager /control WS URL (e.g. ws://manager:7777/control) for the
+    /// Sessions page's chat-sessions panel. OPTIONAL BY DESIGN (a capability-gated
+    /// feature toggle, not a security value): absent → the panel reports
+    /// `configured:false` and stays dark. No default URL is invented.
+    pub manager_control_url: Option<String>,
 }
 
 impl AdminConfig {
@@ -56,6 +61,9 @@ impl AdminConfig {
             public_origin,
             allowed_origin: require_var("ADMIN_ALLOWED_ORIGIN", get("ADMIN_ALLOWED_ORIGIN"))?,
             session_key: require_var("ADMIN_SESSION_KEY", get("ADMIN_SESSION_KEY"))?,
+            manager_control_url: get("MANAGER_CONTROL_URL")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
         })
     }
 

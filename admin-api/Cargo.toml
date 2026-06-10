@@ -37,6 +37,9 @@ sha2 = "0.10"
 rand = "0.8"
 url = "2"
 time = "0.3"
+# BFF -> manager /control WS client (Sessions page). Same version as the manager.
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true }

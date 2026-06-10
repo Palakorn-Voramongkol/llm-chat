@@ -118,9 +118,16 @@ pub async fn callback(
         return (StatusCode::FORBIDDEN, "not a chat.admin operator").into_response();
     }
 
+    // Resolve a human display name via standard OIDC userinfo (verified live:
+    // returns {name, preferred_username, email?}). DISPLAY-ONLY and best-effort:
+    // identity + authorization above stay on the VERIFIED JWT; any userinfo
+    // failure just falls back to email/user_id.
+    let display_name = fetch_display_name(&st, &token).await;
     let op = Operator {
         user_id: principal.user_id.clone(),
-        name: principal.email.clone().unwrap_or_else(|| principal.user_id.clone()),
+        name: display_name
+            .or_else(|| principal.email.clone())
+            .unwrap_or_else(|| principal.user_id.clone()),
         roles: principal.roles.clone(),
     };
     let _ = session.remove::<String>("pkce_verifier").await;
@@ -137,6 +144,27 @@ pub async fn logout(State(st): State<AppState>, session: Session) -> Response {
     let url = format!("{}/oidc/v1/end_session?post_logout_redirect_uri={}/",
         st.cfg.issuer, st.cfg.allowed_origin);
     Redirect::to(&url).into_response()
+}
+
+/// Best-effort OIDC userinfo lookup for a DISPLAY name (never authz). Standard
+/// endpoint: GET {issuer}/oidc/v1/userinfo with the access token; prefers
+/// `name`, then `preferred_username`. Any failure → None (caller falls back).
+async fn fetch_display_name(st: &AppState, access_token: &str) -> Option<String> {
+    let url = format!("{}/oidc/v1/userinfo", st.cfg.issuer);
+    let v: serde_json::Value = st
+        .http
+        .get(&url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    v.get("name")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("preferred_username").and_then(|x| x.as_str()))
+        .map(|s| s.to_string())
 }
 
 async fn exchange_code(st: &AppState, code: &str, verifier: &str) -> Result<String, String> {
@@ -185,6 +213,7 @@ mod tests {
             public_origin: "http://localhost:7676".into(),
             allowed_origin: "http://localhost:3000".into(),
             session_key: "k".into(),
+            manager_control_url: None,
         }
     }
 

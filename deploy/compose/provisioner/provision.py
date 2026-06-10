@@ -553,6 +553,11 @@ def main() -> int:
     admin_sa = generate_admin_key(token, headers, admin_sa_id)
     assign_admin_member(token, headers, admin_sa_id)
     assign_admin_project_member(token, headers, project_id, admin_sa_id)
+    # The Console's Sessions page reads the manager's /control (chat.admin-only
+    # ops surface; chat.user is the manager's handshake gate) — grant the SA
+    # both project roles in its one user-grant.
+    grant_role(token, headers, admin_sa_id, project_id,
+               role_keys=[ROLE_KEY, ADMIN_ROLE_KEY])
     admin_cid, admin_secret = create_admin_oidc_app(token, headers, project_id)
     write_secret("admin-api-key.json", json.dumps(admin_sa))
     write_secret("admin_api_user_id", admin_sa_id)
