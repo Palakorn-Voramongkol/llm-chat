@@ -38,7 +38,7 @@ impl ZitadelClient {
     }
 }
 
-use crate::zitadel::error::{map_status, ZitadelError};
+use crate::zitadel::error::{map_status, path_has_traversal, ZitadelError};
 use serde_json::Value;
 
 impl ZitadelClient {
@@ -48,6 +48,12 @@ impl ZitadelClient {
         url: &str,
         body: Option<&Value>,
     ) -> Result<Value, ZitadelError> {
+        // Fail closed on any `.`/`..` path segment smuggled in via an
+        // operator-supplied id before reqwest normalizes it away and re-points
+        // the privileged request at another API path (see path_has_traversal).
+        if path_has_traversal(url) {
+            return Err(ZitadelError::Invalid("illegal path segment in request url".into()));
+        }
         let token = self.valid_token().await?;
         let mut req = self
             .http

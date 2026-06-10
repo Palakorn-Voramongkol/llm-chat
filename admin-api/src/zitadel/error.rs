@@ -28,6 +28,21 @@ impl std::fmt::Display for ZitadelError {
 
 impl std::error::Error for ZitadelError {}
 
+/// PURE: true if any `/`-delimited segment of `url` is a `.`/`..` dot-segment.
+///
+/// Operator-supplied ids (user id, app id, grant id, key id, role key) are
+/// interpolated raw into Zitadel API paths. axum's `Path` extractor has
+/// already percent-decoded them, so a smuggled `..%2F..` arrives here as a
+/// literal `../..`. reqwest's URL parser would then normalize those
+/// dot-segments away and re-point the privileged service-account request at a
+/// different API object/path (path traversal / request smuggling against the
+/// Zitadel Management API). We reject BEFORE that parse, centrally in
+/// `send_json`, so the boundary holds for every call site — present and future
+/// — without each one having to remember to validate. Fail closed.
+pub fn path_has_traversal(url: &str) -> bool {
+    url.split('/').any(|seg| seg == "." || seg == "..")
+}
+
 /// PURE: map an upstream HTTP status (+ raw body for context) to a typed
 /// error. `body` is carried into `Invalid` so 400s surface Zitadel's message.
 pub fn map_status(status: u16, body: &str) -> ZitadelError {
@@ -44,6 +59,27 @@ pub fn map_status(status: u16, body: &str) -> ZitadelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn traversal_detected_in_smuggled_id_segment() {
+        // A decoded `../..` id re-points users/{id} at another API path.
+        assert!(path_has_traversal(
+            "https://id.example.com/management/v1/users/../../admin/v1/instance"
+        ));
+        assert!(path_has_traversal("https://id.example.com/v2/users/.."));
+        assert!(path_has_traversal("https://id.example.com/v2/users/."));
+    }
+
+    #[test]
+    fn legitimate_ids_are_not_flagged() {
+        // Real Zitadel ids are opaque snowflakes; role keys are dotted tokens.
+        assert!(!path_has_traversal("https://id.example.com/v2/users/290527061160763393"));
+        assert!(!path_has_traversal(
+            "https://id.example.com/management/v1/projects/p1/roles/chat.admin"
+        ));
+        // A dotted value that is not a bare dot-segment must pass.
+        assert!(!path_has_traversal("https://id.example.com/v2/users/a..b"));
+    }
 
     #[test]
     fn maps_known_statuses() {

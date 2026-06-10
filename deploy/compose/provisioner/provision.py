@@ -13,6 +13,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import secrets
+import string
 import sys
 import time
 
@@ -41,10 +43,34 @@ OIDC_POST_LOGOUT_URI = os.environ.get("OIDC_POST_LOGOUT_URI", "http://localhost:
 # name.
 DEMO_USERNAME = "demo"
 DEMO_EMAIL = "demo@example.com"
-# GogoPure0811! satisfies Zitadel's default password complexity policy
-# (upper + lower + digit + symbol, min 8), so create_human_user accepts it with
-# no policy change.
-DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD", "GogoPure0811!")
+
+
+def gen_demo_password() -> str:
+    """A CSPRNG demo password satisfying Zitadel's default complexity policy
+    (upper + lower + digit + symbol, min 8). Guarantees one char of each
+    required class, fills the rest from a mixed alphabet, then CSPRNG-shuffles
+    so class positions aren't fixed."""
+    rng = secrets.SystemRandom()
+    required = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%^&*-_=+"),
+    ]
+    rest = [secrets.choice(string.ascii_letters + string.digits) for _ in range(16)]
+    chars = required + rest
+    rng.shuffle(chars)
+    return "".join(chars)
+
+
+# The demo human's login password. NEVER ship a committed default: the demo user
+# is granted chat.admin (see grant_role below), so a hardcoded password would be
+# a publicly-known admin credential on every deployment. Override with
+# $DEMO_USER_PASSWORD for a fixed value; otherwise mint a fresh CSPRNG password
+# each provision. The clean-boot contract (create_human_user 409 → hard fail +
+# delete ./secrets) guarantees this freshly-minted value is what gets written to
+# secrets/demo_password, so it always matches the account that was created.
+DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD") or gen_demo_password()
 
 # admin-api OIDC WEB app (confidential server / BASIC + PKCE) — distinct from the
 # CLI's public NATIVE app above. Captures BOTH clientId and clientSecret (once).

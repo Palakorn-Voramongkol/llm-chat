@@ -705,6 +705,11 @@ struct ManagerState {
     instance_ports: Vec<u16>,
     /// sessionId -> backend port that owns it.
     session_to_port: HashMap<String, u16>,
+    /// sessionId -> AUTHENTICATED owner (JWT sub) who opened it. The authz key
+    /// for attaching to a live session: `/s/<sid>` and `/qa/<sid>` may only be
+    /// reached by this owner (or a chat.admin operator). Populated in cmd_open,
+    /// cleared in cmd_close — same lifecycle as `session_to_port`.
+    session_to_owner: HashMap<String, String>,
     /// Internal shared secret used for the manager↔backend hop only
     /// (loopback). Inbound client auth is now Zitadel JWT — see `jwks`.
     auth_token: String,
@@ -909,6 +914,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state: SharedState = Arc::new(Mutex::new(ManagerState {
         instance_ports: ports.clone(),
         session_to_port: HashMap::new(),
+        session_to_owner: HashMap::new(),
         auth_token: auth_token.clone(),
         jwks,
         chat_db,
@@ -1137,12 +1143,32 @@ async fn handle_client(
         return bridge_session_auto(ws, state, uid).await;
     }
     if req_path.starts_with("/s/") {
-        let sid = &req_path[3..];
-        return bridge_session(ws, state, sid, "/s/").await;
+        // Attaching to a live PTY (read output AND inject input) — require an
+        // authenticated caller who owns the session, or chat.admin. Fail closed.
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
+        let sid = req_path[3..].to_string();
+        let is_admin = roles_holder.lock().unwrap().iter().any(|r| r == "chat.admin");
+        if !caller_may_bridge(&state, &sid, &uid, is_admin).await {
+            return reject_forbidden(ws, "not the owner of this session").await;
+        }
+        return bridge_session(ws, state, &sid, "/s/").await;
     }
     if req_path.starts_with("/qa/") {
-        let sid = &req_path[4..];
-        return bridge_session(ws, state, sid, "/qa/").await;
+        // Reading another user's parsed Q&A stream is a confidentiality leak —
+        // same owner-or-admin gate as /s/. Fail closed.
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
+        let sid = req_path[4..].to_string();
+        let is_admin = roles_holder.lock().unwrap().iter().any(|r| r == "chat.admin");
+        if !caller_may_bridge(&state, &sid, &uid, is_admin).await {
+            return reject_forbidden(ws, "not the owner of this session").await;
+        }
+        return bridge_session(ws, state, &sid, "/qa/").await;
     }
     if req_path == "/" || req_path.is_empty() {
         return handle_root(ws, state).await;
@@ -1450,7 +1476,13 @@ async fn cmd_open(
         .and_then(|v| v.as_str())
         .unwrap_or("stream-json")
         .to_string();
-    state.lock().await.session_to_port.insert(sid.clone(), port);
+    {
+        let mut st = state.lock().await;
+        st.session_to_port.insert(sid.clone(), port);
+        // Bind the session to the authenticated opener so /s/ and /qa/ attach
+        // can verify ownership (fail-closed authz for cross-user isolation).
+        st.session_to_owner.insert(sid.clone(), user_id.to_string());
+    }
     Ok((sid, port, transport))
 }
 
@@ -1460,7 +1492,11 @@ async fn cmd_close(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let port = lookup_port(state, sid).await.ok_or("unknown sessionId")?;
     let _ = call_backend(port, serde_json::json!({"cmd":"close","sessionId":sid})).await?;
-    state.lock().await.session_to_port.remove(sid);
+    {
+        let mut st = state.lock().await;
+        st.session_to_port.remove(sid);
+        st.session_to_owner.remove(sid);
+    }
     Ok(())
 }
 
@@ -1506,6 +1542,23 @@ async fn call_backend(
 }
 
 // ---------- /s/<sid> and /qa/<sid> bridge ----------
+
+/// Authorize a caller to attach to an EXISTING session's `/s/` or `/qa/`
+/// stream. A `chat.admin` operator may attach to any session (same ops posture
+/// as `/control`); every other caller MUST be the session's authenticated
+/// owner. Fails closed: an unknown session, or one with no recorded owner, is
+/// rejected — never attachable by a non-owner. Without this gate any
+/// authenticated `chat.user` could attach to (read `/qa/`, or inject input on
+/// `/s/`) another user's Claude session, defeating per-user confinement.
+async fn caller_may_bridge(state: &SharedState, sid: &str, uid: &str, is_admin: bool) -> bool {
+    if is_admin {
+        return true;
+    }
+    match state.lock().await.session_to_owner.get(sid) {
+        Some(owner) => owner == uid,
+        None => false,
+    }
+}
 
 async fn bridge_session(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
