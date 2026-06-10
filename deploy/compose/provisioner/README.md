@@ -38,3 +38,29 @@ curl -s -X POST "$PROVISION_ISSUER/management/v1/projects/$PROJECT_ID/members/_s
   -H "Authorization: Bearer $BOOT_TOKEN" -H "Content-Type: application/json" \
   -d '{}' | python -c 'import sys,json; [print(m["userId"], m["roles"]) for m in json.load(sys.stdin).get("result", [])]'
 ```
+
+## Enable the Audit log (optional, opt-in — instance-level)
+
+The Console's Audit page is **capability-gated** and OFF by default: the
+least-privilege SA cannot read Zitadel's event log, so the page shows a banner.
+Reading the event log needs the **instance-level** `IAM_OWNER_VIEWER` role — a
+deliberately separate, explicit decision (design §3/§11), because that role can
+read **every org** on the instance (the Audit UI still confines its view to the
+SA's own org via `resourceOwner`). Grant it only if you want Audit, and only on
+a trusted single-tenant instance. To enable it live (bootstrap IAM_OWNER key):
+
+```bash
+python - <<'PY'
+import provision, requests
+boot = provision.load_admin_key()
+token = provision.mint_management_token(boot)
+sa = open(f"{provision.SECRETS_DIR}/admin_api_user_id").read().strip()
+r = requests.post(f"{provision.ISSUER}/admin/v1/members",
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                  json={"userId": sa, "roles": ["IAM_OWNER_VIEWER"]}, timeout=15)
+print("grant IAM_OWNER_VIEWER ->", r.status_code)  # 200 or 409 == done
+PY
+```
+
+To turn Audit back OFF, remove the instance member:
+`DELETE /admin/v1/members/{saUserId}` with the bootstrap token.
