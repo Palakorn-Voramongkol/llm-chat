@@ -46,8 +46,9 @@ export default function AuditPage() {
           <p className="font-medium">Audit unavailable</p>
           <p>Audit requires IAM_OWNER_VIEWER on the service account.</p>
           <p className="mt-1 text-amber-800/80 dark:text-amber-200/70">
-            ORG_OWNER cannot read the instance event log; granting the instance
-            role is a separate, explicit decision (design §3/§11).
+            The least-privilege service account (ORG_USER_MANAGER +
+            PROJECT_OWNER) cannot read the instance event log; granting the
+            instance role is a separate, explicit decision (design §3/§11).
           </p>
         </div>
       ) : (

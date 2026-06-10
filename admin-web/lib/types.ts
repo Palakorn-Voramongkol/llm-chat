@@ -149,12 +149,20 @@ export interface Capabilities {
 
 // camelCase passthrough from /admin/v1/events/_search — editor, aggregate,
 // type, creationDate are the Zitadel event fields.
+// A localized Zitadel enum: { type, localized: { localizedMessage } }.
+interface ZitadelLocalized {
+  type?: string;
+  localized?: { localizedMessage?: string };
+}
+
 export interface AuditEvent {
   sequence?: string;
   creationDate?: string;
-  type?: { type?: string; localized?: { localizedMessage?: string } };
-  editor?: { userId?: string; displayName?: string };
-  aggregate?: { id?: string; type?: string };
+  type?: ZitadelLocalized;
+  // System events have only `service` (e.g. "zitadel"); user actions carry userId/displayName.
+  editor?: { userId?: string; displayName?: string; service?: string };
+  // NOTE: aggregate.type is an OBJECT (localized enum), not a string.
+  aggregate?: { id?: string; type?: ZitadelLocalized; resourceOwner?: string };
 }
 
 export interface EventList {
