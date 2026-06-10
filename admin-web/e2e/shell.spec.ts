@@ -1,25 +1,20 @@
 import { test, expect } from "@playwright/test";
+import { login } from "./auth";
 
 const FULL = process.env.ADMIN_IT === "1";
 
 test.describe("console shell", () => {
   test.skip(!FULL, "requires running stack: set ADMIN_IT=1 + a chat.admin session");
 
+  test.beforeEach(async ({ page }) => {
+    await login(page);
+  });
+
   test("renders the activity-bar nav and highlights the active area", async ({ page }) => {
-    // Real login against Zitadel v3 (operator with chat.admin), same as smoke.spec.ts.
-    await page.goto("/login");
-    await page.locator('input[name="loginName"]').fill(process.env.ADMIN_IT_USER!);
-    await page.getByRole("button", { name: /next|continue/i }).click();
-    await page.locator('input[name="password"]').fill(process.env.ADMIN_IT_PASS!);
-    await page.getByRole("button", { name: /next|continue|sign in/i }).click();
-
-    const skip2fa = page.getByRole("button", { name: /skip/i });
-    await skip2fa
-      .waitFor({ state: "visible", timeout: 8000 })
-      .then(() => skip2fa.click())
-      .catch(() => {});
-
-    await page.waitForURL(/\/users/);
+    // login() lands on /dashboard; navigate to /users so usePathname marks the
+    // Users area active (aria-current=page) for the highlight assertion below.
+    await page.goto("/users");
+    await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
 
     // The activity-bar ribbon renders every NAV area.
     const nav = page.getByRole("navigation", { name: "Primary" });

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { login } from "./auth";
 
 const FULL = process.env.ADMIN_IT === "1";
 
@@ -69,26 +70,16 @@ test("audit page with capability on lists events", async ({ page }) => {
 test.describe("authenticated operator flow", () => {
   test.skip(!FULL, "requires running stack: set ADMIN_IT=1 + a logged-in chat.admin session");
 
+  // Playwright gives each test a fresh context (no shared cookies), so every
+  // test in this block logs in first. The helper lands on /dashboard; each test
+  // then navigates to the page it actually exercises.
+  test.beforeEach(async ({ page }) => {
+    await login(page);
+  });
+
   test("login -> list users -> create machine user", async ({ page }) => {
-    // Real login against the Zitadel v3 hosted UI (operator with chat.admin).
-    // Classic flow: login name -> Next, then password -> Next. Field names come
-    // from the live /ui/login form (loginName, password); buttons read "Next".
-    await page.goto("/login");
-    await page.locator('input[name="loginName"]').fill(process.env.ADMIN_IT_USER!);
-    await page.getByRole("button", { name: /next|continue/i }).click();
-    await page.locator('input[name="password"]').fill(process.env.ADMIN_IT_PASS!);
-    await page.getByRole("button", { name: /next|continue|sign in/i }).click();
-
-    // New users are nudged to set up 2FA; the operator skips it (optional on the
-    // local stack). If login went straight through, this button never appears.
-    const skip2fa = page.getByRole("button", { name: /skip/i });
-    await skip2fa
-      .waitFor({ state: "visible", timeout: 8000 })
-      .then(() => skip2fa.click())
-      .catch(() => {});
-
-    // Lands back on the dashboard (BFF set its session cookie, 302 -> admin-web).
-    await page.waitForURL(/\/users/);
+    // The default landing is /dashboard; this flow works on the Users page.
+    await page.goto("/users");
     await expect(page.getByRole("heading", { name: "Users" })).toBeVisible();
 
     // Create a machine user.
@@ -106,27 +97,18 @@ test.describe("authenticated operator flow", () => {
   });
 
   test("dashboard is the landing and renders stat cards", async ({ page }) => {
-    // Reuse the operator session established by the login test's storage; if run
-    // standalone, log in first (same field names as the users test).
-    await page.goto("/login");
-    await page.locator('input[name="loginName"]').fill(process.env.ADMIN_IT_USER!);
-    await page.getByRole("button", { name: /next|continue/i }).click();
-    await page.locator('input[name="password"]').fill(process.env.ADMIN_IT_PASS!);
-    await page.getByRole("button", { name: /next|continue|sign in/i }).click();
-    const skip2fa = page.getByRole("button", { name: /skip/i });
-    await skip2fa.waitFor({ state: "visible", timeout: 8000 })
-      .then(() => skip2fa.click()).catch(() => {});
-
     // The Console lands on /dashboard (design §10); / redirects there.
     await page.goto("/");
     await page.waitForURL(/\/dashboard/);
     await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 
     // Cards render against the live /api/stats fan-out: labels are always present,
-    // and each count is either a number or an em-dash (never blank).
-    await expect(page.getByText("Humans")).toBeVisible();
-    await expect(page.getByText("Apps")).toBeVisible();
-    const humansLink = page.getByRole("link", { name: /Humans/ });
+    // and each count is either a number or an em-dash (never blank). Each card is
+    // a link with an aria-label, so target the link (the "Apps" text also appears
+    // in the page description, hence the role-scoped locator).
+    await expect(page.getByRole("link", { name: "Humans" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Apps" })).toBeVisible();
+    const humansLink = page.getByRole("link", { name: "Humans" });
     await expect(humansLink).toHaveAttribute("href", "/users");
   });
 
@@ -183,17 +165,6 @@ test.describe("authenticated operator flow", () => {
   });
 
   test("create OIDC app reveals the client secret exactly once", async ({ page }) => {
-    await page.goto("/login");
-    await page.locator('input[name="loginName"]').fill(process.env.ADMIN_IT_USER!);
-    await page.getByRole("button", { name: /next|continue/i }).click();
-    await page.locator('input[name="password"]').fill(process.env.ADMIN_IT_PASS!);
-    await page.getByRole("button", { name: /next|continue|sign in/i }).click();
-    const skip2fa = page.getByRole("button", { name: /skip/i });
-    await skip2fa
-      .waitFor({ state: "visible", timeout: 8000 })
-      .then(() => skip2fa.click())
-      .catch(() => {});
-
     // Canonical route is /apps (NAV.href in components/shell/nav.ts); the page
     // heading is "Applications".
     await page.goto("/apps");
