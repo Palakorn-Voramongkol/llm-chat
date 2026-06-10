@@ -55,6 +55,18 @@ pub fn org_id_from_me(body: &Value) -> Option<String> {
         .map(String::from)
 }
 
+/// PURE: classify an events probe result into a capability boolean. Only the
+/// permission errors (Forbidden = missing IAM_OWNER_VIEWER, NotFound = endpoint
+/// unavailable) mean "no capability"; everything else is a genuine failure and
+/// must propagate so we never report "unavailable" for a transient outage (§11).
+pub fn capability_from(res: Result<(), ZitadelError>) -> Result<bool, ZitadelError> {
+    match res {
+        Ok(()) => Ok(true),
+        Err(ZitadelError::Forbidden) | Err(ZitadelError::NotFound) => Ok(false),
+        Err(other) => Err(other),
+    }
+}
+
 impl ZitadelClient {
     /// Resolve the SA's own org id (the confinement anchor). FAIL CLOSED: if the
     /// org cannot be resolved we return NotFound rather than search unconfined,
@@ -73,6 +85,20 @@ impl ZitadelClient {
         let url = format!("{}/admin/v1/events/_search", self.cfg.issuer);
         let v = self.post_json(&url, &build_events_body(&org_id, q)).await?;
         Ok(v.get("events").and_then(Value::as_array).cloned().unwrap_or_default())
+    }
+
+    /// Probe whether the SA can read the event log (needs IAM_OWNER_VIEWER, §3).
+    /// Does a minimal confined search and maps a 403/404 to `false`; other errors
+    /// propagate (do not masquerade as "no capability").
+    pub async fn can_read_events(&self) -> Result<bool, ZitadelError> {
+        let probe = EventQuery {
+            editor_user_id: None,
+            aggregate_id: None,
+            from: None,
+            asc: false,
+            limit: 1,
+        };
+        capability_from(self.search_events(&probe).await.map(|_| ()))
     }
 }
 
@@ -126,5 +152,25 @@ mod tests {
         assert!(b.get("editorUserId").is_none());
         assert!(b.get("aggregateId").is_none());
         assert!(b.get("creationDate").is_none());
+    }
+
+    #[test]
+    fn forbidden_and_not_found_mean_no_capability() {
+        assert_eq!(capability_from(Err(ZitadelError::Forbidden)), Ok(false));
+        assert_eq!(capability_from(Err(ZitadelError::NotFound)), Ok(false));
+    }
+
+    #[test]
+    fn ok_means_capability_present() {
+        assert_eq!(capability_from(Ok(())), Ok(true));
+    }
+
+    #[test]
+    fn other_errors_propagate_not_swallowed() {
+        // A transport/upstream failure is NOT "no capability" — surface it.
+        assert_eq!(
+            capability_from(Err(ZitadelError::Upstream)),
+            Err(ZitadelError::Upstream)
+        );
     }
 }
