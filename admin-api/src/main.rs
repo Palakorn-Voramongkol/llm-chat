@@ -4,8 +4,10 @@
 
 use std::sync::Arc;
 
+use axum::http::{header, HeaderValue};
 use llm_chat_admin_api::config::AdminConfig;
 use llm_chat_admin_api::{api, zitadel, AppState};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 use zitadel_auth::{JwksCache, ZitadelConfig};
@@ -112,17 +114,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http: http.clone(),
     };
 
-    // tower-sessions: in-memory store, signed cookie, SameSite=Lax (same-origin
-    // proxy means Lax survives the Zitadel 302 back). secure=false for the
-    // plain-HTTP dev origin; flip to true behind TLS.
+    // tower-sessions: in-memory store, SameSite=Lax (same-origin proxy means Lax
+    // survives the Zitadel 302 back). `Secure` is config-driven and secure by
+    // default (ADMIN_COOKIE_SECURE=false only for the plain-HTTP dev origin).
+    // 8 h idle expiry here; an ABSOLUTE max lifetime is enforced server-side in
+    // the Operator extractor (session.rs) so a long-lived idle-refreshed cookie
+    // still forces periodic re-auth.
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
         .with_name("id")
         .with_same_site(tower_sessions::cookie::SameSite::Lax)
-        .with_secure(false)
+        .with_secure(cfg.cookie_secure)
         .with_expiry(Expiry::OnInactivity(time::Duration::hours(8)));
 
+    // Security response headers on the whole JSON API. It serves data only — no
+    // HTML, no sub-resources — so the CSP can be maximally strict, and framing
+    // is denied two ways (X-Frame-Options + frame-ancestors) against clickjacking
+    // of an admin surface. HSTS is harmless over http (browsers ignore it) and
+    // takes effect the moment the deploy is behind TLS.
+    let sec = |name: header::HeaderName, val: &'static str| {
+        SetResponseHeaderLayer::overriding(name, HeaderValue::from_static(val))
+    };
     let app = api::router(state)
         .layer(session_layer)
+        .layer(sec(header::X_FRAME_OPTIONS, "DENY"))
+        .layer(sec(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+        .layer(sec(header::REFERRER_POLICY, "no-referrer"))
+        .layer(sec(
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; frame-ancestors 'none'",
+        ))
+        .layer(sec(
+            header::STRICT_TRANSPORT_SECURITY,
+            "max-age=63072000; includeSubDomains",
+        ))
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;

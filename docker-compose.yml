@@ -135,6 +135,11 @@ services:
       ADMIN_PUBLIC_ORIGIN: http://localhost:3000
       ADMIN_ALLOWED_ORIGIN: http://localhost:3000
       ADMIN_SESSION_KEY: ${ADMIN_SESSION_KEY}
+      # Local stack is plain HTTP — the session cookie must NOT be Secure or the
+      # browser never sends it back and login silently fails. Production (TLS)
+      # omits this so it defaults to Secure=true. (fail-closed default; see
+      # config::parse_cookie_secure)
+      ADMIN_COOKIE_SECURE: "false"
       # Sessions page: read-only chat-sessions panel via the manager's /control
       # (requires the SA's chat.user+chat.admin grant; /control is chat.admin-only).
       MANAGER_CONTROL_URL: ws://manager:7777/control

@@ -134,6 +134,14 @@ pub async fn callback(
     if session.insert("operator", &op).await.is_err() {
         return (StatusCode::INTERNAL_SERVER_ERROR, "session write failed").into_response();
     }
+    // Stamp the login time so the Operator extractor can enforce an ABSOLUTE
+    // max session lifetime (independent of idle expiry). A session with no
+    // login_at is treated as expired — fail closed.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = session.insert("login_at", now).await;
     // 302 to the web origin (the browser talks to admin-web :3000).
     Redirect::to(&format!("{}/", st.cfg.allowed_origin)).into_response()
 }
@@ -213,6 +221,7 @@ mod tests {
             public_origin: "http://localhost:7676".into(),
             allowed_origin: "http://localhost:3000".into(),
             session_key: "k".into(),
+            cookie_secure: true,
             manager_control_url: None,
         }
     }

@@ -13,6 +13,18 @@ pub fn require_var(name: &str, raw: Option<String>) -> Result<String, String> {
     }
 }
 
+/// PURE: parse the session-cookie `Secure` toggle. Secure BY DEFAULT — the
+/// cookie carries an operator session, so the safe value wins unless explicitly
+/// disabled. Only a plain-HTTP local dev stack opts out with
+/// ADMIN_COOKIE_SECURE=false (else the cookie is never sent over http and login
+/// silently breaks). Absent/unrecognized → true (fail closed).
+pub fn parse_cookie_secure(raw: Option<String>) -> bool {
+    !matches!(
+        raw.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("false") | Some("0") | Some("no")
+    )
+}
+
 /// Resolved, validated admin-api configuration. Every field is required —
 /// there is no code default (the manager/worker pattern). `from_env`/`from_map`
 /// fail fast naming the first missing var.
@@ -28,6 +40,10 @@ pub struct AdminConfig {
     pub public_origin: String,
     pub allowed_origin: String,
     pub session_key: String,
+    /// Whether the session cookie carries the `Secure` attribute. Secure by
+    /// default (see parse_cookie_secure); a plain-HTTP dev stack sets
+    /// ADMIN_COOKIE_SECURE=false. NEVER false in a TLS production deploy.
+    pub cookie_secure: bool,
     /// Optional manager /control WS URL (e.g. ws://manager:7777/control) for the
     /// Sessions page's chat-sessions panel. OPTIONAL BY DESIGN (a capability-gated
     /// feature toggle, not a security value): absent → the panel reports
@@ -61,6 +77,7 @@ impl AdminConfig {
             public_origin,
             allowed_origin: require_var("ADMIN_ALLOWED_ORIGIN", get("ADMIN_ALLOWED_ORIGIN"))?,
             session_key: require_var("ADMIN_SESSION_KEY", get("ADMIN_SESSION_KEY"))?,
+            cookie_secure: parse_cookie_secure(get("ADMIN_COOKIE_SECURE")),
             manager_control_url: get("MANAGER_CONTROL_URL")
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
@@ -80,6 +97,17 @@ mod tests {
     #[test]
     fn require_var_trims_and_accepts() {
         assert_eq!(require_var("X", Some("  v  ".into())), Ok("v".into()));
+    }
+
+    #[test]
+    fn cookie_secure_defaults_true_and_only_explicit_falsey_disables() {
+        assert!(parse_cookie_secure(None)); // absent → secure (fail closed)
+        assert!(parse_cookie_secure(Some("true".into())));
+        assert!(parse_cookie_secure(Some("anything".into())));
+        assert!(!parse_cookie_secure(Some("false".into())));
+        assert!(!parse_cookie_secure(Some(" FALSE ".into())));
+        assert!(!parse_cookie_secure(Some("0".into())));
+        assert!(!parse_cookie_secure(Some("no".into())));
     }
 
     #[test]
