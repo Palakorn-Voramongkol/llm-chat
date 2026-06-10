@@ -6,7 +6,14 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { DetailCard, DetailRow } from "@/components/ui/detail-card";
 import type { OidcApp } from "@/lib/types";
+
+// Strip the verbose Zitadel enum prefix for display: OIDC_APP_TYPE_WEB → WEB,
+// OIDC_AUTH_METHOD_TYPE_BASIC → BASIC, OIDC_GRANT_TYPE_AUTHORIZATION_CODE →
+// AUTHORIZATION_CODE, APP_STATE_ACTIVE → ACTIVE. Unknown shapes pass through.
+const pretty = (s?: string) => (s ?? "").replace(/^[A-Z_]*?_(TYPE|STATE)_/, "");
 
 // Tinted chip per OIDC app type (design language): NATIVE=emerald, WEB=blue,
 // API=violet, USER_AGENT=amber; unknown=slate.
@@ -27,15 +34,48 @@ export function buildAppColumns(h: AppColumnHandlers): ColumnDef<OidcApp>[] {
   return [
     {
       accessorKey: "name", header: "Name",
-      cell: ({ row }) => (
-        <span className="flex items-center gap-2.5">
-          <span aria-hidden
-            className="flex size-7 shrink-0 items-center justify-center rounded-md bg-violet-500/10 text-violet-600">
-            <AppWindow className="size-4" />
-          </span>
-          <span className="font-medium">{row.original.name}</span>
-        </span>
-      ),
+      cell: ({ row }) => {
+        const a = row.original;
+        const c = a.oidcConfig;
+        return (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="flex w-fit cursor-default items-center gap-2.5">
+                <span aria-hidden
+                  className="flex size-7 shrink-0 items-center justify-center rounded-md bg-violet-500/10 text-violet-600">
+                  <AppWindow className="size-4" />
+                </span>
+                <span className="font-medium">{a.name}</span>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent align="start" className="max-w-md">
+              <DetailCard>
+                <DetailRow label="ID" mono>{a.id || "—"}</DetailRow>
+                <DetailRow label="Name">{a.name}</DetailRow>
+                <DetailRow label="State">{pretty(a.state) || "—"}</DetailRow>
+                <DetailRow label="Client ID" mono>{c?.clientId || "—"}</DetailRow>
+                <DetailRow label="App type">{pretty(c?.appType) || "—"}</DetailRow>
+                <DetailRow label="Auth method">{pretty(c?.authMethodType) || "—"}</DetailRow>
+                <DetailRow label="Grant types">
+                  {c?.grantTypes?.length ? c.grantTypes.map(pretty).join(", ") : "—"}
+                </DetailRow>
+                <DetailRow label="Response types">
+                  {c?.responseTypes?.length ? c.responseTypes.map(pretty).join(", ") : "—"}
+                </DetailRow>
+                <DetailRow label="Redirect URIs">
+                  {c?.redirectUris?.length ? (
+                    <span className="flex flex-col gap-0.5">
+                      {c.redirectUris.map((uri) => (
+                        <span key={uri} className="font-mono break-all">{uri}</span>
+                      ))}
+                    </span>
+                  ) : "—"}
+                </DetailRow>
+              </DetailCard>
+            </TooltipContent>
+          </Tooltip>
+        );
+      },
     },
     {
       accessorKey: "clientId", header: "Client ID",
