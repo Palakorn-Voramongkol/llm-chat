@@ -168,3 +168,36 @@ export interface AuditEvent {
 export interface EventList {
   result: AuditEvent[];
 }
+
+// ---- Sessions / status (BFF aggregates) ----
+// GET /api/status — operator identity, session expiry, platform health and
+// capability flags in one round-trip.
+export interface Status {
+  operator: { userId: string; name: string; roles: string[] };
+  session: { expiresAt: string | null };
+  health: { zitadel: boolean };
+  capabilities: { events: boolean; chatSessions: boolean };
+}
+
+// GET /api/chat-sessions — live chat sessions proxied from the manager's
+// control endpoint. `configured=false` when MANAGER_CONTROL_URL is unset.
+export interface ChatSessions {
+  configured: boolean;
+  ok?: boolean;
+  error?: string;
+  list?: {
+    count?: number;
+    sessions?: string[];
+    byBackend?: Record<string, unknown>;
+  };
+  instances?: {
+    ports?: number[];
+    sessionsPerPort?: Record<string, number>;
+  };
+}
+
+// GET /api/signins — recent sign-in events (requires the audit capability).
+export interface SigninList {
+  available: boolean;
+  result: AuditEvent[];
+}

@@ -1,5 +1,5 @@
 import {
-  LayoutDashboard, Users, ShieldCheck, AppWindow, Building2, ScrollText,
+  LayoutDashboard, Users, ShieldCheck, AppWindow, Activity, Building2, ScrollText,
   type LucideIcon,
 } from "lucide-react";
 
@@ -21,6 +21,7 @@ export const NAV: NavItem[] = [
   { icon: Users, label: "Users", href: "/users", match: "/users" },
   { icon: ShieldCheck, label: "Roles", href: "/roles", match: "/roles" },
   { icon: AppWindow, label: "Applications", href: "/apps", match: "/apps" },
+  { icon: Activity, label: "Sessions", href: "/sessions", match: "/sessions" },
   { icon: Building2, label: "Project & Org", href: "/settings", match: "/settings" },
   { icon: ScrollText, label: "Audit", href: "/audit", match: "/audit" },
 ];

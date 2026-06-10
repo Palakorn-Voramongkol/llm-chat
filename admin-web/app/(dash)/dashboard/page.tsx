@@ -1,11 +1,19 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { UserRound, Bot, ShieldCheck, KeyRound, AppWindow } from "lucide-react";
+import {
+  Activity, AppWindow, Bot, ChevronRight, KeyRound, ScrollText, ShieldCheck,
+  UserRound, UserRoundPlus,
+} from "lucide-react";
 import { toast } from "sonner";
+import {
+  Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer,
+  Tooltip, XAxis, YAxis,
+} from "recharts";
 import { Card } from "@/components/ui/card";
+import { PageHeader } from "@/components/shell/PageHeader";
 import { api, ApiError } from "@/lib/api";
-import type { Stats } from "@/lib/types";
+import type { AuditEvent, EventList, Stats, Status } from "@/lib/types";
 
 // Mockup tints (docs/superpowers/specs/mockups/console-shell.html): each card's
 // icon sits on a translucent brand wash. bg/fg = [icon bg, icon fg].
@@ -26,8 +34,48 @@ const CARDS: CardDef[] = [
   { key: "apps",     label: "Apps",             href: "/apps",   Icon: AppWindow,   bg: "bg-violet-500/14",  fg: "text-violet-600" },
 ];
 
+const QUICK_ACTIONS = [
+  { label: "New user",        href: "/users",    Icon: UserRoundPlus },
+  { label: "New role",        href: "/roles",    Icon: ShieldCheck },
+  { label: "New application", href: "/apps",     Icon: AppWindow },
+  { label: "View audit log",  href: "/audit",    Icon: ScrollText },
+  { label: "Sessions",        href: "/sessions", Icon: Activity },
+];
+
+// Bucket events into 24 hourly bins ending at the current hour ("HH:00").
+function bucketHourly(events: AuditEvent[]): { hour: string; events: number }[] {
+  const now = new Date();
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours());
+  const bins: { start: number; hour: string; events: number }[] = [];
+  for (let i = 23; i >= 0; i--) {
+    const start = new Date(end.getTime() - i * 3600_000);
+    bins.push({
+      start: start.getTime(),
+      hour: `${String(start.getHours()).padStart(2, "0")}:00`,
+      events: 0,
+    });
+  }
+  for (const e of events) {
+    if (!e.creationDate) continue;
+    const t = new Date(e.creationDate).getTime();
+    if (Number.isNaN(t)) continue;
+    for (let i = bins.length - 1; i >= 0; i--) {
+      if (t >= bins[i].start && t < bins[i].start + 3600_000) {
+        bins[i].events++;
+        break;
+      }
+    }
+  }
+  return bins.map(({ hour, events: n }) => ({ hour, events: n }));
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
+  const [events, setEvents] = useState<AuditEvent[] | null>(null);
+  // Charts render client-side only (ResponsiveContainer needs a measured DOM).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const load = useCallback(async () => {
     try {
@@ -35,6 +83,23 @@ export default function DashboardPage() {
     } catch (e) {
       if (!(e instanceof ApiError && e.status === 401)) {
         toast.error("Failed to load dashboard");
+      }
+    }
+    // Status + events are best-effort: each failure degrades its own card.
+    let st: Status | null = null;
+    try {
+      st = await api.get<Status>("/api/status");
+      setStatus(st);
+    } catch {
+      setStatus(null);
+    }
+    // FAIL CLOSED: only read the event log when the capability is present.
+    if (st?.capabilities?.events) {
+      try {
+        const list = await api.get<EventList>("/api/events?limit=100");
+        setEvents(list.result ?? []);
+      } catch {
+        setEvents(null);
       }
     }
   }, []);
@@ -46,23 +111,36 @@ export default function DashboardPage() {
   // null count (its fan-out failed) -> em-dash, never a misleading 0 (§10).
   const show = (n: number | null | undefined) => (n == null ? "—" : String(n));
 
+  const humans = stats?.humans ?? null;
+  const machines = stats?.machines ?? null;
+  const donutData =
+    humans != null || machines != null
+      ? [
+          { name: "Humans", value: humans ?? 0, color: "#3b82f6" },
+          { name: "Machines", value: machines ?? 0, color: "#64748b" },
+        ]
+      : null;
+  const donutTotal = (humans ?? 0) + (machines ?? 0);
+  const activity = events ? bucketHourly(events) : null;
+
   return (
     <div className="space-y-6 px-6 py-6">
-      <div>
-        <h1 className="text-xl font-bold">Dashboard</h1>
-        <p className="text-muted-foreground text-sm">
-          People, roles, and apps across every app on the platform.
-        </p>
-      </div>
+      <PageHeader
+        title="Dashboard"
+        description="People, roles, and apps across every app on the platform."
+      />
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {CARDS.map(({ key, label, href, Icon, bg, fg }) => (
           <Link key={key + label} href={href} aria-label={label}
-            className="rounded-xl transition-shadow hover:shadow-md">
-            <Card className="gap-0 p-4">
+            className="group rounded-xl transition-shadow hover:shadow-md">
+            <Card className="relative gap-0 p-4">
+              <ChevronRight
+                className="text-muted-foreground absolute top-4 right-3 size-4 opacity-0 transition-opacity group-hover:opacity-100" />
               <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl ${bg} ${fg}`}>
                 <Icon className="h-5 w-5" />
               </div>
-              <div className="text-2xl font-bold tracking-tight">
+              <div className="text-2xl font-bold tracking-tight tabular-nums">
                 {stats ? show(stats[key]) : "—"}
               </div>
               <div className="text-muted-foreground text-sm">{label}</div>
@@ -70,6 +148,125 @@ export default function DashboardPage() {
           </Link>
         ))}
       </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Activity over the last 24h */}
+        <Card className="gap-4 p-5 lg:col-span-2">
+          <div>
+            <h2 className="text-sm font-semibold">Activity</h2>
+            <p className="text-muted-foreground text-xs">
+              Audit events per hour, last 24 hours.
+            </p>
+          </div>
+          {mounted && activity ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={activity} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="activityFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#5b53e8" stopOpacity={0.35} />
+                    <stop offset="100%" stopColor="#5b53e8" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                <XAxis dataKey="hour" tick={{ fontSize: 11 }} tickLine={false}
+                  axisLine={false} interval="preserveStartEnd" minTickGap={32} />
+                <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false}
+                  allowDecimals={false} width={40} />
+                <Tooltip />
+                <Area type="monotone" dataKey="events" stroke="#5b53e8"
+                  strokeWidth={2} fill="url(#activityFill)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-muted-foreground flex h-[220px] items-center justify-center text-sm">
+              Audit events unavailable
+            </p>
+          )}
+        </Card>
+
+        {/* Humans vs machines donut */}
+        <Card className="gap-4 p-5">
+          <div>
+            <h2 className="text-sm font-semibold">Users</h2>
+            <p className="text-muted-foreground text-xs">
+              Humans vs machine accounts.
+            </p>
+          </div>
+          {mounted && donutData ? (
+            <>
+              <div className="relative">
+                <ResponsiveContainer width="100%" height={170}>
+                  <PieChart>
+                    <Pie data={donutData} dataKey="value" nameKey="name"
+                      innerRadius={55} outerRadius={75} strokeWidth={2}
+                      stroke="var(--card)" paddingAngle={2}>
+                      {donutData.map((d) => (
+                        <Cell key={d.name} fill={d.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-2xl font-bold tabular-nums">{donutTotal}</span>
+                  <span className="text-muted-foreground text-xs">total</span>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                {donutData.map((d) => (
+                  <div key={d.name} className="flex items-center gap-2 text-sm">
+                    <span aria-hidden className="size-2 rounded-full"
+                      style={{ backgroundColor: d.color }} />
+                    <span className="text-muted-foreground flex-1">{d.name}</span>
+                    <span className="font-medium tabular-nums">{d.value}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="text-muted-foreground flex h-[170px] items-center justify-center text-sm">
+              Stats unavailable
+            </p>
+          )}
+        </Card>
+
+        {/* Quick actions + system health */}
+        <Card className="gap-4 p-5">
+          <h2 className="text-sm font-semibold">Quick actions</h2>
+          <div className="flex flex-col">
+            {QUICK_ACTIONS.map(({ label, href, Icon }) => (
+              <Link key={label} href={href}
+                className="hover:bg-muted/60 group flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors">
+                <Icon className="text-muted-foreground size-4" />
+                <span className="flex-1">{label}</span>
+                <ChevronRight className="text-muted-foreground size-4 opacity-0 transition-opacity group-hover:opacity-100" />
+              </Link>
+            ))}
+          </div>
+          <div className="border-t pt-4">
+            <h3 className="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
+              System
+            </h3>
+            <div className="flex items-center gap-2 text-sm">
+              <span aria-hidden
+                className={`size-2 rounded-full ${status ? (status.health.zitadel ? "bg-emerald-500" : "bg-rose-500") : "bg-slate-400"}`} />
+              <span className="flex-1">Zitadel</span>
+              <span className="text-muted-foreground">
+                {status ? (status.health.zitadel ? "Operational" : "Unreachable") : "—"}
+              </span>
+            </div>
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${status?.capabilities.events ? "bg-emerald-500/10 text-emerald-700" : "bg-slate-500/10 text-slate-600"}`}>
+                Audit {status?.capabilities.events ? "on" : "off"}
+              </span>
+              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${status?.capabilities.chatSessions ? "bg-emerald-500/10 text-emerald-700" : "bg-slate-500/10 text-slate-600"}`}>
+                Chat sessions {status?.capabilities.chatSessions ? "on" : "off"}
+              </span>
+            </div>
+          </div>
+        </Card>
+      </div>
+
       {stats && !stats.tokenHealthy && (
         <p className="text-sm text-rose-600">
           Service-account token unavailable — counts may be stale.

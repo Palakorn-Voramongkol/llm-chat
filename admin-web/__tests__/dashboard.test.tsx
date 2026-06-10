@@ -17,16 +17,22 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+// Route the api.get fan-out by path: stats resolves; the best-effort status /
+// events reads reject so their cards degrade (the page must stay healthy).
 function stub(stats: Stats) {
-  vi.spyOn(api, "get").mockResolvedValue(stats as never);
+  vi.spyOn(api, "get").mockImplementation((path: string) => {
+    if (path.startsWith("/api/stats")) return Promise.resolve(stats as never);
+    return Promise.reject(new Error("unavailable in test"));
+  });
 }
 
 describe("dashboard cards", () => {
   it("renders each count and deep-links into its section", async () => {
     stub({ humans: 18, machines: 6, roles: 3, grants: 40, apps: 3, tokenHealthy: true });
     render(<DashboardPage />);
-    expect(await screen.findByText("18")).toBeInTheDocument();
-    expect(screen.getByText("Humans")).toBeInTheDocument();
+    // "18" and "Humans" also appear in the donut legend — assert presence, not uniqueness.
+    expect((await screen.findAllByText("18")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Humans").length).toBeGreaterThan(0);
     expect(screen.getByText("Machine accounts")).toBeInTheDocument();
     // each card deep-links to its area
     expect(screen.getByRole("link", { name: /Humans/ })).toHaveAttribute("href", "/users");
@@ -37,7 +43,22 @@ describe("dashboard cards", () => {
   it("shows an em-dash for a failed (null) count", async () => {
     stub({ humans: null, machines: 6, roles: 3, grants: 40, apps: 3, tokenHealthy: true });
     render(<DashboardPage />);
-    expect(await screen.findByText("—")).toBeInTheDocument();
+    expect((await screen.findAllByText("—")).length).toBeGreaterThan(0);
+  });
+
+  it("degrades the activity chart when audit events are unavailable", async () => {
+    stub({ humans: 18, machines: 6, roles: 3, grants: 40, apps: 3, tokenHealthy: true });
+    render(<DashboardPage />);
+    expect(await screen.findByText("Audit events unavailable")).toBeInTheDocument();
+  });
+
+  it("renders quick-action links including Sessions", async () => {
+    stub({ humans: 18, machines: 6, roles: 3, grants: 40, apps: 3, tokenHealthy: true });
+    render(<DashboardPage />);
+    expect(await screen.findByRole("link", { name: /Sessions/ }))
+      .toHaveAttribute("href", "/sessions");
+    expect(screen.getByRole("link", { name: /View audit log/ }))
+      .toHaveAttribute("href", "/audit");
   });
 });
 
