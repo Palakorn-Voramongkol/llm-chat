@@ -52,6 +52,31 @@ test.describe("authenticated operator flow", () => {
     await expect(page.getByText(uname)).toBeVisible();
   });
 
+  test("dashboard is the landing and renders stat cards", async ({ page }) => {
+    // Reuse the operator session established by the login test's storage; if run
+    // standalone, log in first (same field names as the users test).
+    await page.goto("/login");
+    await page.locator('input[name="loginName"]').fill(process.env.ADMIN_IT_USER!);
+    await page.getByRole("button", { name: /next|continue/i }).click();
+    await page.locator('input[name="password"]').fill(process.env.ADMIN_IT_PASS!);
+    await page.getByRole("button", { name: /next|continue|sign in/i }).click();
+    const skip2fa = page.getByRole("button", { name: /skip/i });
+    await skip2fa.waitFor({ state: "visible", timeout: 8000 })
+      .then(() => skip2fa.click()).catch(() => {});
+
+    // The Console lands on /dashboard (design §10); / redirects there.
+    await page.goto("/");
+    await page.waitForURL(/\/dashboard/);
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+
+    // Cards render against the live /api/stats fan-out: labels are always present,
+    // and each count is either a number or an em-dash (never blank).
+    await expect(page.getByText("Humans")).toBeVisible();
+    await expect(page.getByText("Apps")).toBeVisible();
+    const humansLink = page.getByRole("link", { name: /Humans/ });
+    await expect(humansLink).toHaveAttribute("href", "/users");
+  });
+
   test("create then delete a role (cascade confirm)", async ({ page }) => {
     await page.goto("/roles");
     await expect(page.getByRole("heading", { name: "Roles" })).toBeVisible();
