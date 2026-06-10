@@ -4,6 +4,7 @@
 
 pub mod apps;
 pub mod error;
+pub mod events;
 pub mod grants;
 pub mod keys;
 pub mod model;
