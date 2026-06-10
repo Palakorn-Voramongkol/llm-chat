@@ -1,6 +1,9 @@
 //! The only module that touches Zitadel APIs. Submodules are added across
 //! Phase C: error (gRPC->HTTP mapping), token (SA JWT-bearer + cache), model,
-//! users, grants, keys. Task 12 lands `error`.
+//! users, grants, keys, apps, policies, project, stats, and `events` (the
+//! audit-log / capability-probe surface, design §11). Each submodule's `impl
+//! ZitadelClient` block is only reachable once it is declared below, so this
+//! list and the `pub mod` declarations must stay in sync.
 
 pub mod apps;
 pub mod error;
