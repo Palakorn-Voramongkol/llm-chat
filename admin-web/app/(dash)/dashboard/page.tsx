@@ -12,7 +12,11 @@ import {
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { api, ApiError } from "@/lib/api";
-import type { AuditEvent, EventList, Stats, Status } from "@/lib/types";
+import { eventChipClass, eventLabel } from "@/lib/event-style";
+import { deriveWorkers } from "@/lib/workers";
+import type {
+  AuditEvent, ChatSessions, EventList, Stats, Status, UserList,
+} from "@/lib/types";
 
 // Mockup tints (docs/superpowers/specs/mockups/console-shell.html): each card's
 // icon sits on a translucent brand wash. bg/fg = [icon bg, icon fg].
@@ -62,7 +66,10 @@ function bucketHourly(events: AuditEvent[]): { hour: string; events: number }[] 
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [status, setStatus] = useState<Status | null>(null);
+  const [chat, setChat] = useState<ChatSessions | null>(null);
   const [events, setEvents] = useState<AuditEvent[] | null>(null);
+  const [usersById, setUsersById] = useState<Map<string, string>>(new Map());
   // Charts render client-side only (ResponsiveContainer needs a measured DOM).
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
@@ -75,12 +82,24 @@ export default function DashboardPage() {
         toast.error("Failed to load dashboard");
       }
     }
-    // Capability probe is best-effort: a failure just hides the chart.
+    // Every overview panel is best-effort: each failure degrades its own tile.
     let st: Status | null = null;
     try {
       st = await api.get<Status>("/api/status");
     } catch {
       st = null;
+    }
+    setStatus(st);
+    try {
+      setChat(await api.get<ChatSessions>("/api/chat-sessions"));
+    } catch {
+      setChat(null);
+    }
+    try {
+      const ul = await api.get<UserList>("/api/users");
+      setUsersById(new Map((ul.result ?? []).map((u) => [u.id, u.userName])));
+    } catch {
+      setUsersById(new Map());
     }
     // FAIL CLOSED: only read the event log when the capability is present.
     if (st?.capabilities?.events) {
@@ -118,12 +137,60 @@ export default function DashboardPage() {
   const donutTotal = (humans ?? 0) + (machines ?? 0);
   const activity = events ? bucketHourly(events) : null;
 
+  // Platform overview derivations (each tile degrades on its own).
+  const workers = deriveWorkers(chat);
+  const workersUp = workers.filter((w) => w.ok).length;
+  const liveClients = chat?.clients?.clients ?? [];
+  const liveCount = chat?.list?.count ?? liveClients.length;
+  const recentEvents = events ? [...events].slice(-6).reverse() : [];
+
+  type Tone = "ok" | "down" | "warn";
+  const dotCls = (t: Tone) =>
+    t === "ok" ? "bg-emerald-500" : t === "down" ? "bg-rose-500" : "bg-amber-500";
+  const healthTiles: { label: string; value: string; tone: Tone }[] = [
+    {
+      label: "Zitadel",
+      value: status ? (status.health.zitadel ? "Operational" : "Unreachable") : "Unknown",
+      tone: status ? (status.health.zitadel ? "ok" : "down") : "warn",
+    },
+    {
+      label: "Manager",
+      value: !chat || !chat.configured
+        ? "Not configured"
+        : chat.ok === false ? "Unreachable" : "Connected",
+      tone: !chat || !chat.configured ? "warn" : chat.ok === false ? "down" : "ok",
+    },
+    {
+      label: "Workers",
+      value: workers.length ? `${workersUp} of ${workers.length} online` : "None reported",
+      tone: !workers.length ? "warn" : workersUp === workers.length ? "ok" : "down",
+    },
+    {
+      label: "Audit log",
+      value: status?.capabilities.events ? "Capability on" : "Capability off",
+      tone: status?.capabilities.events ? "ok" : "warn",
+    },
+  ];
+
   return (
     <div className="space-y-6 px-6 py-6">
       <PageHeader
         title="Dashboard"
-        description="People, roles, and apps across every app on the platform."
+        description="One view of the whole platform — identity, activity, workers, and live sessions."
       />
+
+      {/* Platform health strip */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        {healthTiles.map((t) => (
+          <Card key={t.label} className="flex-row items-center gap-3 p-4">
+            <span aria-hidden className={`size-2.5 shrink-0 rounded-full ${dotCls(t.tone)}`} />
+            <div className="min-w-0">
+              <div className="text-sm font-medium">{t.label}</div>
+              <div className="text-muted-foreground truncate text-xs">{t.value}</div>
+            </div>
+          </Card>
+        ))}
+      </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
         {CARDS.map(({ key, label, href, Icon, bg, fg }) => (
@@ -228,6 +295,99 @@ export default function DashboardPage() {
           )}
         </Card>
 
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Live chat sessions */}
+        <Card className="gap-4 p-5 lg:col-span-2">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold">Live chat sessions</h2>
+              <p className="text-muted-foreground text-xs">
+                Who is talking to Claude right now, per worker.
+              </p>
+            </div>
+            <Link href="/sessions"
+              className="text-muted-foreground hover:text-foreground text-xs font-medium">
+              Details →
+            </Link>
+          </div>
+          {!chat || !chat.configured ? (
+            <p className="text-muted-foreground text-sm">Workers panel not configured.</p>
+          ) : chat.ok === false ? (
+            <p className="text-muted-foreground text-sm">
+              Manager unreachable{chat.error ? ` — ${chat.error}` : "."}
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-3xl font-bold tabular-nums">{liveCount}</span>
+                <span className="text-muted-foreground text-sm">active now</span>
+                <span className="flex flex-wrap gap-1.5">
+                  {workers.map((w) => (
+                    <span key={w.port}
+                      className={`inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium ${w.ok ? "bg-emerald-500/10 text-emerald-700" : "bg-rose-500/10 text-rose-700"}`}>
+                      <span aria-hidden className={`size-1.5 rounded-full ${w.ok ? "bg-emerald-500" : "bg-rose-500"}`} />
+                      :{w.port} · {w.ok ? `${w.sids.length} session${w.sids.length === 1 ? "" : "s"}` : "down"}
+                    </span>
+                  ))}
+                </span>
+              </div>
+              {liveClients.length ? (
+                <ul className="divide-y rounded-xl border">
+                  {liveClients.slice(0, 5).map((c) => (
+                    <li key={c.connectionId}
+                      className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+                      <span className="font-medium">
+                        {usersById.get(c.userId) ?? c.userId}
+                      </span>
+                      <span className="font-mono text-xs text-muted-foreground">{c.sid}</span>
+                      <span className="text-muted-foreground ml-auto text-xs whitespace-nowrap">
+                        {c.questionsSent} question{c.questionsSent === 1 ? "" : "s"} · worker :{c.backendPort}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-muted-foreground text-sm">
+                  No one is chatting right now.
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
+
+        {/* Recent activity feed */}
+        <Card className="gap-4 p-5">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold">Recent events</h2>
+              <p className="text-muted-foreground text-xs">Latest platform activity.</p>
+            </div>
+            <Link href="/audit"
+              className="text-muted-foreground hover:text-foreground text-xs font-medium">
+              View all →
+            </Link>
+          </div>
+          {recentEvents.length ? (
+            <ul className="space-y-2.5">
+              {recentEvents.map((e, i) => (
+                <li key={e.sequence ?? i} className="flex items-center gap-2 text-sm">
+                  <span className={eventChipClass(e.type?.type)}>{eventLabel(e.type)}</span>
+                  <span className="text-muted-foreground ml-auto text-xs whitespace-nowrap">
+                    {e.creationDate
+                      ? new Date(e.creationDate).toLocaleTimeString()
+                      : "—"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-muted-foreground text-sm">
+              {events ? "No events in the last 24 hours." : "Audit events unavailable."}
+            </p>
+          )}
+        </Card>
       </div>
 
       {stats && !stats.tokenHealthy && (

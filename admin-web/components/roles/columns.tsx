@@ -6,14 +6,73 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { Role } from "@/lib/types";
+import {
+  Tooltip, TooltipContent, TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { avatarGradient, initials } from "@/lib/avatar";
+import type { Role, RoleHolder } from "@/lib/types";
 
 export interface RoleColumnHandlers {
   onHolders: (r: Role) => void;
   onDelete: (r: Role) => void;
 }
 
-export function buildRoleColumns(h: RoleColumnHandlers): ColumnDef<Role>[] {
+const MAX_AVATARS = 5;
+
+/** Overlapping avatar stack of a role's holders; hovering an avatar names the
+ * user. Clicking the stack opens the full holders dialog. */
+function HolderAvatars({
+  role, holders, onOpen,
+}: {
+  role: Role;
+  holders: RoleHolder[] | undefined;
+  onOpen: (r: Role) => void;
+}) {
+  if (!holders) return <span className="text-muted-foreground text-xs">…</span>;
+  if (!holders.length) return <span className="text-muted-foreground">—</span>;
+  const shown = holders.slice(0, MAX_AVATARS);
+  const extra = holders.length - shown.length;
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(role)}
+      className="flex items-center -space-x-2"
+      aria-label={`${holders.length} holder${holders.length === 1 ? "" : "s"} of ${role.key}`}
+    >
+      {shown.map((holder) => {
+        const name = holder.displayName || holder.userName || holder.userId;
+        return (
+          <Tooltip key={holder.userId}>
+            <TooltipTrigger asChild>
+              <span
+                className={`ring-card flex size-7 items-center justify-center rounded-full bg-linear-to-br text-[10px] font-bold text-white ring-2 ${avatarGradient(holder.userId)}`}
+              >
+                {initials(name)}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <div className="font-medium">{name}</div>
+              {holder.userName && holder.userName !== name && (
+                <div className="opacity-80">{holder.userName}</div>
+              )}
+              <div className="font-mono opacity-70">{holder.userId}</div>
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+      {extra > 0 && (
+        <span className="ring-card bg-muted text-muted-foreground flex size-7 items-center justify-center rounded-full text-[10px] font-semibold ring-2">
+          +{extra}
+        </span>
+      )}
+    </button>
+  );
+}
+
+export function buildRoleColumns(
+  h: RoleColumnHandlers,
+  holdersByKey?: Map<string, RoleHolder[]>,
+): ColumnDef<Role>[] {
   return [
     {
       accessorKey: "key", header: "Key",
@@ -38,6 +97,18 @@ export function buildRoleColumns(h: RoleColumnHandlers): ColumnDef<Role>[] {
             </span>
           )
           : <span className="text-muted-foreground">—</span>,
+    },
+    {
+      id: "holders",
+      header: "Holders",
+      enableSorting: false,
+      cell: ({ row }) => (
+        <HolderAvatars
+          role={row.original}
+          holders={holdersByKey?.get(row.original.key)}
+          onOpen={h.onHolders}
+        />
+      ),
     },
     {
       id: "actions",

@@ -8,10 +8,12 @@ import { CreateRoleDialog } from "@/components/roles/create-role-dialog";
 import { HoldersDialog } from "@/components/roles/holders-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { api, ApiError } from "@/lib/api";
-import type { Role, RoleList } from "@/lib/types";
+import type { Role, RoleHolder, RoleHolderList, RoleList } from "@/lib/types";
 
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>([]);
+  const [holdersByKey, setHoldersByKey] =
+    useState<Map<string, RoleHolder[]>>(new Map());
   const [holdersTarget, setHoldersTarget] = useState<Role | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
 
@@ -19,6 +21,21 @@ export default function RolesPage() {
     try {
       const list = await api.get<RoleList>("/api/roles");
       setRoles(list.result);
+      // Holders per role for the avatar column — parallel + best-effort: a
+      // failed lookup leaves that role's cell at "…", never blanks the page.
+      const pairs = await Promise.all(
+        (list.result ?? []).map(async (r): Promise<[string, RoleHolder[]] | null> => {
+          try {
+            const hl = await api.get<RoleHolderList>(
+              `/api/roles/${encodeURIComponent(r.key)}/holders`,
+            );
+            return [r.key, hl.result ?? []];
+          } catch {
+            return null;
+          }
+        }),
+      );
+      setHoldersByKey(new Map(pairs.filter((p): p is [string, RoleHolder[]] => p !== null)));
     } catch (e) {
       if (!(e instanceof ApiError && e.status === 401)) {
         toast.error("Failed to load roles");
@@ -44,10 +61,13 @@ export default function RolesPage() {
     }
   }
 
-  const columns = buildRoleColumns({
-    onHolders: setHoldersTarget,
-    onDelete: setDeleteTarget,
-  });
+  const columns = buildRoleColumns(
+    {
+      onHolders: setHoldersTarget,
+      onDelete: setDeleteTarget,
+    },
+    holdersByKey,
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
