@@ -229,7 +229,11 @@ async fn chat_sessions(_op: Operator, State(st): State<AppState>) -> Result<Json
     let instances = crate::manager::control_query(&url, &token, "instances")
         .await
         .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
-    Ok(Json(crate::manager::combine_control_replies(list, instances)))
+    // Live /chat clients — carries each session's authenticated owner (userId).
+    let clients = crate::manager::control_query(&url, &token, "clients")
+        .await
+        .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
+    Ok(Json(crate::manager::combine_control_replies(list, instances, clients)))
 }
 
 /// Recent sign-ins derived from the audit event log (the honest source on this

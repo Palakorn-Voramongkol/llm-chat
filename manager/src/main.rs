@@ -685,6 +685,10 @@ struct ClientInfo {
     #[serde(rename = "connectionId")]
     connection_id: String,
     sid: String,
+    /// The AUTHENTICATED owner (JWT sub) — who this session belongs to.
+    /// Surfaced via /control "clients" (chat.admin-only) for the admin Console.
+    #[serde(rename = "userId")]
+    user_id: String,
     #[serde(rename = "backendPort")]
     backend_port: u16,
     #[serde(rename = "connectedAt")]
@@ -1791,6 +1795,7 @@ async fn handle_chat(
             ClientInfo {
                 connection_id: connection_id.clone(),
                 sid: sid.clone(),
+                user_id: user_id.clone(),
                 backend_port: port,
                 connected_at: now_iso(),
                 last_q_at: None,

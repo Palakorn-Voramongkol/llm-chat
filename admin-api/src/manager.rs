@@ -11,17 +11,19 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 
-/// PURE: combine the manager's `list` and `instances` replies into the
-/// Sessions-panel payload. Either reply may be an error object; pass each
-/// through under its own key so one failing backend never blanks the other.
-pub fn combine_control_replies(list: Value, instances: Value) -> Value {
+/// PURE: combine the manager's `list`, `instances` and `clients` replies into
+/// the Sessions-panel payload. Any reply may be an error object; pass each
+/// through under its own key so one failing query never blanks the others.
+pub fn combine_control_replies(list: Value, instances: Value, clients: Value) -> Value {
     let ok = list.get("ok").and_then(Value::as_bool).unwrap_or(false)
-        || instances.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        || instances.get("ok").and_then(Value::as_bool).unwrap_or(false)
+        || clients.get("ok").and_then(Value::as_bool).unwrap_or(false);
     json!({
         "configured": true,
         "ok": ok,
         "list": list,
         "instances": instances,
+        "clients": clients,
     })
 }
 
@@ -82,15 +84,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn combine_carries_both_replies_and_overall_ok() {
+    fn combine_carries_all_replies_and_overall_ok() {
         let out = combine_control_replies(
             json!({"ok": true, "count": 2, "sessions": ["s1", "s2"]}),
             json!({"ok": true, "ports": [7878], "sessionsPerPort": {"7878": 2}}),
+            json!({"ok": true, "count": 1, "clients": [{"sid": "s1", "userId": "u1", "backendPort": 7878}]}),
         );
         assert_eq!(out["configured"], true);
         assert_eq!(out["ok"], true);
         assert_eq!(out["list"]["count"], 2);
         assert_eq!(out["instances"]["ports"][0], 7878);
+        assert_eq!(out["clients"]["clients"][0]["userId"], "u1");
     }
 
     #[test]
@@ -98,6 +102,7 @@ mod tests {
         let out = combine_control_replies(
             json!({"ok": false, "error": "backend down"}),
             json!({"ok": true, "ports": [7878]}),
+            json!({"ok": false, "error": "backend down"}),
         );
         assert_eq!(out["ok"], true); // one good reply still renders
         assert_eq!(out["list"]["error"], "backend down");

@@ -1,13 +1,13 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { LogOut, MessageSquare } from "lucide-react";
+import { LogOut, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { api, ApiError } from "@/lib/api";
 import { avatarGradient, initials } from "@/lib/avatar";
 import { eventChipClass, eventLabel } from "@/lib/event-style";
-import type { ChatSessions, SigninList, Status } from "@/lib/types";
+import type { ChatSessions, SigninList, Status, UserList } from "@/lib/types";
 import { toast } from "sonner";
 
 // "in 2h 5m" countdown computed once from Date.now at render (no ticking).
@@ -47,20 +47,38 @@ function HealthRow({
   );
 }
 
-// byBackend values are {sessions:[...]} objects keyed by port — read defensively.
-function backendOf(sessionId: string, byBackend?: Record<string, unknown>): string {
-  if (!byBackend) return "—";
-  for (const [port, v] of Object.entries(byBackend)) {
-    const sessions = (v as { sessions?: unknown })?.sessions;
-    if (Array.isArray(sessions) && sessions.includes(sessionId)) return port;
-  }
-  return "—";
+// One worker row: derived from the manager's byBackend (the worker's own
+// `list` reply — {sessions:[...]} when reachable, {error} when down).
+interface WorkerRow {
+  port: string;
+  ok: boolean;
+  error?: string;
+  sids: string[];
+}
+
+function deriveWorkers(chat: ChatSessions | null): WorkerRow[] {
+  const byBackend = (chat?.list?.byBackend ?? {}) as Record<string, unknown>;
+  // The instances reply is the authoritative worker list; byBackend keys are
+  // the fallback when instances degraded.
+  const ports =
+    chat?.instances?.ports?.map(String) ?? Object.keys(byBackend);
+  return [...new Set(ports)].map((port) => {
+    const raw = byBackend[port] as { sessions?: unknown; error?: unknown } | undefined;
+    const ok = Array.isArray(raw?.sessions);
+    return {
+      port,
+      ok,
+      error: typeof raw?.error === "string" ? raw.error : undefined,
+      sids: ok ? (raw!.sessions as string[]) : [],
+    };
+  });
 }
 
 export default function SessionsPage() {
   const [status, setStatus] = useState<Status | null>(null);
   const [chat, setChat] = useState<ChatSessions | null>(null);
   const [signins, setSignins] = useState<SigninList | null>(null);
+  const [usersById, setUsersById] = useState<Map<string, string>>(new Map());
 
   const load = useCallback(async () => {
     try {
@@ -81,6 +99,13 @@ export default function SessionsPage() {
     } catch {
       setSignins(null);
     }
+    // Owner display names for the workers panel (userId -> userName).
+    try {
+      const ul = await api.get<UserList>("/api/users");
+      setUsersById(new Map((ul.result ?? []).map((u) => [u.id, u.userName])));
+    } catch {
+      setUsersById(new Map());
+    }
   }, []);
 
   useEffect(() => {
@@ -89,9 +114,11 @@ export default function SessionsPage() {
 
   const op = status?.operator;
   const expiresAt = status?.session.expiresAt ?? null;
-  const sessionIds = chat?.list?.sessions ?? [];
-  const perPort = chat?.instances?.sessionsPerPort ?? {};
   const signinEvents = signins?.available ? (signins.result ?? []).slice(0, 8) : [];
+  const workers = deriveWorkers(chat);
+  const clientsBySid = new Map(
+    (chat?.clients?.clients ?? []).map((c) => [c.sid, c]),
+  );
 
   return (
     <div className="space-y-6 px-6 py-6">
@@ -203,67 +230,92 @@ export default function SessionsPage() {
           )}
         </Card>
 
-        {/* Active chat sessions */}
+        {/* Workers & their sessions */}
         <Card className="gap-4 p-5 lg:col-span-3">
           <div className="flex items-center gap-2.5">
             <span aria-hidden
               className="flex size-8 items-center justify-center rounded-lg bg-indigo-500/10 text-indigo-600">
-              <MessageSquare className="size-4" />
+              <Server className="size-4" />
             </span>
-            <h2 className="text-sm font-semibold">Active chat sessions</h2>
+            <div>
+              <h2 className="text-sm font-semibold">Workers</h2>
+              <p className="text-muted-foreground text-xs">
+                Each worker, its status, and whose sessions it is running.
+              </p>
+            </div>
           </div>
           {!chat || !chat.configured ? (
             <p className="text-muted-foreground text-sm">
-              Chat-sessions panel is not configured (MANAGER_CONTROL_URL).
+              Workers panel is not configured (MANAGER_CONTROL_URL).
             </p>
           ) : chat.ok === false ? (
             <p className="text-muted-foreground text-sm">
               Manager unreachable{chat.error ? ` — ${chat.error}` : "."}
             </p>
+          ) : workers.length === 0 ? (
+            <p className="text-muted-foreground text-sm">No workers reported by the manager.</p>
           ) : (
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="text-2xl font-bold tabular-nums">
-                  {chat.list?.count ?? sessionIds.length}
-                </span>
-                <span className="text-muted-foreground text-sm">active now</span>
-                <span className="flex flex-wrap gap-1.5">
-                  {Object.entries(perPort).map(([port, n]) => (
-                    <span key={port}
-                      className="inline-flex items-center rounded-full bg-slate-500/10 px-2 py-0.5 text-xs font-medium text-slate-600">
-                      :{port} → {n} session{n === 1 ? "" : "s"}
+            <div className="space-y-3">
+              {workers.map((w) => (
+                <div key={w.port} className="rounded-xl border">
+                  <div className="flex flex-wrap items-center gap-2.5 border-b px-4 py-2.5">
+                    <span aria-hidden
+                      className={`size-2 rounded-full ${w.ok ? "bg-emerald-500" : "bg-rose-500"}`} />
+                    <span className="text-sm font-medium">Worker :{w.port}</span>
+                    <span className={`text-xs ${w.ok ? "text-muted-foreground" : "text-rose-600"}`}>
+                      {w.ok
+                        ? `online — ${w.sids.length} session${w.sids.length === 1 ? "" : "s"}`
+                        : `unreachable${w.error ? ` — ${w.error}` : ""}`}
                     </span>
-                  ))}
-                </span>
-              </div>
-              {sessionIds.length ? (
-                <div className="overflow-auto rounded-xl border">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b">
-                        <th className="text-muted-foreground px-3 py-2 text-left text-xs font-semibold tracking-wide uppercase">
-                          Session ID
-                        </th>
-                        <th className="text-muted-foreground px-3 py-2 text-left text-xs font-semibold tracking-wide uppercase">
-                          Backend port
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sessionIds.map((sid) => (
-                        <tr key={sid} className="hover:bg-muted/50 border-b last:border-0">
-                          <td className="px-3 py-2 font-mono text-xs">{sid}</td>
-                          <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
-                            {backendOf(sid, chat.list?.byBackend)}
-                          </td>
+                  </div>
+                  {w.ok && (w.sids.length ? (
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b">
+                          {["Session ID", "Owner", "Questions", "Connected", "Last activity"].map((h) => (
+                            <th key={h}
+                              className="text-muted-foreground px-4 py-2 text-left text-xs font-semibold tracking-wide uppercase">
+                              {h}
+                            </th>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {w.sids.map((sid) => {
+                          const c = clientsBySid.get(sid);
+                          const owner = c ? usersById.get(c.userId) : undefined;
+                          return (
+                            <tr key={sid} className="hover:bg-muted/50 border-b last:border-0">
+                              <td className="px-4 py-2 font-mono text-xs">{sid}</td>
+                              <td className="px-4 py-2">
+                                {c ? (
+                                  <span className="flex items-baseline gap-1.5">
+                                    <span className="text-sm font-medium">{owner ?? "—"}</span>
+                                    <span className="font-mono text-xs text-muted-foreground">{c.userId}</span>
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground text-xs">
+                                    no live client (idle session)
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2 text-sm tabular-nums">{c?.questionsSent ?? "—"}</td>
+                              <td className="px-4 py-2 text-xs text-muted-foreground">
+                                {c?.connectedAt ? new Date(c.connectedAt).toLocaleString() : "—"}
+                              </td>
+                              <td className="px-4 py-2 text-xs text-muted-foreground">
+                                {c?.lastQAt ? new Date(c.lastQAt).toLocaleString() : "—"}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-muted-foreground px-4 py-3 text-sm">No active sessions.</p>
+                  ))}
                 </div>
-              ) : (
-                <p className="text-muted-foreground text-sm">No active sessions.</p>
-              )}
+              ))}
             </div>
           )}
         </Card>

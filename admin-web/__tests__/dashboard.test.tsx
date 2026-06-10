@@ -52,14 +52,6 @@ describe("dashboard cards", () => {
     expect(await screen.findByText("Audit events unavailable")).toBeInTheDocument();
   });
 
-  it("renders quick-action links including Sessions", async () => {
-    stub({ humans: 18, machines: 6, roles: 3, grants: 40, apps: 3, tokenHealthy: true });
-    render(<DashboardPage />);
-    expect(await screen.findByRole("link", { name: /Sessions/ }))
-      .toHaveAttribute("href", "/sessions");
-    expect(screen.getByRole("link", { name: /View audit log/ }))
-      .toHaveAttribute("href", "/audit");
-  });
 });
 
 describe("dash index landing", () => {

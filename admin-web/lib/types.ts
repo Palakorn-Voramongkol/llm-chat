@@ -181,6 +181,18 @@ export interface Status {
 
 // GET /api/chat-sessions — live chat sessions proxied from the manager's
 // control endpoint. `configured=false` when MANAGER_CONTROL_URL is unset.
+// A live /chat client as tracked by the manager — carries the session's
+// AUTHENTICATED owner (JWT sub).
+export interface ChatClient {
+  connectionId: string;
+  sid: string;
+  userId: string;
+  backendPort: number;
+  connectedAt: string;
+  lastQAt?: string | null;
+  questionsSent: number;
+}
+
 export interface ChatSessions {
   configured: boolean;
   ok?: boolean;
@@ -193,6 +205,12 @@ export interface ChatSessions {
   instances?: {
     ports?: number[];
     sessionsPerPort?: Record<string, number>;
+  };
+  clients?: {
+    ok?: boolean;
+    count?: number;
+    clients?: ChatClient[];
+    error?: string;
   };
 }
 

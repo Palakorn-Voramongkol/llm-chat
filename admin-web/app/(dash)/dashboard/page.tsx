@@ -2,8 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  Activity, AppWindow, Bot, ChevronRight, KeyRound, ScrollText, ShieldCheck,
-  UserRound, UserRoundPlus,
+  AppWindow, Bot, ChevronRight, KeyRound, ShieldCheck, UserRound,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -32,14 +31,6 @@ const CARDS: CardDef[] = [
   { key: "roles",    label: "Roles",            href: "/roles",  Icon: ShieldCheck, bg: "bg-indigo-500/12",  fg: "text-indigo-600" },
   { key: "grants",   label: "Grants",           href: "/users",  Icon: KeyRound,    bg: "bg-emerald-500/12", fg: "text-emerald-600" },
   { key: "apps",     label: "Apps",             href: "/apps",   Icon: AppWindow,   bg: "bg-violet-500/14",  fg: "text-violet-600" },
-];
-
-const QUICK_ACTIONS = [
-  { label: "New user",        href: "/users",    Icon: UserRoundPlus },
-  { label: "New role",        href: "/roles",    Icon: ShieldCheck },
-  { label: "New application", href: "/apps",     Icon: AppWindow },
-  { label: "View audit log",  href: "/audit",    Icon: ScrollText },
-  { label: "Sessions",        href: "/sessions", Icon: Activity },
 ];
 
 // Bucket events into 24 hourly bins ending at the current hour ("HH:00").
@@ -71,7 +62,6 @@ function bucketHourly(events: AuditEvent[]): { hour: string; events: number }[] 
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
-  const [status, setStatus] = useState<Status | null>(null);
   const [events, setEvents] = useState<AuditEvent[] | null>(null);
   // Charts render client-side only (ResponsiveContainer needs a measured DOM).
   const [mounted, setMounted] = useState(false);
@@ -85,13 +75,12 @@ export default function DashboardPage() {
         toast.error("Failed to load dashboard");
       }
     }
-    // Status + events are best-effort: each failure degrades its own card.
+    // Capability probe is best-effort: a failure just hides the chart.
     let st: Status | null = null;
     try {
       st = await api.get<Status>("/api/status");
-      setStatus(st);
     } catch {
-      setStatus(null);
+      st = null;
     }
     // FAIL CLOSED: only read the event log when the capability is present.
     if (st?.capabilities?.events) {
@@ -239,41 +228,6 @@ export default function DashboardPage() {
           )}
         </Card>
 
-        {/* Quick actions + system health */}
-        <Card className="gap-4 p-5">
-          <h2 className="text-sm font-semibold">Quick actions</h2>
-          <div className="flex flex-col">
-            {QUICK_ACTIONS.map(({ label, href, Icon }) => (
-              <Link key={label} href={href}
-                className="hover:bg-muted/60 group flex items-center gap-2.5 rounded-lg px-2 py-2 text-sm transition-colors">
-                <Icon className="text-muted-foreground size-4" />
-                <span className="flex-1">{label}</span>
-                <ChevronRight className="text-muted-foreground size-4 opacity-0 transition-opacity group-hover:opacity-100" />
-              </Link>
-            ))}
-          </div>
-          <div className="border-t pt-4">
-            <h3 className="text-muted-foreground mb-2 text-xs font-semibold tracking-wide uppercase">
-              System
-            </h3>
-            <div className="flex items-center gap-2 text-sm">
-              <span aria-hidden
-                className={`size-2 rounded-full ${status ? (status.health.zitadel ? "bg-emerald-500" : "bg-rose-500") : "bg-slate-400"}`} />
-              <span className="flex-1">Zitadel</span>
-              <span className="text-muted-foreground">
-                {status ? (status.health.zitadel ? "Operational" : "Unreachable") : "—"}
-              </span>
-            </div>
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${status?.capabilities.events ? "bg-emerald-500/10 text-emerald-700" : "bg-slate-500/10 text-slate-600"}`}>
-                Audit {status?.capabilities.events ? "on" : "off"}
-              </span>
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${status?.capabilities.chatSessions ? "bg-emerald-500/10 text-emerald-700" : "bg-slate-500/10 text-slate-600"}`}>
-                Chat sessions {status?.capabilities.chatSessions ? "on" : "off"}
-              </span>
-            </div>
-          </div>
-        </Card>
       </div>
 
       {stats && !stats.tokenHealthy && (
