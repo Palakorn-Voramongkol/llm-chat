@@ -11,6 +11,11 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -20,11 +25,13 @@ interface DataTableProps<TData, TValue> {
   emptyMessage?: string;
   /** Optional extra controls rendered to the right of the filter input. */
   toolbar?: ReactNode;
+  /** Initial rows per page (user-adjustable via the footer selector). */
+  pageSize?: number;
 }
 
 export function DataTable<TData, TValue>({
   columns, data, filterColumn, filterPlaceholder, emptyMessage = "No results.",
-  toolbar,
+  toolbar, pageSize: initialPageSize = 10,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -37,7 +44,7 @@ export function DataTable<TData, TValue>({
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     state: { sorting, columnFilters },
-    initialState: { pagination: { pageSize: 10 } },
+    initialState: { pagination: { pageSize: initialPageSize } },
   });
 
   const { pageIndex, pageSize } = table.getState().pagination;
@@ -128,13 +135,34 @@ export function DataTable<TData, TValue>({
         <span className="text-muted-foreground text-sm tabular-nums">
           {rangeStart}–{rangeEnd} of {total}
         </span>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm"
-            onClick={() => table.previousPage()}
-            disabled={!table.getCanPreviousPage()}>Previous</Button>
-          <Button variant="outline" size="sm"
-            onClick={() => table.nextPage()}
-            disabled={!table.getCanNextPage()}>Next</Button>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground text-sm">Rows per page</span>
+            <Select
+              value={String(pageSize)}
+              onValueChange={(v) => table.setPageSize(Number(v))}
+            >
+              <SelectTrigger
+                aria-label="Rows per page"
+                className="h-8 w-[4.75rem] text-sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((n) => (
+                  <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm"
+              onClick={() => table.previousPage()}
+              disabled={!table.getCanPreviousPage()}>Previous</Button>
+            <Button variant="outline" size="sm"
+              onClick={() => table.nextPage()}
+              disabled={!table.getCanNextPage()}>Next</Button>
+          </div>
         </div>
       </div>
     </div>

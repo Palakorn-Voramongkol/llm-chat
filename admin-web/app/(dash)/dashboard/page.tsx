@@ -96,7 +96,13 @@ export default function DashboardPage() {
     // FAIL CLOSED: only read the event log when the capability is present.
     if (st?.capabilities?.events) {
       try {
-        const list = await api.get<EventList>("/api/events?limit=100");
+        // Real 24h WINDOW, not "last N events": a bare limit would zero out
+        // earlier hours whenever one busy hour eats the whole budget. Ask for
+        // everything since 24h ago, ascending, up to the API page cap.
+        const from = new Date(Date.now() - 24 * 3600_000).toISOString();
+        const list = await api.get<EventList>(
+          `/api/events?from=${encodeURIComponent(from)}&asc=true&limit=1000`,
+        );
         setEvents(list.result ?? []);
       } catch {
         setEvents(null);
@@ -156,6 +162,9 @@ export default function DashboardPage() {
             <h2 className="text-sm font-semibold">Activity</h2>
             <p className="text-muted-foreground text-xs">
               Audit events per hour, last 24 hours.
+              {events && events.length >= 1000 && (
+                <span className="text-amber-600"> Window truncated at 1000 events — busiest hours may under-count.</span>
+              )}
             </p>
           </div>
           {mounted && activity ? (

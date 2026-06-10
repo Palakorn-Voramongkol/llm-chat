@@ -1,7 +1,7 @@
 "use client";
 import type { ColumnDef } from "@tanstack/react-table";
 import { initials } from "@/lib/avatar";
-import { eventChipClass } from "@/lib/event-style";
+import { eventChipClass, eventLabel } from "@/lib/event-style";
 import type { AuditEvent } from "@/lib/types";
 
 // Cheap relative hint ("3m ago"); empty for future/invalid dates.
@@ -40,7 +40,7 @@ export const auditColumns: ColumnDef<AuditEvent>[] = [
   },
   {
     id: "eventType",
-    accessorFn: (e) => e.type?.localized?.localizedMessage ?? e.type?.type ?? "—",
+    accessorFn: (e) => eventLabel(e.type),
     header: "Event",
     cell: ({ row, getValue }) => (
       <span className={eventChipClass(row.original.type?.type)}>

@@ -6,7 +6,7 @@ import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { api, ApiError } from "@/lib/api";
 import { avatarGradient, initials } from "@/lib/avatar";
-import { eventChipClass } from "@/lib/event-style";
+import { eventChipClass, eventLabel } from "@/lib/event-style";
 import type { ChatSessions, SigninList, Status } from "@/lib/types";
 import { toast } from "sonner";
 
@@ -182,7 +182,7 @@ export default function SessionsPage() {
                 {signinEvents.map((e, i) => (
                   <li key={`${e.sequence ?? i}`} className="flex items-center gap-2 text-sm">
                     <span className={eventChipClass(e.type?.type)}>
-                      {e.type?.localized?.localizedMessage ?? e.type?.type ?? "—"}
+                      {eventLabel(e.type)}
                     </span>
                     <span className="font-mono text-xs text-muted-foreground">
                       {e.aggregate?.id ?? "—"}
