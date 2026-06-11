@@ -10,9 +10,9 @@ export function Sidebar() {
   return (
     <nav
       aria-label="Primary"
-      className="flex w-[60px] shrink-0 flex-col items-center gap-1.5 bg-linear-to-b from-[#5b53e8] to-[#8b3df0] py-3 shadow-[2px_0_16px_rgba(91,83,232,0.22)]"
+      className="bg-sidebar text-sidebar-foreground border-sidebar-border flex w-[60px] shrink-0 flex-col items-center gap-1.5 border-r py-3"
     >
-      <div className="mb-3 flex size-[34px] items-center justify-center rounded-[10px] bg-white/15 text-white">
+      <div className="bg-sidebar-accent text-sidebar-foreground mb-3 flex size-[34px] items-center justify-center rounded-[10px]">
         <Boxes className="size-5" />
       </div>
       {NAV.map((item) => {
@@ -27,12 +27,14 @@ export function Sidebar() {
             aria-current={active ? "page" : undefined}
             className={cn(
               "relative flex size-11 items-center justify-center rounded-xl transition-colors",
-              active ? "bg-white/20 text-white" : "text-white/70 hover:bg-white/10 hover:text-white",
+              active
+                ? "bg-sidebar-accent text-sidebar-foreground"
+                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
             )}
           >
             <Icon className="size-[22px]" />
             {active && (
-              <span className="absolute -left-3 top-2.5 bottom-2.5 w-[3px] rounded-r-[3px] bg-white" />
+              <span className="bg-sidebar-foreground absolute top-2.5 bottom-2.5 -left-3 w-[3px] rounded-r-[3px]" />
             )}
           </Link>
         );

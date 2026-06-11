@@ -40,7 +40,7 @@ function HealthRow({
   detail: string;
 }) {
   const dot =
-    ok === "ok" ? "bg-emerald-500" : ok === "down" ? "bg-rose-500" : "bg-amber-500";
+    ok === "ok" ? "bg-success" : ok === "down" ? "bg-danger" : "bg-warning";
   return (
     <div className="flex items-start gap-2.5 text-sm">
       <span aria-hidden className={`mt-1.5 size-2 shrink-0 rounded-full ${dot}`} />
@@ -110,13 +110,13 @@ export default function SessionsPage() {
       {/* At-a-glance monitoring strip (all users) */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat icon={MessageSquare} label="Active sessions" value={activeSessions}
-          tint="bg-blue-500/10 text-blue-600" />
+          tint="bg-info/10 text-info" />
         <Stat icon={UsersIcon} label="Users chatting now" value={usersChatting}
-          tint="bg-emerald-500/10 text-emerald-600" />
+          tint="bg-success/10 text-success" />
         <Stat icon={Server} label="Workers online" value={`${workersOnline}/${workers.length}`}
-          tint="bg-violet-500/10 text-violet-600" />
+          tint="bg-primary/10 text-primary" />
         <Stat icon={LogIn} label="Recent sign-ins" value={signinEvents.length}
-          tint="bg-amber-500/10 text-amber-700" />
+          tint="bg-warning/10 text-warning" />
       </div>
 
       {/* PRIMARY: live chat sessions across every worker — who is chatting now */}
@@ -149,9 +149,9 @@ export default function SessionsPage() {
               <div key={w.port} className="rounded-xl border">
                 <div className="flex flex-wrap items-center gap-2.5 border-b px-4 py-2.5">
                   <span aria-hidden
-                    className={`size-2 rounded-full ${w.ok ? "bg-emerald-500" : "bg-rose-500"}`} />
+                    className={`size-2 rounded-full ${w.ok ? "bg-success" : "bg-danger"}`} />
                   <span className="text-sm font-medium">Worker :{w.port}</span>
-                  <span className={`text-xs ${w.ok ? "text-muted-foreground" : "text-rose-600"}`}>
+                  <span className={`text-xs ${w.ok ? "text-muted-foreground" : "text-danger"}`}>
                     {w.ok
                       ? `online — ${w.sids.length} session${w.sids.length === 1 ? "" : "s"}`
                       : `unreachable${w.error ? ` — ${w.error}` : ""}`}

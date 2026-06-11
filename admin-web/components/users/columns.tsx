@@ -19,13 +19,13 @@ export interface ColumnHandlers {
   onGrants: (u: User) => void;
 }
 
-// Status dot color per design language: ACTIVE=emerald, INITIAL=amber,
-// LOCKED/INACTIVE=rose; anything else neutral.
+// Status dot per semantic token: ACTIVE=success, INITIAL=warning,
+// LOCKED/INACTIVE=danger; anything else neutral.
 const STATE_DOT: Partial<Record<UserState, string>> = {
-  ACTIVE: "bg-emerald-500",
-  INITIAL: "bg-amber-500",
-  LOCKED: "bg-rose-500",
-  INACTIVE: "bg-rose-500",
+  ACTIVE: "bg-success",
+  INITIAL: "bg-warning",
+  LOCKED: "bg-danger",
+  INACTIVE: "bg-danger",
 };
 
 export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
