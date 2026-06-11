@@ -60,8 +60,12 @@ function SelectTrigger({
 function SelectContent({
   className,
   children,
-  position = "item-aligned",
-  align = "center",
+  // shadcn default: popper drops the menu flush UNDER the trigger, left-aligned
+  // and trigger-width. (The previous item-aligned+center default centered the
+  // popover over the selected value, leaving its left border offset from the
+  // trigger.) Callers can still pass position/align to override.
+  position = "popper",
+  align = "start",
   ...props
 }: React.ComponentProps<typeof SelectPrimitive.Content>) {
   return (
