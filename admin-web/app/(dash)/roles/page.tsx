@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { VisibilityState } from "@tanstack/react-table";
-import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
+import type { GroupingState, VisibilityState } from "@tanstack/react-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
 import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { buildRoleColumns } from "@/components/roles/columns";
@@ -25,6 +25,7 @@ export default function RolesPage() {
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [density, setDensity] = useTableDensity();
+  const [grouping, setGrouping] = useState<GroupingState>([]);
 
   const load = useCallback(async () => {
     try {
@@ -86,6 +87,9 @@ export default function RolesPage() {
         actions={
           <>
             <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
+            <TableGroupToggle
+              groupable={[{ column: "group", label: "Group" }]}
+              grouping={grouping} onChange={setGrouping} />
             <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
             <TableDensityToggle density={density} onChange={setDensity} />
             <CreateRoleDialog onCreated={load} />
@@ -108,7 +112,9 @@ export default function RolesPage() {
             onFilterOpenChange={setFilterOpen}
             columnVisibility={columnVisibility}
             onColumnVisibilityChange={setColumnVisibility}
-            density={density} />
+            density={density}
+            grouping={grouping}
+            onGroupingChange={setGrouping} />
         </div>
         <DetailPanel
           open={!!selected}

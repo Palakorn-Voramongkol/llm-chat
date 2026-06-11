@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { VisibilityState } from "@tanstack/react-table";
-import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
+import type { GroupingState, VisibilityState } from "@tanstack/react-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
 import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { auditColumns } from "@/components/audit/columns";
@@ -19,6 +19,7 @@ export default function AuditPage() {
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [density, setDensity] = useTableDensity();
+  const [grouping, setGrouping] = useState<GroupingState>([]);
 
   const load = useCallback(async () => {
     try {
@@ -48,6 +49,9 @@ export default function AuditPage() {
           caps?.events ? (
             <>
               <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
+              <TableGroupToggle
+                groupable={[{ column: "eventType", label: "Event" }, { column: "editor", label: "Editor" }]}
+                grouping={grouping} onChange={setGrouping} />
               <TableColumnsToggle columns={auditColumns} visibility={columnVisibility} onChange={setColumnVisibility} />
               <TableDensityToggle density={density} onChange={setDensity} />
             </>
@@ -87,6 +91,8 @@ export default function AuditPage() {
               columnVisibility={columnVisibility}
               onColumnVisibilityChange={setColumnVisibility}
               density={density}
+              grouping={grouping}
+              onGroupingChange={setGrouping}
             />
           </div>
           <DetailPanel

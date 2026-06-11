@@ -1,8 +1,8 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import type { VisibilityState } from "@tanstack/react-table";
-import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
+import type { GroupingState, VisibilityState } from "@tanstack/react-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
 import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { buildAppColumns, pretty } from "@/components/apps/columns";
@@ -25,6 +25,7 @@ export default function ApplicationsPage() {
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [density, setDensity] = useTableDensity();
+  const [grouping, setGrouping] = useState<GroupingState>([]);
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +83,9 @@ export default function ApplicationsPage() {
         actions={
           <>
             <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
+            <TableGroupToggle
+              groupable={[{ column: "appType", label: "Type" }]}
+              grouping={grouping} onChange={setGrouping} />
             <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
             <TableDensityToggle density={density} onChange={setDensity} />
             <AppFormDialog mode="create" app={null} open={createOpen} onOpenChange={setCreateOpen}
@@ -109,7 +113,9 @@ export default function ApplicationsPage() {
             onFilterOpenChange={setFilterOpen}
             columnVisibility={columnVisibility}
             onColumnVisibilityChange={setColumnVisibility}
-            density={density} />
+            density={density}
+            grouping={grouping}
+            onGroupingChange={setGrouping} />
         </div>
         <DetailPanel
           open={!!selected}

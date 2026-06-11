@@ -2,11 +2,14 @@
 import {
   type ColumnDef, flexRender, getCoreRowModel,
   getPaginationRowModel, getSortedRowModel, getFilteredRowModel,
+  getGroupedRowModel, getExpandedRowModel,
   useReactTable, type SortingState, type ColumnFiltersState,
-  type VisibilityState, type OnChangeFn,
+  type VisibilityState, type OnChangeFn, type GroupingState, type ExpandedState,
 } from "@tanstack/react-table";
 import { useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Filter, Rows3, X } from "lucide-react";
+import {
+  ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Columns3, Filter, Group, Rows3, X,
+} from "lucide-react";
 import { type Density, DENSITY_PADDING } from "@/lib/use-table-density";
 import {
   TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -143,6 +146,49 @@ export function TableDensityToggle({
   );
 }
 
+/** A "Group by" picker for a DataTable. Render it in the page header, wired to
+ * the same grouping state you pass to <DataTable grouping>. Single-level. */
+export function TableGroupToggle({
+  groupable, grouping, onChange,
+}: {
+  groupable: { column: string; label: string }[];
+  grouping: GroupingState;
+  onChange: (g: GroupingState) => void;
+}) {
+  const current = grouping[0] ?? "__none__";
+  const activeLabel = groupable.find((g) => g.column === grouping[0])?.label;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 gap-1.5 px-2.5"
+          aria-label="Group rows by a column"
+        >
+          <Group className="size-4" />
+          {activeLabel ? <span className="text-xs">Grouped: {activeLabel}</span> : null}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuLabel>Group by</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuRadioGroup
+          value={current}
+          onValueChange={(v) => onChange(v === "__none__" ? [] : [v])}
+        >
+          <DropdownMenuRadioItem value="__none__">None</DropdownMenuRadioItem>
+          {groupable.map((g) => (
+            <DropdownMenuRadioItem key={g.column} value={g.column}>
+              {g.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
@@ -174,6 +220,10 @@ interface DataTableProps<TData, TValue> {
   onColumnVisibilityChange?: OnChangeFn<VisibilityState>;
   /** Row density (drives cell vertical padding). Default "comfortable". */
   density?: Density;
+  /** Controlled single-level grouping — pass this (with onGroupingChange) to
+   * drive a TableGroupToggle in the page header. */
+  grouping?: GroupingState;
+  onGroupingChange?: OnChangeFn<GroupingState>;
 }
 
 export function DataTable<TData, TValue>({
@@ -184,10 +234,13 @@ export function DataTable<TData, TValue>({
   filterOpen: filterOpenProp, onFilterOpenChange,
   columnVisibility, onColumnVisibilityChange,
   density = "comfortable",
+  grouping, onGroupingChange,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [internalVisibility, setInternalVisibility] = useState<VisibilityState>({});
+  const [internalGrouping, setInternalGrouping] = useState<GroupingState>([]);
+  const [expanded, setExpanded] = useState<ExpandedState>(true);
   const [internalFilterOpen, setInternalFilterOpen] = useState(false);
   // Controlled when the page lifts the state (to render the toggle in the page
   // header); otherwise DataTable owns it and renders its own toggle.
@@ -201,13 +254,24 @@ export function DataTable<TData, TValue>({
     getPaginationRowModel: getPaginationRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getGroupedRowModel: getGroupedRowModel(),
+    getExpandedRowModel: getExpandedRowModel(),
+    // Don't auto-reset expansion/page when grouping changes — the auto-reset
+    // fires a setState during render (React "update on unmounted component"
+    // warning) and would collapse our default-expanded groups.
+    autoResetExpanded: false,
+    autoResetPageIndex: false,
     onSortingChange: setSorting,
     onColumnFiltersChange: setColumnFilters,
     onColumnVisibilityChange: onColumnVisibilityChange ?? setInternalVisibility,
+    onGroupingChange: onGroupingChange ?? setInternalGrouping,
+    onExpandedChange: setExpanded,
     state: {
       sorting,
       columnFilters,
       columnVisibility: columnVisibility ?? internalVisibility,
+      grouping: grouping ?? internalGrouping,
+      expanded,
     },
     initialState: { pagination: { pageSize: initialPageSize } },
   });
@@ -361,9 +425,43 @@ export function DataTable<TData, TValue>({
           <TableBody>
             {table.getRowModel().rows.length ? (
               table.getRowModel().rows.map((row) => {
+                // A GROUP HEADER row: one full-width, clickable, expand/collapse
+                // line ("Label: value — count"). Leaf rows render normally.
+                if (row.getIsGrouped()) {
+                  const colId = row.groupingColumnId!;
+                  const headerDef = table.getColumn(colId)?.columnDef.header;
+                  const headerLabel = typeof headerDef === "string" ? headerDef : colId;
+                  const value = String(row.getGroupingValue(colId) ?? "—");
+                  return (
+                    <TableRow
+                      key={row.id}
+                      className="bg-muted/40 hover:bg-muted/60 cursor-pointer"
+                      onClick={() => row.toggleExpanded()}
+                    >
+                      <TableCell
+                        colSpan={row.getVisibleCells().length}
+                        className={`px-3 ${DENSITY_PADDING[density]}`}
+                      >
+                        <span className="flex items-center gap-2 font-medium">
+                          <ChevronRight
+                            className={`size-4 shrink-0 transition-transform ${row.getIsExpanded() ? "rotate-90" : ""}`}
+                          />
+                          <span className="text-muted-foreground text-xs uppercase tracking-wide">
+                            {headerLabel}
+                          </span>
+                          <span>{value || "—"}</span>
+                          <Badge variant="secondary" className="tabular-nums">
+                            {row.subRows.length}
+                          </Badge>
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                }
                 const rowId = getRowId?.(row.original);
                 const isSelected =
                   rowId != null && selectedRowId != null && rowId === selectedRowId;
+                const grouped = (grouping ?? internalGrouping).length > 0;
                 return (
                   <TableRow
                     key={row.id}
@@ -390,8 +488,11 @@ export function DataTable<TData, TValue>({
                         : undefined
                     }
                   >
-                    {row.getVisibleCells().map((cell) => (
-                      <TableCell key={cell.id} className={`px-3 ${DENSITY_PADDING[density]}`}>
+                    {row.getVisibleCells().map((cell, ci) => (
+                      <TableCell
+                        key={cell.id}
+                        className={`px-3 ${DENSITY_PADDING[density]} ${grouped && ci === 0 ? "pl-9" : ""}`}
+                      >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </TableCell>
                     ))}
