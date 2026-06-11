@@ -219,7 +219,9 @@ export default function SessionsPage() {
             signinEvents.length ? (
               <ul className="space-y-2.5">
                 {signinEvents.map((e, i) => (
-                  <li key={`${e.sequence ?? i}`} className="flex items-center gap-2 text-sm">
+                  // Zitadel `sequence` is per-aggregate (can repeat across
+                  // events), so combine it with the index for a unique key.
+                  <li key={`${e.sequence ?? "x"}-${i}`} className="flex items-center gap-2 text-sm">
                     <span className={eventChipClass(e.type?.type)}>
                       {eventLabel(e.type)}
                     </span>

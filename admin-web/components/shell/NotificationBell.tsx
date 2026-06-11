@@ -125,7 +125,7 @@ export function NotificationBell() {
                 // width. Theme tokens only (works in light + dark).
                 return (
                   <li
-                    key={e.sequence ?? i}
+                    key={`${e.sequence ?? "x"}-${i}`}
                     className={`flex items-start gap-2.5 px-3 py-2 ${fresh ? "bg-accent" : ""}`}
                   >
                     <span

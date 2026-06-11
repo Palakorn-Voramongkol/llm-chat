@@ -372,7 +372,7 @@ export default function DashboardPage() {
           {recentEvents.length ? (
             <ul className="space-y-2.5">
               {recentEvents.map((e, i) => (
-                <li key={e.sequence ?? i} className="flex items-center gap-2 text-sm">
+                <li key={`${e.sequence ?? "x"}-${i}`} className="flex items-center gap-2 text-sm">
                   <span className={eventChipClass(e.type?.type)}>{eventLabel(e.type)}</span>
                   <span className="text-muted-foreground ml-auto text-xs whitespace-nowrap">
                     {e.creationDate
