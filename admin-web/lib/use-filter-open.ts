@@ -1,23 +1,46 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-// Module-level so the filter panel's open/closed state is REMEMBERED as the
-// operator moves between pages (Users -> Apps -> Roles -> Audit). It lives
-// outside React state on purpose: a plain module variable survives client-side
-// navigation (the module stays loaded) without a localStorage hydration dance.
-// Resets to closed on a full page reload.
-let remembered = false;
+// The filter panel's open/closed state is REMEMBERED across page navigation AND
+// full reloads. It is persisted in localStorage and cached in a module variable
+// so navigating between table pages doesn't re-read storage or flicker.
+const KEY = "console.filterOpen";
+let cached: boolean | null = null;
 
-/** Like useState<boolean> but the value is shared + remembered across every
- * table page for the lifetime of the SPA session. Accepts a boolean or an
- * updater, so existing `setOpen(o => !o)` / `setOpen(false)` call sites work. */
+function readStored(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Like useState<boolean> but shared + persisted (survives reload). To avoid a
+ * hydration mismatch the first render is always `false` (matching SSR); the
+ * stored value is applied right after mount. Accepts a boolean or updater so
+ * existing `setOpen(o => !o)` / `setOpen(false)` call sites keep working. */
 export function useFilterOpen(): [boolean, (next: boolean | ((open: boolean) => boolean)) => void] {
-  const [open, setOpen] = useState(remembered);
+  const [open, setOpen] = useState(cached ?? false);
+
+  useEffect(() => {
+    if (cached === null) {
+      cached = readStored();
+      setOpen(cached);
+    }
+  }, []);
+
   const set = (next: boolean | ((open: boolean) => boolean)) =>
     setOpen((prev) => {
       const value = typeof next === "function" ? next(prev) : next;
-      remembered = value;
+      cached = value;
+      try {
+        window.localStorage.setItem(KEY, value ? "1" : "0");
+      } catch {
+        /* storage disabled / full — keep the in-session value */
+      }
       return value;
     });
+
   return [open, set];
 }

@@ -6,7 +6,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
-import { eventChipClass, eventLabel } from "@/lib/event-style";
+import { eventLabel } from "@/lib/event-style";
 import type { AuditEvent, Capabilities, EventList } from "@/lib/types";
 
 // Read-state lives in localStorage as the millisecond timestamp of the newest
@@ -95,28 +95,35 @@ export function NotificationBell() {
           ) : events.length === 0 ? (
             <p className="text-muted-foreground p-4 text-sm">No recent activity.</p>
           ) : (
-            <ul className="divide-y">
+            <ul className="py-1">
               {events.map((e, i) => {
                 const fresh = toMs(e) > lastSeen;
                 const who =
                   e.editor?.displayName ?? e.editor?.service ?? e.aggregate?.id ?? "—";
+                const when = e.creationDate
+                  ? new Date(e.creationDate).toLocaleString()
+                  : "";
+                // Uniform two-line layout: a fixed status dot + a title line and
+                // a muted detail line, both truncated so every row is the same
+                // width. Theme tokens only (works in light + dark).
                 return (
                   <li
                     key={e.sequence ?? i}
-                    className={`flex items-start gap-2 px-3 py-2.5 ${fresh ? "bg-primary/5" : ""}`}
+                    className={`flex items-start gap-2.5 px-3 py-2 ${fresh ? "bg-accent" : ""}`}
                   >
-                    <span className={eventChipClass(e.type?.type)}>
-                      {eventLabel(e.type)}
-                    </span>
+                    <span
+                      aria-hidden
+                      className={`mt-1.5 size-2 shrink-0 rounded-full ${
+                        fresh ? "bg-primary" : "bg-muted-foreground/30"
+                      }`}
+                    />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm">{who}</div>
-                      <div className="text-muted-foreground text-xs">
-                        {e.creationDate ? new Date(e.creationDate).toLocaleString() : ""}
+                      <div className="truncate text-sm font-medium">{eventLabel(e.type)}</div>
+                      <div className="text-muted-foreground truncate text-xs">
+                        {who}
+                        {when ? ` · ${when}` : ""}
                       </div>
                     </div>
-                    {fresh && (
-                      <span aria-hidden className="mt-1.5 size-2 shrink-0 rounded-full bg-rose-500" />
-                    )}
                   </li>
                 );
               })}
