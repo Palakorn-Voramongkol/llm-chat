@@ -49,7 +49,7 @@ export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
       },
     },
     {
-      accessorKey: "kind", header: "Type",
+      accessorKey: "kind", header: "Type", filterFn: "equalsString",
       cell: ({ row }) => {
         const human = row.original.kind === "Human";
         return (
@@ -64,7 +64,7 @@ export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
       },
     },
     {
-      accessorKey: "state", header: "State",
+      accessorKey: "state", header: "State", filterFn: "equalsString",
       cell: ({ row }) => {
         const s = row.original.state;
         return (

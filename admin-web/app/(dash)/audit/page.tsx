@@ -71,8 +71,10 @@ export default function AuditPage() {
             <DataTable
               columns={auditColumns}
               data={events}
-              filterColumn="editor"
-              filterPlaceholder="Filter by editor..."
+              filterFields={[
+                { column: "editor", label: "Editor", placeholder: "Search editor…" },
+                { column: "eventType", label: "Event", placeholder: "Search event…" },
+              ]}
               emptyMessage="No events."
               getRowId={(e) => e.sequence ?? ""}
               onRowClick={setSelected}

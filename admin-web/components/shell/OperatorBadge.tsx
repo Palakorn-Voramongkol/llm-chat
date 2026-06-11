@@ -5,6 +5,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import { initials } from "@/lib/avatar";
 import type { Status } from "@/lib/types";
@@ -22,12 +23,6 @@ function expiresIn(expiresAt: string | null): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
-}
-
-function roleChipClass(role: string): string {
-  return role === "chat.admin"
-    ? "bg-indigo-500/10 text-indigo-600"
-    : "bg-slate-500/10 text-slate-600";
 }
 
 /** The account avatar in the top bar. Click it to open a menu with the
@@ -79,10 +74,9 @@ export function OperatorBadge() {
           <div className="flex flex-wrap gap-1">
             {op?.roles?.length ? (
               op.roles.map((r) => (
-                <span key={r}
-                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${roleChipClass(r)}`}>
+                <Badge key={r} variant={r === "chat.admin" ? "default" : "secondary"}>
                   {r}
-                </span>
+                </Badge>
               ))
             ) : (
               <span className="text-muted-foreground text-xs">—</span>

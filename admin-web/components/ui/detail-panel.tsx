@@ -1,6 +1,7 @@
 "use client";
 import type { ReactNode } from "react";
 import { X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 /**
  * A slide-in detail panel that sits to the RIGHT of a table. The table stays
@@ -35,14 +36,15 @@ export function DetailPanel({
             <div className="text-muted-foreground truncate text-xs">{subtitle}</div>
           )}
         </div>
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="icon-sm"
           onClick={onClose}
           aria-label="Close detail panel"
-          className="text-muted-foreground hover:bg-muted hover:text-foreground shrink-0 rounded-md p-1 transition-colors"
+          className="shrink-0"
         >
           <X className="size-4" />
-        </button>
+        </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">{children}</div>
     </aside>

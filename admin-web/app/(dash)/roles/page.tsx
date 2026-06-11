@@ -92,7 +92,11 @@ export default function RolesPage() {
       <div className="flex min-h-0 flex-1 gap-4">
         <div className="min-h-0 flex-1">
           <DataTable columns={columns} data={roles}
-            filterColumn="key" filterPlaceholder="Filter by key..."
+            filterFields={[
+              { column: "key", label: "Key", placeholder: "Search key…" },
+              { column: "displayName", label: "Display name", placeholder: "Search display name…" },
+              { column: "group", label: "Group", placeholder: "Search group…" },
+            ]}
             emptyMessage="No roles."
             getRowId={(r) => r.key}
             onRowClick={setSelected}

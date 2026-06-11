@@ -12,6 +12,8 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu, DropdownMenuContent,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -24,6 +26,16 @@ import {
 /** A column's stable id from its def (accessorKey or id). */
 function colId<TData, TValue>(c: ColumnDef<TData, TValue>): string | undefined {
   return "accessorKey" in c && c.accessorKey != null ? String(c.accessorKey) : c.id;
+}
+
+/** One field in the multi-field search panel. `column` must match a DataTable
+ * column id that has a real accessor. Provide `options` to render an exact-match
+ * dropdown; omit it for a free-text "contains" input. */
+export interface FilterField {
+  column: string;
+  label: string;
+  placeholder?: string;
+  options?: { value: string; label: string }[];
 }
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
@@ -78,17 +90,20 @@ export function TableColumnsToggle<TData, TValue>({
         <div className="space-y-0.5 p-1">
           {hideable.map((c) => {
             const on = visibility[c.id] !== false;
+            const id = `colvis-${c.id}`;
             return (
-              <div
+              <Label
                 key={c.id}
-                role="menuitemcheckbox"
-                aria-checked={on}
-                onClick={() => onChange({ ...visibility, [c.id]: !on })}
-                className="hover:bg-accent flex cursor-pointer items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm"
+                htmlFor={id}
+                className="hover:bg-accent flex cursor-pointer items-center justify-between gap-3 rounded-sm px-2 py-1.5 text-sm font-normal"
               >
-                <span>{c.label}</span>
-                <Switch checked={on} className="pointer-events-none" />
-              </div>
+                {c.label}
+                <Switch
+                  id={id}
+                  checked={on}
+                  onCheckedChange={(v) => onChange({ ...visibility, [c.id]: !!v })}
+                />
+              </Label>
             );
           })}
         </div>
@@ -102,6 +117,10 @@ interface DataTableProps<TData, TValue> {
   data: TData[];
   filterColumn?: string;
   filterPlaceholder?: string;
+  /** Multi-field search panel. When provided, the left filter panel renders one
+   * labelled control per field (text or exact-match select) instead of the
+   * single `filterColumn` input. */
+  filterFields?: FilterField[];
   emptyMessage?: string;
   /** Optional extra controls rendered to the right of the filter input. */
   toolbar?: ReactNode;
@@ -125,7 +144,8 @@ interface DataTableProps<TData, TValue> {
 }
 
 export function DataTable<TData, TValue>({
-  columns, data, filterColumn, filterPlaceholder, emptyMessage = "No results.",
+  columns, data, filterColumn, filterPlaceholder, filterFields,
+  emptyMessage = "No results.",
   toolbar, pageSize: initialPageSize = 10,
   getRowId, onRowClick, selectedRowId,
   filterOpen: filterOpenProp, onFilterOpenChange,
@@ -158,6 +178,16 @@ export function DataTable<TData, TValue>({
     initialState: { pagination: { pageSize: initialPageSize } },
   });
 
+  // Either a single-column input (legacy) or a multi-field panel enables filtering.
+  const fields: FilterField[] =
+    filterFields ?? (filterColumn ? [{ column: filterColumn, label: "Filter", placeholder: filterPlaceholder }] : []);
+  const hasFilter = fields.length > 0;
+  const activeFilterCount = fields.filter(
+    (f) => (table.getColumn(f.column)?.getFilterValue() ?? "") !== "",
+  ).length;
+  const clearAllFilters = () =>
+    fields.forEach((f) => table.getColumn(f.column)?.setFilterValue(undefined));
+
   const { pageIndex, pageSize } = table.getState().pagination;
   const total = table.getFilteredRowModel().rows.length;
   const rangeStart = total === 0 ? 0 : pageIndex * pageSize + 1;
@@ -169,43 +199,86 @@ export function DataTable<TData, TValue>({
           its header, so DataTable shows a toolbar row only for `toolbar` or its
           own (uncontrolled) funnel. The funnel opens a FILTER PANEL that expands
           from the left of the table (mirroring the right detail panel). */}
-      {(toolbar || (filterColumn && !filterControlled)) && (
+      {(toolbar || (hasFilter && !filterControlled)) && (
         <div className="flex shrink-0 items-center justify-end gap-2">
           {toolbar}
-          {filterColumn && !filterControlled && (
+          {hasFilter && !filterControlled && (
             <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen(!filterOpen)} />
           )}
         </div>
       )}
-      {/* Body: an optional left FILTER PANEL (expands from the left, mirroring
-          the right-hand detail panel) sitting beside the table. */}
+      {/* Body: an optional left SEARCH PANEL (one control per field, expands from
+          the left, mirroring the right-hand detail panel) beside the table. */}
       <div className="flex min-h-0 flex-1 gap-3">
-        {filterColumn && filterOpen && (
-          <aside className="bg-card animate-in slide-in-from-left-2 fade-in-0 flex w-60 shrink-0 flex-col rounded-xl border p-3 shadow-sm duration-200">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-muted-foreground text-[11px] font-semibold tracking-wide uppercase">
-                Filter
+        {hasFilter && filterOpen && (
+          <aside className="bg-card animate-in slide-in-from-left-2 fade-in-0 flex w-64 shrink-0 flex-col rounded-xl border shadow-sm duration-200">
+            <div className="flex items-center justify-between border-b px-3 py-2.5">
+              <span className="flex items-center gap-2 text-sm font-semibold">
+                Search
+                {activeFilterCount > 0 && (
+                  <Badge className="tabular-nums">{activeFilterCount}</Badge>
+                )}
               </span>
-              <button
-                type="button"
-                aria-label="Close filter"
-                className="text-muted-foreground hover:bg-muted hover:text-foreground rounded-md p-1 transition-colors"
-                onClick={() => {
-                  table.getColumn(filterColumn)?.setFilterValue("");
-                  setFilterOpen(false);
-                }}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Close search"
+                onClick={() => setFilterOpen(false)}
               >
                 <X className="size-4" />
-              </button>
+              </Button>
             </div>
-            <Input
-              autoFocus
-              placeholder={filterPlaceholder ?? "Filter..."}
-              value={(table.getColumn(filterColumn)?.getFilterValue() as string) ?? ""}
-              onChange={(e) =>
-                table.getColumn(filterColumn)?.setFilterValue(e.target.value)
-              }
-            />
+            <div className="min-h-0 flex-1 space-y-3 overflow-auto px-3 py-3">
+              {fields.map((f, i) => {
+                const col = table.getColumn(f.column);
+                const value = (col?.getFilterValue() as string) ?? "";
+                return (
+                  <div key={f.column} className="space-y-1">
+                    <Label
+                      htmlFor={`filter-${f.column}`}
+                      className="text-muted-foreground text-xs"
+                    >
+                      {f.label}
+                    </Label>
+                    {f.options ? (
+                      <Select
+                        value={value === "" ? "__any__" : value}
+                        onValueChange={(v) => col?.setFilterValue(v === "__any__" ? undefined : v)}
+                      >
+                        <SelectTrigger id={`filter-${f.column}`} className="h-9 w-full text-sm">
+                          <SelectValue placeholder="Any" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__any__">Any</SelectItem>
+                          {f.options.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        id={`filter-${f.column}`}
+                        autoFocus={i === 0}
+                        placeholder={f.placeholder ?? `Search ${f.label.toLowerCase()}…`}
+                        value={value}
+                        onChange={(e) => col?.setFilterValue(e.target.value || undefined)}
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="border-t px-3 py-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full"
+                disabled={activeFilterCount === 0}
+                onClick={clearAllFilters}
+              >
+                Clear all
+              </Button>
+            </div>
           </aside>
         )}
         {/* This div is the ONLY scroll container so the sticky thead pins to it
@@ -225,9 +298,10 @@ export function DataTable<TData, TValue>({
                       className="sticky top-0 z-10 bg-card px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground shadow-[inset_0_-1px_0_var(--border)]"
                     >
                       {h.isPlaceholder ? null : canSort ? (
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 uppercase tracking-wide hover:text-foreground transition-colors"
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="-ml-2.5 h-7 gap-1 px-2.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
                           onClick={h.column.getToggleSortingHandler()}
                         >
                           {flexRender(h.column.columnDef.header, h.getContext())}
@@ -238,7 +312,7 @@ export function DataTable<TData, TValue>({
                           ) : (
                             <ArrowUpDown className="size-3.5 opacity-50" />
                           )}
-                        </button>
+                        </Button>
                       ) : (
                         flexRender(h.column.columnDef.header, h.getContext())
                       )}

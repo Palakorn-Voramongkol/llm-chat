@@ -43,7 +43,9 @@ export function buildAppColumns(h: AppColumnHandlers): ColumnDef<OidcApp>[] {
       ),
     },
     {
-      accessorKey: "clientId", header: "Client ID",
+      id: "clientId",
+      accessorFn: (a) => a.oidcConfig?.clientId ?? "",
+      header: "Client ID",
       cell: ({ row }) => (
         <code className="font-mono text-xs text-muted-foreground">
           {row.original.oidcConfig?.clientId ?? "—"}
@@ -51,7 +53,10 @@ export function buildAppColumns(h: AppColumnHandlers): ColumnDef<OidcApp>[] {
       ),
     },
     {
-      accessorKey: "appType", header: "Type",
+      id: "appType",
+      accessorFn: (a) => pretty(a.oidcConfig?.appType),
+      header: "Type",
+      filterFn: "equalsString",
       cell: ({ row }) => {
         const t = (row.original.oidcConfig?.appType ?? "").replace("OIDC_APP_TYPE_", "");
         if (!t) return <span className="text-muted-foreground">—</span>;

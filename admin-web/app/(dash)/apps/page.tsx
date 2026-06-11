@@ -89,7 +89,15 @@ export default function ApplicationsPage() {
       <div className="flex min-h-0 flex-1 gap-4">
         <div className="min-h-0 flex-1">
           <DataTable columns={columns} data={apps}
-            filterColumn="name" filterPlaceholder="Filter by name..."
+            filterFields={[
+              { column: "name", label: "Name", placeholder: "Search name…" },
+              { column: "clientId", label: "Client ID", placeholder: "Search client ID…" },
+              { column: "appType", label: "Type", options: [
+                { value: "WEB", label: "Web" },
+                { value: "NATIVE", label: "Native" },
+                { value: "USER_AGENT", label: "User-agent" },
+              ] },
+            ]}
             emptyMessage="No applications."
             getRowId={(a) => a.id}
             onRowClick={setSelected}

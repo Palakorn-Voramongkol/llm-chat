@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -71,9 +72,12 @@ export function NotificationBell() {
         >
           <Bell className="size-4" />
           {unread > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 flex min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] leading-4 font-bold text-white">
+            <Badge
+              variant="destructive"
+              className="absolute -top-1 -right-1 min-w-4 justify-center rounded-full px-1 py-0 text-[10px] tabular-nums"
+            >
               {unread > 9 ? "9+" : unread}
-            </span>
+            </Badge>
           )}
         </Button>
       </DropdownMenuTrigger>

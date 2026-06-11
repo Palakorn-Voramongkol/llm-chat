@@ -106,7 +106,20 @@ export default function UsersPage() {
       <div className="flex min-h-0 flex-1 gap-4">
         <div className="min-h-0 flex-1">
           <DataTable columns={columns} data={users}
-            filterColumn="userName" filterPlaceholder="Filter by username..."
+            filterFields={[
+              { column: "userName", label: "Username", placeholder: "Search username…" },
+              { column: "email", label: "Email", placeholder: "Search email…" },
+              { column: "kind", label: "Type", options: [
+                { value: "Human", label: "Human" },
+                { value: "Machine", label: "Machine" },
+              ] },
+              { column: "state", label: "State", options: [
+                { value: "ACTIVE", label: "Active" },
+                { value: "INACTIVE", label: "Inactive" },
+                { value: "LOCKED", label: "Locked" },
+                { value: "INITIAL", label: "Initial" },
+              ] },
+            ]}
             emptyMessage="No users."
             getRowId={(u) => u.id}
             onRowClick={setSelected}
