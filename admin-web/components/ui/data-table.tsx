@@ -282,7 +282,11 @@ export function DataTable<TData, TValue>({
                         <SelectTrigger id={`filter-${f.column}`} className="h-9 w-full text-sm">
                           <SelectValue placeholder="Any" />
                         </SelectTrigger>
-                        <SelectContent>
+                        {/* popper + align start: the popover aligns flush under
+                            the trigger (matching left edge + full width) instead
+                            of the default item-aligned centering, which left the
+                            dropdown's left border misaligned with the trigger. */}
+                        <SelectContent position="popper" align="start" className="w-(--radix-select-trigger-width)">
                           <SelectItem value="__any__">Any</SelectItem>
                           {f.options.map((o) => (
                             <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
