@@ -6,8 +6,6 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { DetailCard, DetailRow } from "@/components/ui/detail-card";
 import { avatarGradient, initials } from "@/lib/avatar";
 import type { User, UserState } from "@/lib/types";
 
@@ -38,29 +36,15 @@ export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
         const u = row.original;
         const display = u.displayName || u.userName;
         return (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span className="flex w-fit cursor-default items-center gap-2.5">
-                <span
-                  aria-hidden
-                  className={`flex size-8 shrink-0 items-center justify-center rounded-full bg-linear-to-br text-xs font-bold text-white ${avatarGradient(u.id || u.userName)}`}
-                >
-                  {initials(display)}
-                </span>
-                <span className="font-medium">{u.userName}</span>
-              </span>
-            </TooltipTrigger>
-            <TooltipContent align="start" className="max-w-sm">
-              <DetailCard>
-                <DetailRow label="ID" mono>{u.id || "—"}</DetailRow>
-                <DetailRow label="Username">{u.userName}</DetailRow>
-                <DetailRow label="Display">{u.displayName || "—"}</DetailRow>
-                <DetailRow label="Email">{u.email || "—"}</DetailRow>
-                <DetailRow label="Type">{u.kind}</DetailRow>
-                <DetailRow label="State">{u.state}</DetailRow>
-              </DetailCard>
-            </TooltipContent>
-          </Tooltip>
+          <span className="flex items-center gap-2.5">
+            <span
+              aria-hidden
+              className={`flex size-8 shrink-0 items-center justify-center rounded-full bg-linear-to-br text-xs font-bold text-white ${avatarGradient(u.id || u.userName)}`}
+            >
+              {initials(display)}
+            </span>
+            <span className="font-medium">{u.userName}</span>
+          </span>
         );
       },
     },

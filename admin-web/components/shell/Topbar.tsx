@@ -2,6 +2,8 @@
 import { usePathname } from "next/navigation";
 import { NAV, isActive } from "./nav";
 import { OperatorBadge } from "./OperatorBadge";
+import { ThemeToggle } from "./ThemeToggle";
+import { NotificationBell } from "./NotificationBell";
 
 export function Topbar() {
   const pathname = usePathname();
@@ -12,6 +14,8 @@ export function Topbar() {
         Console / <span className="text-foreground font-medium">{current?.label ?? "Home"}</span>
       </span>
       <span className="flex-1" />
+      <NotificationBell />
+      <ThemeToggle />
       <OperatorBadge />
     </header>
   );

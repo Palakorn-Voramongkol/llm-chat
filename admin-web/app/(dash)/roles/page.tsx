@@ -1,13 +1,17 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { DataTable } from "@/components/ui/data-table";
+import type { VisibilityState } from "@tanstack/react-table";
+import { DataTable, TableColumnsToggle, TableFilterToggle } from "@/components/ui/data-table";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { buildRoleColumns } from "@/components/roles/columns";
 import { CreateRoleDialog } from "@/components/roles/create-role-dialog";
 import { HoldersDialog } from "@/components/roles/holders-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
+import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
+import { avatarGradient, initials } from "@/lib/avatar";
 import { api, ApiError } from "@/lib/api";
+import { useFilterOpen } from "@/lib/use-filter-open";
 import type { Role, RoleHolder, RoleHolderList, RoleList } from "@/lib/types";
 
 export default function RolesPage() {
@@ -16,6 +20,9 @@ export default function RolesPage() {
     useState<Map<string, RoleHolder[]>>(new Map());
   const [holdersTarget, setHoldersTarget] = useState<Role | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
+  const [selected, setSelected] = useState<Role | null>(null);
+  const [filterOpen, setFilterOpen] = useFilterOpen();
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
 
   const load = useCallback(async () => {
     try {
@@ -74,12 +81,73 @@ export default function RolesPage() {
       <PageHeader
         title="Roles"
         description="Project roles and the users who hold them across the platform."
-        actions={<CreateRoleDialog onCreated={load} />}
+        actions={
+          <>
+            <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
+            <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
+            <CreateRoleDialog onCreated={load} />
+          </>
+        }
       />
-      <div className="flex-1 min-h-0">
-        <DataTable columns={columns} data={roles}
-          filterColumn="key" filterPlaceholder="Filter by key..."
-          emptyMessage="No roles." />
+      <div className="flex min-h-0 flex-1 gap-4">
+        <div className="min-h-0 flex-1">
+          <DataTable columns={columns} data={roles}
+            filterColumn="key" filterPlaceholder="Filter by key..."
+            emptyMessage="No roles."
+            getRowId={(r) => r.key}
+            onRowClick={setSelected}
+            selectedRowId={selected?.key ?? null}
+            filterOpen={filterOpen}
+            onFilterOpenChange={setFilterOpen}
+            columnVisibility={columnVisibility}
+            onColumnVisibilityChange={setColumnVisibility} />
+        </div>
+        <DetailPanel
+          open={!!selected}
+          title={selected?.key ?? ""}
+          subtitle={selected?.displayName || undefined}
+          onClose={() => setSelected(null)}
+        >
+          {selected && (() => {
+            const holders = holdersByKey.get(selected.key);
+            return (
+              <>
+                <PanelSection title="Role">
+                  <PanelField label="Key" mono>{selected.key}</PanelField>
+                  <PanelField label="Display">{selected.displayName || "—"}</PanelField>
+                  <PanelField label="Group">{selected.group || "—"}</PanelField>
+                </PanelSection>
+                <PanelSection title={`Holders${holders ? ` (${holders.length})` : ""}`}>
+                  {holders === undefined ? (
+                    <p className="text-muted-foreground text-sm">Loading…</p>
+                  ) : holders.length === 0 ? (
+                    <p className="text-muted-foreground text-sm">No holders.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {holders.map((h) => {
+                        const name = h.displayName || h.userName || h.userId;
+                        return (
+                          <li key={h.userId} className="flex items-center gap-2">
+                            <span aria-hidden
+                              className={`flex size-7 shrink-0 items-center justify-center rounded-full bg-linear-to-br text-[10px] font-bold text-white ${avatarGradient(h.userId)}`}>
+                              {initials(name)}
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm">{name}</span>
+                              <span className="block truncate font-mono text-xs text-muted-foreground">
+                                {h.userId}
+                              </span>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </PanelSection>
+              </>
+            );
+          })()}
+        </DetailPanel>
       </div>
       <HoldersDialog role={holdersTarget} open={!!holdersTarget}
         onOpenChange={(o) => !o && setHoldersTarget(null)} />

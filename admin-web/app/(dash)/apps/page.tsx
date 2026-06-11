@@ -1,13 +1,16 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { DataTable } from "@/components/ui/data-table";
+import type { VisibilityState } from "@tanstack/react-table";
+import { DataTable, TableColumnsToggle, TableFilterToggle } from "@/components/ui/data-table";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { buildAppColumns } from "@/components/apps/columns";
+import { buildAppColumns, pretty } from "@/components/apps/columns";
 import { AppFormDialog } from "@/components/apps/app-form-dialog";
 import { SecretRevealDialog } from "@/components/apps/secret-reveal-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
+import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
 import { api, ApiError } from "@/lib/api";
+import { useFilterOpen } from "@/lib/use-filter-open";
 import type { OidcApp, OidcAppList, AppSecret } from "@/lib/types";
 
 export default function ApplicationsPage() {
@@ -17,6 +20,9 @@ export default function ApplicationsPage() {
   const [rotateTarget, setRotateTarget] = useState<OidcApp | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<OidcApp | null>(null);
   const [revealed, setRevealed] = useState<AppSecret | null>(null);
+  const [selected, setSelected] = useState<OidcApp | null>(null);
+  const [filterOpen, setFilterOpen] = useFilterOpen();
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
 
   const load = useCallback(async () => {
     try {
@@ -72,14 +78,75 @@ export default function ApplicationsPage() {
         title="Applications"
         description="OIDC clients registered against the platform project."
         actions={
-          <AppFormDialog mode="create" app={null} open={createOpen} onOpenChange={setCreateOpen}
-            onSaved={load} onSecret={setRevealed} />
+          <>
+            <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
+            <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
+            <AppFormDialog mode="create" app={null} open={createOpen} onOpenChange={setCreateOpen}
+              onSaved={load} onSecret={setRevealed} />
+          </>
         }
       />
-      <div className="flex-1 min-h-0">
-        <DataTable columns={columns} data={apps}
-          filterColumn="name" filterPlaceholder="Filter by name..."
-          emptyMessage="No applications." />
+      <div className="flex min-h-0 flex-1 gap-4">
+        <div className="min-h-0 flex-1">
+          <DataTable columns={columns} data={apps}
+            filterColumn="name" filterPlaceholder="Filter by name..."
+            emptyMessage="No applications."
+            getRowId={(a) => a.id}
+            onRowClick={setSelected}
+            selectedRowId={selected?.id ?? null}
+            filterOpen={filterOpen}
+            onFilterOpenChange={setFilterOpen}
+            columnVisibility={columnVisibility}
+            onColumnVisibilityChange={setColumnVisibility} />
+        </div>
+        <DetailPanel
+          open={!!selected}
+          title={selected?.name ?? ""}
+          subtitle="OIDC application"
+          onClose={() => setSelected(null)}
+        >
+          {selected && (
+            <>
+              <PanelSection title="Application">
+                <PanelField label="ID" mono>{selected.id || "—"}</PanelField>
+                <PanelField label="Name">{selected.name}</PanelField>
+                <PanelField label="State">{pretty(selected.state) || "—"}</PanelField>
+              </PanelSection>
+              <PanelSection title="OIDC config">
+                <PanelField label="Client ID" mono>
+                  {selected.oidcConfig?.clientId || "—"}
+                </PanelField>
+                <PanelField label="App type">
+                  {pretty(selected.oidcConfig?.appType) || "—"}
+                </PanelField>
+                <PanelField label="Auth method">
+                  {pretty(selected.oidcConfig?.authMethodType) || "—"}
+                </PanelField>
+                <PanelField label="Grant types">
+                  {selected.oidcConfig?.grantTypes?.length
+                    ? selected.oidcConfig.grantTypes.map(pretty).join(", ")
+                    : "—"}
+                </PanelField>
+                <PanelField label="Response">
+                  {selected.oidcConfig?.responseTypes?.length
+                    ? selected.oidcConfig.responseTypes.map(pretty).join(", ")
+                    : "—"}
+                </PanelField>
+              </PanelSection>
+              <PanelSection title="Redirect URIs">
+                {selected.oidcConfig?.redirectUris?.length ? (
+                  <ul className="space-y-1">
+                    {selected.oidcConfig.redirectUris.map((uri) => (
+                      <li key={uri} className="font-mono text-xs break-all">{uri}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <span className="text-muted-foreground text-sm">—</span>
+                )}
+              </PanelSection>
+            </>
+          )}
+        </DetailPanel>
       </div>
       <AppFormDialog mode="edit" app={editTarget} open={!!editTarget}
         onOpenChange={(o) => !o && setEditTarget(null)} onSaved={load} onSecret={setRevealed} />

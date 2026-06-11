@@ -6,9 +6,6 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Tooltip, TooltipContent, TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { avatarGradient, initials } from "@/lib/avatar";
 import type { Role, RoleHolder } from "@/lib/types";
 
@@ -42,22 +39,12 @@ function HolderAvatars({
       {shown.map((holder) => {
         const name = holder.displayName || holder.userName || holder.userId;
         return (
-          <Tooltip key={holder.userId}>
-            <TooltipTrigger asChild>
-              <span
-                className={`ring-card flex size-7 items-center justify-center rounded-full bg-linear-to-br text-[10px] font-bold text-white ring-2 ${avatarGradient(holder.userId)}`}
-              >
-                {initials(name)}
-              </span>
-            </TooltipTrigger>
-            <TooltipContent>
-              <div className="font-medium">{name}</div>
-              {holder.userName && holder.userName !== name && (
-                <div className="opacity-80">{holder.userName}</div>
-              )}
-              <div className="font-mono opacity-70">{holder.userId}</div>
-            </TooltipContent>
-          </Tooltip>
+          <span
+            key={holder.userId}
+            className={`ring-card flex size-7 items-center justify-center rounded-full bg-linear-to-br text-[10px] font-bold text-white ring-2 ${avatarGradient(holder.userId)}`}
+          >
+            {initials(name)}
+          </span>
         );
       })}
       {extra > 0 && (

@@ -1,15 +1,22 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { DataTable } from "@/components/ui/data-table";
+import type { VisibilityState } from "@tanstack/react-table";
+import { DataTable, TableColumnsToggle, TableFilterToggle } from "@/components/ui/data-table";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { auditColumns } from "@/components/audit/columns";
+import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
+import { eventChipClass, eventLabel } from "@/lib/event-style";
 import { api, ApiError } from "@/lib/api";
+import { useFilterOpen } from "@/lib/use-filter-open";
 import type { AuditEvent, Capabilities, EventList } from "@/lib/types";
 
 export default function AuditPage() {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [selected, setSelected] = useState<AuditEvent | null>(null);
+  const [filterOpen, setFilterOpen] = useFilterOpen();
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
 
   const load = useCallback(async () => {
     try {
@@ -35,6 +42,14 @@ export default function AuditPage() {
       <PageHeader
         title="Audit"
         description="Org-scoped event log from Zitadel."
+        actions={
+          caps?.events ? (
+            <>
+              <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
+              <TableColumnsToggle columns={auditColumns} visibility={columnVisibility} onChange={setColumnVisibility} />
+            </>
+          ) : undefined
+        }
       />
 
       {caps && !caps.events ? (
@@ -51,14 +66,66 @@ export default function AuditPage() {
           </p>
         </div>
       ) : (
-        <div className="flex-1 min-h-0">
-          <DataTable
-            columns={auditColumns}
-            data={events}
-            filterColumn="editor"
-            filterPlaceholder="Filter by editor..."
-            emptyMessage="No events."
-          />
+        <div className="flex min-h-0 flex-1 gap-4">
+          <div className="min-h-0 flex-1">
+            <DataTable
+              columns={auditColumns}
+              data={events}
+              filterColumn="editor"
+              filterPlaceholder="Filter by editor..."
+              emptyMessage="No events."
+              getRowId={(e) => e.sequence ?? ""}
+              onRowClick={setSelected}
+              selectedRowId={selected?.sequence ?? null}
+              filterOpen={filterOpen}
+              onFilterOpenChange={setFilterOpen}
+              columnVisibility={columnVisibility}
+              onColumnVisibilityChange={setColumnVisibility}
+            />
+          </div>
+          <DetailPanel
+            open={!!selected}
+            title={selected ? eventLabel(selected.type) : ""}
+            subtitle={selected?.sequence ? `seq ${selected.sequence}` : undefined}
+            onClose={() => setSelected(null)}
+          >
+            {selected && (
+              <>
+                <PanelSection title="Event">
+                  <div className="mb-1">
+                    <span className={eventChipClass(selected.type?.type)}>
+                      {eventLabel(selected.type)}
+                    </span>
+                  </div>
+                  <PanelField label="Raw type" mono>{selected.type?.type || "—"}</PanelField>
+                  <PanelField label="Sequence" mono>{selected.sequence || "—"}</PanelField>
+                  <PanelField label="When">
+                    {selected.creationDate
+                      ? new Date(selected.creationDate).toLocaleString()
+                      : "—"}
+                  </PanelField>
+                </PanelSection>
+                <PanelSection title="Editor">
+                  <PanelField label="Name">
+                    {selected.editor?.displayName || selected.editor?.service || "—"}
+                  </PanelField>
+                  <PanelField label="User ID" mono>{selected.editor?.userId || "—"}</PanelField>
+                  <PanelField label="Service">{selected.editor?.service || "—"}</PanelField>
+                </PanelSection>
+                <PanelSection title="Aggregate">
+                  <PanelField label="Type">
+                    {selected.aggregate?.type?.localized?.localizedMessage
+                      || selected.aggregate?.type?.type
+                      || "—"}
+                  </PanelField>
+                  <PanelField label="ID" mono>{selected.aggregate?.id || "—"}</PanelField>
+                  <PanelField label="Resource owner" mono>
+                    {selected.aggregate?.resourceOwner || "—"}
+                  </PanelField>
+                </PanelSection>
+              </>
+            )}
+          </DetailPanel>
         </div>
       )}
     </div>
