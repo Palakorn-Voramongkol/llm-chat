@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { VisibilityState } from "@tanstack/react-table";
-import { DataTable, TableColumnsToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { buildRoleColumns } from "@/components/roles/columns";
 import { CreateRoleDialog } from "@/components/roles/create-role-dialog";
@@ -23,6 +24,7 @@ export default function RolesPage() {
   const [selected, setSelected] = useState<Role | null>(null);
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [density, setDensity] = useTableDensity();
 
   const load = useCallback(async () => {
     try {
@@ -85,6 +87,7 @@ export default function RolesPage() {
           <>
             <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
             <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
+            <TableDensityToggle density={density} onChange={setDensity} />
             <CreateRoleDialog onCreated={load} />
           </>
         }
@@ -104,7 +107,8 @@ export default function RolesPage() {
             filterOpen={filterOpen}
             onFilterOpenChange={setFilterOpen}
             columnVisibility={columnVisibility}
-            onColumnVisibilityChange={setColumnVisibility} />
+            onColumnVisibilityChange={setColumnVisibility}
+            density={density} />
         </div>
         <DetailPanel
           open={!!selected}

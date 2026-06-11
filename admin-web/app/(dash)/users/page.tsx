@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { VisibilityState } from "@tanstack/react-table";
-import { DataTable, TableColumnsToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { buildColumns, type Lifecycle } from "@/components/users/columns";
 import { CreateUserDialog } from "@/components/users/create-user-dialog";
@@ -22,6 +23,7 @@ export default function UsersPage() {
   const [selected, setSelected] = useState<User | null>(null);
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [density, setDensity] = useTableDensity();
   const [grantsFor, setGrantsFor] =
     useState<{ id: string; list: GrantList } | null>(null);
 
@@ -99,6 +101,7 @@ export default function UsersPage() {
           <>
             <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
             <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
+            <TableDensityToggle density={density} onChange={setDensity} />
             <CreateUserDialog onCreated={load} />
           </>
         }
@@ -127,7 +130,8 @@ export default function UsersPage() {
             filterOpen={filterOpen}
             onFilterOpenChange={setFilterOpen}
             columnVisibility={columnVisibility}
-            onColumnVisibilityChange={setColumnVisibility} />
+            onColumnVisibilityChange={setColumnVisibility}
+            density={density} />
         </div>
         <DetailPanel
           open={!!selected}

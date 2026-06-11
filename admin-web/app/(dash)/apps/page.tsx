@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { VisibilityState } from "@tanstack/react-table";
-import { DataTable, TableColumnsToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { buildAppColumns, pretty } from "@/components/apps/columns";
 import { AppFormDialog } from "@/components/apps/app-form-dialog";
@@ -23,6 +24,7 @@ export default function ApplicationsPage() {
   const [selected, setSelected] = useState<OidcApp | null>(null);
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [density, setDensity] = useTableDensity();
 
   const load = useCallback(async () => {
     try {
@@ -81,6 +83,7 @@ export default function ApplicationsPage() {
           <>
             <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
             <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
+            <TableDensityToggle density={density} onChange={setDensity} />
             <AppFormDialog mode="create" app={null} open={createOpen} onOpenChange={setCreateOpen}
               onSaved={load} onSecret={setRevealed} />
           </>
@@ -105,7 +108,8 @@ export default function ApplicationsPage() {
             filterOpen={filterOpen}
             onFilterOpenChange={setFilterOpen}
             columnVisibility={columnVisibility}
-            onColumnVisibilityChange={setColumnVisibility} />
+            onColumnVisibilityChange={setColumnVisibility}
+            density={density} />
         </div>
         <DetailPanel
           open={!!selected}

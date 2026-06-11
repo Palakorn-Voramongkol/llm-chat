@@ -7,8 +7,15 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
-import { eventLabel } from "@/lib/event-style";
+import { eventLabel, eventSeverity, isSignificantEvent } from "@/lib/event-style";
 import type { AuditEvent, Capabilities, EventList } from "@/lib/types";
+
+const SEVERITY_DOT: Record<string, string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  danger: "bg-danger",
+  info: "bg-info",
+};
 
 // Read-state lives in localStorage as the millisecond timestamp of the newest
 // event the operator has seen. Anything newer is "unread". Cross-device unread
@@ -37,7 +44,13 @@ export function NotificationBell() {
         return;
       }
       const list = await api.get<EventList>("/api/events");
-      setEvents((list.result ?? []).slice(0, 15));
+      // Curate: only administratively significant events reach the bell
+      // (no token/session churn). The Audit page still shows the full log.
+      setEvents(
+        (list.result ?? [])
+          .filter((e) => isSignificantEvent(e.type?.type))
+          .slice(0, 12),
+      );
     } catch {
       // Swallow — the bell simply shows nothing rather than erroring the chrome.
     }
@@ -117,9 +130,7 @@ export function NotificationBell() {
                   >
                     <span
                       aria-hidden
-                      className={`mt-1.5 size-2 shrink-0 rounded-full ${
-                        fresh ? "bg-primary" : "bg-muted-foreground/30"
-                      }`}
+                      className={`mt-1.5 size-2 shrink-0 rounded-full ${SEVERITY_DOT[eventSeverity(e.type?.type)]}`}
                     />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium">{eventLabel(e.type)}</div>

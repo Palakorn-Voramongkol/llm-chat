@@ -6,7 +6,8 @@ import {
   type VisibilityState, type OnChangeFn,
 } from "@tanstack/react-table";
 import { useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Filter, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, Filter, Rows3, X } from "lucide-react";
+import { type Density, DENSITY_PADDING } from "@/lib/use-table-density";
 import {
   TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -16,7 +17,8 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu, DropdownMenuContent,
-  DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
+  DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -112,6 +114,35 @@ export function TableColumnsToggle<TData, TValue>({
   );
 }
 
+/** A row-density picker (3 levels) for a DataTable. Render it in the page
+ * header next to the filter/columns toggles, wired to the same density state
+ * you pass to <DataTable density>. */
+export function TableDensityToggle({
+  density, onChange,
+}: {
+  density: Density;
+  onChange: (d: Density) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" className="size-8 p-0" aria-label="Row density">
+          <Rows3 className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuLabel>Row density</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuRadioGroup value={density} onValueChange={(v) => onChange(v as Density)}>
+          <DropdownMenuRadioItem value="comfortable">Comfortable</DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="compact">Compact</DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value="condensed">Condensed</DropdownMenuRadioItem>
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
@@ -141,6 +172,8 @@ interface DataTableProps<TData, TValue> {
    * to drive a TableColumnsToggle rendered in the page header. */
   columnVisibility?: VisibilityState;
   onColumnVisibilityChange?: OnChangeFn<VisibilityState>;
+  /** Row density (drives cell vertical padding). Default "comfortable". */
+  density?: Density;
 }
 
 export function DataTable<TData, TValue>({
@@ -150,6 +183,7 @@ export function DataTable<TData, TValue>({
   getRowId, onRowClick, selectedRowId,
   filterOpen: filterOpenProp, onFilterOpenChange,
   columnVisibility, onColumnVisibilityChange,
+  density = "comfortable",
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -355,7 +389,7 @@ export function DataTable<TData, TValue>({
                     }
                   >
                     {row.getVisibleCells().map((cell) => (
-                      <TableCell key={cell.id} className="px-3 py-2.5">
+                      <TableCell key={cell.id} className={`px-3 ${DENSITY_PADDING[density]}`}>
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </TableCell>
                     ))}

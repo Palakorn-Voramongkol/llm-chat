@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { VisibilityState } from "@tanstack/react-table";
-import { DataTable, TableColumnsToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
+import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { auditColumns } from "@/components/audit/columns";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
@@ -17,6 +18,7 @@ export default function AuditPage() {
   const [selected, setSelected] = useState<AuditEvent | null>(null);
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [density, setDensity] = useTableDensity();
 
   const load = useCallback(async () => {
     try {
@@ -47,6 +49,7 @@ export default function AuditPage() {
             <>
               <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
               <TableColumnsToggle columns={auditColumns} visibility={columnVisibility} onChange={setColumnVisibility} />
+              <TableDensityToggle density={density} onChange={setDensity} />
             </>
           ) : undefined
         }
@@ -83,6 +86,7 @@ export default function AuditPage() {
               onFilterOpenChange={setFilterOpen}
               columnVisibility={columnVisibility}
               onColumnVisibilityChange={setColumnVisibility}
+              density={density}
             />
           </div>
           <DetailPanel
