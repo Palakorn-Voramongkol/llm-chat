@@ -70,7 +70,7 @@ export default function AuditPage() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 gap-4">
-          <div className="min-h-0 flex-1">
+          <div className="min-h-0 min-w-0 flex-1">
             <DataTable
               columns={auditColumns}
               data={events}

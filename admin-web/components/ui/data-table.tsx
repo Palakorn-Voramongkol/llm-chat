@@ -320,7 +320,7 @@ export function DataTable<TData, TValue>({
         {/* This div is the ONLY scroll container so the sticky thead pins to it
             (the shadcn <Table> wrapper adds its own overflow-x box, which would
             capture position:sticky — hence the raw <table> here). */}
-        <div className="min-h-0 flex-1 overflow-auto rounded-xl border bg-card shadow-sm">
+        <div className="min-h-0 min-w-0 flex-1 overflow-auto rounded-xl border bg-card shadow-sm">
           <table data-slot="table" className="w-full caption-bottom text-sm">
           <TableHeader>
             {table.getHeaderGroups().map((hg) => (

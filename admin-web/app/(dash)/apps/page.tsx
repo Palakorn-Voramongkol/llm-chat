@@ -90,7 +90,7 @@ export default function ApplicationsPage() {
         }
       />
       <div className="flex min-h-0 flex-1 gap-4">
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 min-w-0 flex-1">
           <DataTable columns={columns} data={apps}
             filterFields={[
               { column: "name", label: "Name", placeholder: "Search name…" },

@@ -1,6 +1,6 @@
 "use client";
-import type { ReactNode } from "react";
-import { X } from "lucide-react";
+import { useRef, useState, type ReactNode } from "react";
+import { Check, Copy, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 /**
@@ -69,8 +69,36 @@ export function PanelSection({
   );
 }
 
+/** A small copy-to-clipboard button that copies `getText()` when clicked, and
+ * briefly flips to a check. Hidden until the row is hovered/focused. */
+function CopyButton({ getText }: { getText: () => string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-xs"
+      aria-label={copied ? "Copied" : "Copy value"}
+      className="shrink-0 opacity-0 transition-opacity group-hover/field:opacity-100 focus-visible:opacity-100"
+      onClick={async () => {
+        const text = getText().trim();
+        if (!text || text === "—") return;
+        try {
+          await navigator.clipboard.writeText(text);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1200);
+        } catch {
+          /* clipboard blocked — no-op */
+        }
+      }}
+    >
+      {copied ? <Check className="size-3 text-success" /> : <Copy className="size-3" />}
+    </Button>
+  );
+}
+
 /** A key/value row for a panel (light card surface). Long values wrap/break;
- * `mono` for ids. */
+ * `mono` for ids. A copy button appears on hover and copies the value text. */
 export function PanelField({
   label,
   mono,
@@ -80,12 +108,14 @@ export function PanelField({
   mono?: boolean;
   children: ReactNode;
 }) {
+  const valueRef = useRef<HTMLSpanElement>(null);
   return (
-    <div className="grid grid-cols-[6.5rem_1fr] gap-x-3 gap-y-1 py-1 text-sm">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={mono ? "font-mono text-xs break-all" : "break-words"}>
+    <div className="group/field grid grid-cols-[6.5rem_1fr_auto] items-start gap-x-1.5 gap-y-1 py-1 text-sm">
+      <span className="text-muted-foreground py-0.5">{label}</span>
+      <span ref={valueRef} className={mono ? "font-mono text-xs break-all py-0.5" : "break-words py-0.5"}>
         {children}
       </span>
+      <CopyButton getText={() => valueRef.current?.textContent ?? ""} />
     </div>
   );
 }

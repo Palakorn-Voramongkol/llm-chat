@@ -11,9 +11,12 @@ import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { GrantsDialog } from "@/components/users/grants-dialog";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
+import { Badge } from "@/components/ui/badge";
 import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
-import type { GrantList, User, UserList } from "@/lib/types";
+import type {
+  ChatClient, ChatSessions, GrantList, SigninList, User, UserList,
+} from "@/lib/types";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
@@ -26,6 +29,9 @@ export default function UsersPage() {
   const [density, setDensity] = useTableDensity();
   const [grantsFor, setGrantsFor] =
     useState<{ id: string; list: GrantList } | null>(null);
+  // Per-user monitoring joins: last sign-in time + live chat sessions.
+  const [lastSignIn, setLastSignIn] = useState<Map<string, string>>(new Map());
+  const [liveByUser, setLiveByUser] = useState<Map<string, ChatClient[]>>(new Map());
 
   // Fetch the selected user's grants for the side panel. Keyed by user id so
   // the panel shows "Loading…" until the CURRENT selection's fetch resolves and
@@ -55,6 +61,34 @@ export default function UsersPage() {
       if (!(e instanceof ApiError && e.status === 401)) {
         toast.error("Failed to load users");
       }
+    }
+    // Best-effort monitoring joins (each degrades on its own; never blocks the
+    // user list). Last sign-in per user from the audit sign-in feed; live chat
+    // sessions per user from the manager.
+    try {
+      const s = await api.get<SigninList>("/api/signins");
+      const m = new Map<string, string>();
+      if (s.available) {
+        for (const e of s.result ?? []) {
+          const uid = e.editor?.userId;
+          if (uid && e.creationDate && !m.has(uid)) m.set(uid, e.creationDate);
+        }
+      }
+      setLastSignIn(m);
+    } catch {
+      setLastSignIn(new Map());
+    }
+    try {
+      const c = await api.get<ChatSessions>("/api/chat-sessions");
+      const m = new Map<string, ChatClient[]>();
+      for (const client of c.clients?.clients ?? []) {
+        const arr = m.get(client.userId) ?? [];
+        arr.push(client);
+        m.set(client.userId, arr);
+      }
+      setLiveByUser(m);
+    } catch {
+      setLiveByUser(new Map());
     }
   }, []);
 
@@ -107,7 +141,7 @@ export default function UsersPage() {
         }
       />
       <div className="flex min-h-0 flex-1 gap-4">
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 min-w-0 flex-1">
           <DataTable columns={columns} data={users}
             filterFields={[
               { column: "userName", label: "Username", placeholder: "Search username…" },
@@ -149,6 +183,42 @@ export default function UsersPage() {
                 <PanelField label="Type">{selected.kind}</PanelField>
                 <PanelField label="State">{selected.state}</PanelField>
               </PanelSection>
+              <PanelSection title="Activity">
+                {(() => {
+                  const last = lastSignIn.get(selected.id);
+                  const live = liveByUser.get(selected.id) ?? [];
+                  const totalQ = live.reduce((n, c) => n + (c.questionsSent ?? 0), 0);
+                  return (
+                    <>
+                      <PanelField label="Last sign-in">
+                        {last ? new Date(last).toLocaleString() : "—"}
+                      </PanelField>
+                      <PanelField label="Live sessions">
+                        {live.length ? (
+                          <Badge variant={live.length ? "default" : "secondary"}>
+                            {live.length} active
+                          </Badge>
+                        ) : "—"}
+                      </PanelField>
+                      {live.length > 0 && (
+                        <>
+                          <PanelField label="Questions">{totalQ}</PanelField>
+                          <PanelField label="Last active">
+                            {(() => {
+                              const t = live
+                                .map((c) => c.lastQAt)
+                                .filter(Boolean)
+                                .sort()
+                                .at(-1);
+                              return t ? new Date(t).toLocaleString() : "—";
+                            })()}
+                          </PanelField>
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
+              </PanelSection>
               <PanelSection title="Access (grants)">
                 {selGrants === null ? (
                   <p className="text-muted-foreground text-sm">Loading…</p>
@@ -156,18 +226,15 @@ export default function UsersPage() {
                   <p className="text-muted-foreground text-sm">No grants.</p>
                 ) : (
                   <ul className="space-y-2">
-                    {selGrants.result.map((g) => (
-                      <li key={g.grantId}>
+                    {selGrants.result.map((g, i) => (
+                      <li key={g.grantId || g.projectId || i}>
                         <div className="font-mono text-xs text-muted-foreground">
                           {g.projectId}
                         </div>
                         <div className="mt-1 flex flex-wrap gap-1">
                           {g.roleKeys.length ? (
                             g.roleKeys.map((rk) => (
-                              <span key={rk}
-                                className="inline-flex items-center rounded-full bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-600">
-                                {rk}
-                              </span>
+                              <Badge key={rk} variant="secondary">{rk}</Badge>
                             ))
                           ) : (
                             <span className="text-muted-foreground text-xs">—</span>
