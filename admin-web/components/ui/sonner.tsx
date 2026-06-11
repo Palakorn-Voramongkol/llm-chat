@@ -10,6 +10,12 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       theme={theme as ToasterProps["theme"]}
+      // Central, top-of-screen notifications for every change (success/error
+      // toasts from mutations). richColors tints by semantic kind; closeButton
+      // lets the operator dismiss. Overridable via props.
+      position="top-center"
+      richColors
+      closeButton
       className="toaster group"
       icons={{
         success: (
