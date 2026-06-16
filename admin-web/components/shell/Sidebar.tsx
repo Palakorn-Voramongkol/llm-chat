@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { Boxes } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NAV, isActive } from "./nav";
+import { OperatorBadge } from "./OperatorBadge";
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -39,6 +40,10 @@ export function Sidebar() {
           </Link>
         );
       })}
+      {/* Account menu pinned to the bottom of the ribbon (console-shell mockup). */}
+      <div className="mt-auto flex flex-col items-center pt-1.5">
+        <OperatorBadge />
+      </div>
     </nav>
   );
 }

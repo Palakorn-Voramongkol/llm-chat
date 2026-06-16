@@ -1,7 +1,6 @@
 "use client";
 import { usePathname } from "next/navigation";
 import { NAV, isActive } from "./nav";
-import { OperatorBadge } from "./OperatorBadge";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 
@@ -16,7 +15,6 @@ export function Topbar() {
       <span className="flex-1" />
       <NotificationBell />
       <ThemeToggle />
-      <OperatorBadge />
     </header>
   );
 }

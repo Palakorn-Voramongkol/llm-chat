@@ -25,7 +25,8 @@ function expiresIn(expiresAt: string | null): string {
   return h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
 }
 
-/** The account avatar in the top bar. Click it to open a menu with the
+/** The account avatar pinned to the bottom of the activity-bar ribbon
+ * (console-shell mockup `.rail .avatar`). Click it to open a menu with the
  * operator's OWN session detail (identity, roles, expiry) + sign out — the
  * Sessions page itself is reserved for monitoring ALL users. */
 export function OperatorBadge() {
@@ -43,18 +44,19 @@ export function OperatorBadge() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
+        {/* Mockup `.avatar`: white circle, violet initials. The name is kept as
+            an sr-only label (accessible name + visible only in the menu). */}
         <button
           type="button"
           aria-label="Account menu"
-          className="hover:bg-muted flex items-center gap-2 rounded-full py-1 pr-3 pl-1 text-sm font-semibold transition-colors"
+          title={`${name} — sign out`}
+          className="flex size-[34px] items-center justify-center rounded-full bg-white text-[13px] font-extrabold text-violet-600 shadow-sm transition hover:ring-2 hover:ring-white/50 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none"
         >
-          <span className="flex size-8 items-center justify-center rounded-full bg-linear-to-br from-indigo-500 to-violet-500 text-xs font-bold text-white">
-            {initials(name)}
-          </span>
-          {name}
+          {initials(name)}
+          <span className="sr-only">{name}</span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-72">
+      <DropdownMenuContent side="right" align="end" sideOffset={10} className="w-72">
         <DropdownMenuLabel className="flex items-center gap-2.5 font-normal">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-indigo-500 to-violet-500 text-xs font-bold text-white">
             {initials(name)}
