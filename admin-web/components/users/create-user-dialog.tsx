@@ -33,8 +33,22 @@ const machineSchema = z.object({
 const schema = z.discriminatedUnion("kind", [humanSchema, machineSchema]);
 type FormValues = z.infer<typeof schema>;
 
-export function CreateUserDialog({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
+export function CreateUserDialog({
+  onCreated,
+  open: openProp,
+  onOpenChange,
+}: {
+  onCreated: () => void;
+  /** Optional controlled open state — lift this so another control (e.g. the
+   * filter panel's "+") can open the same dialog. Uncontrolled when omitted. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = openProp ?? internalOpen;
+  const setOpen = (next: boolean) => {
+    onOpenChange ? onOpenChange(next) : setInternalOpen(next);
+  };
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: { kind: "Human", userName: "", givenName: "", familyName: "", email: "" },

@@ -1,5 +1,6 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AppWindow, Bot, User as UserIcon, Users as UsersIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { GroupingState, VisibilityState } from "@tanstack/react-table";
 import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
@@ -10,20 +11,31 @@ import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { GrantsDialog } from "@/components/users/grants-dialog";
+import { UsersFilterPanel, type UsersCategory } from "@/components/users/UsersFilterPanel";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
 import type {
-  ChatClient, ChatSessions, GrantList, SigninList, User, UserList,
+  ChatClient, ChatSessions, GrantList, Role, RoleList, SigninList,
+  Stats, User, UserList,
 } from "@/lib/types";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [appsCount, setAppsCount] = useState<number | null>(null);
+  // userId -> deduped role keys flattened across that user's grants. A user
+  // absent from the map had its grants fetch fail (cell shows "—").
+  const [rolesByUser, setRolesByUser] = useState<Map<string, string[]>>(new Map());
   const [editTarget, setEditTarget] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const [grantsTarget, setGrantsTarget] = useState<User | null>(null);
   const [selected, setSelected] = useState<User | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [active, setActive] = useState<UsersCategory>("all");
+  const [panelQuery, setPanelQuery] = useState("");
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [density, setDensity] = useTableDensity();
@@ -55,13 +67,50 @@ export default function UsersPage() {
     selected && grantsFor?.id === selected.id ? grantsFor.list : null;
 
   const load = useCallback(async () => {
+    let loaded: User[] = [];
     try {
       const list = await api.get<UserList>("/api/users");
-      setUsers(list.result);
+      loaded = list.result ?? [];
+      setUsers(loaded);
     } catch (e) {
       if (!(e instanceof ApiError && e.status === 401)) {
         toast.error("Failed to load users");
       }
+    }
+    // Role list for the left panel's BY ROLE section (best-effort).
+    try {
+      const rl = await api.get<RoleList>("/api/roles");
+      setRoles(rl.result ?? []);
+    } catch {
+      setRoles([]);
+    }
+    // Apps count for the stat card (null on failure -> renders "—").
+    try {
+      const s = await api.get<Stats>("/api/stats");
+      setAppsCount(s.apps ?? null);
+    } catch {
+      setAppsCount(null);
+    }
+    // Per-user grants in parallel + best-effort (like roles/page.tsx holders): a
+    // failed lookup simply omits that user so its Roles cell shows "—". Never
+    // blocks the list. Flatten + dedupe roleKeys across the user's grants.
+    try {
+      const pairs = await Promise.all(
+        loaded.map(async (u): Promise<[string, string[]] | null> => {
+          try {
+            const g = await api.get<GrantList>(`/api/users/${u.id}/grants`);
+            const keys = [...new Set((g.result ?? []).flatMap((gr) => gr.roleKeys))];
+            return [u.id, keys];
+          } catch {
+            return null;
+          }
+        }),
+      );
+      setRolesByUser(
+        new Map(pairs.filter((p): p is [string, string[]] => p !== null)),
+      );
+    } catch {
+      setRolesByUser(new Map());
     }
     // Best-effort monitoring joins (each degrades on its own; never blocks the
     // user list). Last sign-in per user from the audit sign-in feed; live chat
@@ -120,12 +169,65 @@ export default function UsersPage() {
     }
   }
 
-  const columns = buildColumns({
-    onEdit: setEditTarget,
-    onDelete: setDeleteTarget,
-    onLifecycle,
-    onGrants: setGrantsTarget,
-  });
+  const columns = buildColumns(
+    {
+      onEdit: setEditTarget,
+      onDelete: setDeleteTarget,
+      onLifecycle,
+      onGrants: setGrantsTarget,
+    },
+    rolesByUser,
+  );
+
+  // Left-panel counts (all REAL, from live data). Per-role count = number of
+  // users whose flattened grant role keys include that role.
+  const counts = useMemo(() => {
+    const byRole = new Map<string, number>();
+    for (const r of roles) {
+      let n = 0;
+      for (const u of users) {
+        if (rolesByUser.get(u.id)?.includes(r.key)) n++;
+      }
+      byRole.set(r.key, n);
+    }
+    return {
+      all: users.length,
+      humans: users.filter((u) => u.kind === "Human").length,
+      machines: users.filter((u) => u.kind === "Machine").length,
+      locked: users.filter((u) => u.state === "LOCKED").length,
+      byRole,
+    };
+  }, [users, roles, rolesByUser]);
+
+  // Apply the active category + the panel's free-text filter to the rows handed
+  // to the DataTable (the DataTable's own field filters still layer on top).
+  const visibleUsers = useMemo(() => {
+    const q = panelQuery.trim().toLowerCase();
+    return users.filter((u) => {
+      let inCat = true;
+      if (active === "humans") inCat = u.kind === "Human";
+      else if (active === "machines") inCat = u.kind === "Machine";
+      else if (active === "locked") inCat = u.state === "LOCKED";
+      else if (active.startsWith("role:")) {
+        const key = active.slice("role:".length);
+        inCat = rolesByUser.get(u.id)?.includes(key) ?? false;
+      }
+      if (!inCat) return false;
+      if (!q) return true;
+      return (
+        u.userName.toLowerCase().includes(q) ||
+        (u.email ?? "").toLowerCase().includes(q)
+      );
+    });
+  }, [users, active, panelQuery, rolesByUser]);
+
+  // Stat cards (mockup `.stats`): tinted icon tile + bold count + muted label.
+  const statCards = [
+    { label: "Total users", value: String(users.length), Icon: UsersIcon, bg: "bg-indigo-500/12", fg: "text-indigo-600" },
+    { label: "Humans", value: String(counts.humans), Icon: UserIcon, bg: "bg-blue-500/12", fg: "text-blue-600" },
+    { label: "Machine accounts", value: String(counts.machines), Icon: Bot, bg: "bg-cyan-500/14", fg: "text-cyan-600" },
+    { label: "Apps", value: appsCount == null ? "—" : String(appsCount), Icon: AppWindow, bg: "bg-violet-500/14", fg: "text-violet-600" },
+  ];
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
@@ -140,16 +242,36 @@ export default function UsersPage() {
               grouping={grouping} onChange={setGrouping} />
             <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
             <TableDensityToggle density={density} onChange={setDensity} />
-            <CreateUserDialog onCreated={load} />
+            <CreateUserDialog onCreated={load} open={createOpen} onOpenChange={setCreateOpen} />
           </>
         }
       />
       <div className="flex min-h-0 flex-1 gap-4">
-        <div className="min-h-0 min-w-0 flex-1">
-          <DataTable columns={columns} data={users}
+        <UsersFilterPanel
+          query={panelQuery}
+          onQueryChange={setPanelQuery}
+          active={active}
+          onActive={setActive}
+          counts={counts}
+          roles={roles}
+          onCreate={() => setCreateOpen(true)}
+        />
+        <div className="flex min-w-0 flex-1 flex-col gap-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            {statCards.map(({ label, value, Icon, bg, fg }) => (
+              <Card key={label} className="gap-0 p-4">
+                <div className={`mb-3 flex size-9 items-center justify-center rounded-xl ${bg} ${fg}`}>
+                  <Icon className="size-5" />
+                </div>
+                <div className="text-2xl font-bold tracking-tight tabular-nums">{value}</div>
+                <div className="text-muted-foreground text-sm">{label}</div>
+              </Card>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1">
+          <DataTable columns={columns} data={visibleUsers}
             filterFields={[
               { column: "userName", label: "Username", placeholder: "Search username…" },
-              { column: "email", label: "Email", placeholder: "Search email…" },
               { column: "kind", label: "Type", options: [
                 { value: "Human", label: "Human" },
                 { value: "Machine", label: "Machine" },
@@ -172,6 +294,7 @@ export default function UsersPage() {
             density={density}
             grouping={grouping}
             onGroupingChange={setGrouping} />
+          </div>
         </div>
         <DetailPanel
           open={!!selected}

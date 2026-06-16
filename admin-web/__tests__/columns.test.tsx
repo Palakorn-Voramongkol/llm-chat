@@ -26,13 +26,13 @@ describe("user columns", () => {
     const ids = buildColumns({ onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle: vi.fn(), onGrants: vi.fn() })
       .map((c) => ("accessorKey" in c ? (c as any).accessorKey : c.id));
     expect(ids).toEqual(
-      expect.arrayContaining(["userName", "kind", "state", "email", "actions"]),
+      expect.arrayContaining(["userName", "kind", "roles", "state", "actions"]),
     );
   });
 
-  it("renders state as a badge label", () => {
+  it("renders state as a friendly title-cased label", () => {
     renderCell("state", human);
-    expect(screen.getByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.getByText("Active")).toBeInTheDocument();
   });
 
   it("fires onLifecycle('deactivate') from the row action menu", async () => {

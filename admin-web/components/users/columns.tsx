@@ -28,10 +28,31 @@ const STATE_DOT: Partial<Record<UserState, string>> = {
   INACTIVE: "bg-danger",
 };
 
-export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
+// Friendly title-cased status label (vs. the raw Zitadel enum).
+const STATE_LABEL: Partial<Record<UserState, string>> = {
+  ACTIVE: "Active",
+  INACTIVE: "Inactive",
+  LOCKED: "Locked",
+  INITIAL: "Initial",
+  DELETED: "Deleted",
+  UNSPECIFIED: "Unspecified",
+};
+
+// A user's role chip palette: chat.admin = indigo, chat.user = emerald,
+// everything else = slate.
+function roleChipClass(key: string): string {
+  if (key === "chat.admin") return "bg-indigo-500/10 text-indigo-600";
+  if (key === "chat.user") return "bg-emerald-500/10 text-emerald-600";
+  return "bg-slate-500/10 text-slate-600";
+}
+
+export function buildColumns(
+  h: ColumnHandlers,
+  rolesByUser?: Map<string, string[]>,
+): ColumnDef<User>[] {
   return [
     {
-      accessorKey: "userName", header: "Username",
+      accessorKey: "userName", header: "User",
       cell: ({ row }) => {
         const u = row.original;
         const display = u.displayName || u.userName;
@@ -43,7 +64,12 @@ export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
             >
               {initials(display)}
             </span>
-            <span className="font-medium">{u.userName}</span>
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate font-medium">{u.userName}</span>
+              <span className="text-muted-foreground truncate text-xs">
+                {u.email || "—"}
+              </span>
+            </span>
           </span>
         );
       },
@@ -64,24 +90,38 @@ export function buildColumns(h: ColumnHandlers): ColumnDef<User>[] {
       },
     },
     {
-      accessorKey: "state", header: "State", filterFn: "equalsString",
+      id: "roles", header: "Roles", enableSorting: false,
+      cell: ({ row }) => {
+        const keys = rolesByUser?.get(row.original.id);
+        if (!keys || keys.length === 0) {
+          return <span className="text-muted-foreground">—</span>;
+        }
+        return (
+          <span className="flex flex-wrap gap-1.5">
+            {keys.map((k) => (
+              <span
+                key={k}
+                className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${roleChipClass(k)}`}
+              >
+                {k}
+              </span>
+            ))}
+          </span>
+        );
+      },
+    },
+    {
+      accessorKey: "state", header: "Status", filterFn: "equalsString",
       cell: ({ row }) => {
         const s = row.original.state;
         return (
           <span className="inline-flex items-center gap-1.5 text-sm">
             <span aria-hidden
               className={`size-2 rounded-full ${STATE_DOT[s] ?? "bg-slate-400"}`} />
-            {s}
+            {STATE_LABEL[s] ?? s}
           </span>
         );
       },
-    },
-    {
-      accessorKey: "email", header: "Email",
-      cell: ({ row }) =>
-        row.original.email
-          ? <span className="text-muted-foreground">{row.original.email}</span>
-          : <span className="text-muted-foreground">—</span>,
     },
     {
       id: "actions",
