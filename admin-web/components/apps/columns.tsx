@@ -22,6 +22,16 @@ const APP_TYPE_CHIP: Record<string, string> = {
   USER_AGENT: "bg-amber-500/10 text-amber-700",
 };
 
+// The display type for an app. Zitadel returns proto3 JSON, which OMITS any
+// zero-value enum — and OIDC_APP_TYPE_WEB is the zero value. So an OIDC app
+// (oidcConfig present) with NO appType field is a WEB app, not "unknown":
+// without this, every web client wrongly renders as "—". Apps with no
+// oidcConfig (e.g. API/SAML) return "" and show the em-dash.
+export function appTypeLabel(a: OidcApp): string {
+  if (!a.oidcConfig) return "";
+  return (a.oidcConfig.appType ?? "").replace("OIDC_APP_TYPE_", "") || "WEB";
+}
+
 export interface AppColumnHandlers {
   onEdit: (a: OidcApp) => void;
   onRotate: (a: OidcApp) => void;
@@ -54,11 +64,11 @@ export function buildAppColumns(h: AppColumnHandlers): ColumnDef<OidcApp>[] {
     },
     {
       id: "appType",
-      accessorFn: (a) => pretty(a.oidcConfig?.appType),
+      accessorFn: (a) => appTypeLabel(a),
       header: "Type",
       filterFn: "equalsString",
       cell: ({ row }) => {
-        const t = (row.original.oidcConfig?.appType ?? "").replace("OIDC_APP_TYPE_", "");
+        const t = appTypeLabel(row.original);
         if (!t) return <span className="text-muted-foreground">—</span>;
         return (
           <span
