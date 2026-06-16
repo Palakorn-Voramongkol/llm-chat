@@ -131,14 +131,17 @@ def test_create_human_user_posts_verified_permanent_password():
         return _FakeResp(200, {"userId": "user-xyz"})
 
     with mock.patch.object(provision, "request_with_retry", fake_rwr):
-        uid = provision.create_human_user("tok", {}, "org-1")
+        uid = provision.create_human_user(
+            "tok", {}, "org-1",
+            provision.CHATTER_USERNAME, "Chatter", "User",
+            provision.CHATTER_EMAIL, provision.CHATTER_PASSWORD)
     assert uid == "user-xyz"
     assert captured["url"].endswith("/v2/users/human")   # v2 API: real password object
     b = captured["body"]
-    assert b["username"] == provision.DEMO_USERNAME
+    assert b["username"] == provision.CHATTER_USERNAME
     assert b["email"]["isVerified"] is True
     assert b["password"]["changeRequired"] is False      # active immediately, no forced change
-    assert b["password"]["password"] == provision.DEMO_PASSWORD
+    assert b["password"]["password"] == provision.CHATTER_PASSWORD
     assert b["organization"]["orgId"] == "org-1"
 
 
@@ -146,7 +149,9 @@ def test_create_human_user_409_is_systemexit():
     with mock.patch.object(provision, "request_with_retry",
                            lambda *a, **k: _FakeResp(409)):
         with pytest.raises(SystemExit):
-            provision.create_human_user("tok", {}, "org-1")
+            provision.create_human_user(
+                "tok", {}, "org-1", "chatter", "Chatter", "User",
+                "chatter@example.com", "pw")
 
 
 # ---------- chat.admin role + admin SA + admin OIDC WEB app (admin-api path) ----------

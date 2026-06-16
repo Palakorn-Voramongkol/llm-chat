@@ -41,8 +41,14 @@ OIDC_POST_LOGOUT_URI = os.environ.get("OIDC_POST_LOGOUT_URI", "http://localhost:
 # the running instance — the demo user's loginNames were ["demo"]), so the login
 # name is just "demo". The email is a separate field and is never itself a login
 # name.
-DEMO_USERNAME = "demo"
-DEMO_EMAIL = "demo@example.com"
+# Two browser-login humans (both sign in through the OIDC public app above):
+#   chatter — a plain chat user (chat.user): can use /chat, NOT the Console.
+#   admin   — the Console operator (chat.user + chat.admin): the only human who
+#             can sign into admin-web (:3000).
+CHATTER_USERNAME = "chatter"
+CHATTER_EMAIL = "chatter@example.com"
+ADMIN_USERNAME = "admin"
+ADMIN_EMAIL = "admin@example.com"
 
 
 def gen_demo_password() -> str:
@@ -63,14 +69,15 @@ def gen_demo_password() -> str:
     return "".join(chars)
 
 
-# The demo human's login password. NEVER ship a committed default: the demo user
-# is granted chat.admin (see grant_role below), so a hardcoded password would be
-# a publicly-known admin credential on every deployment. Override with
-# $DEMO_USER_PASSWORD for a fixed value; otherwise mint a fresh CSPRNG password
-# each provision. The clean-boot contract (create_human_user 409 → hard fail +
-# delete ./secrets) guarantees this freshly-minted value is what gets written to
-# secrets/demo_password, so it always matches the account that was created.
-DEMO_PASSWORD = os.environ.get("DEMO_USER_PASSWORD") or gen_demo_password()
+# Human login passwords. NEVER ship a committed default: admin holds chat.admin,
+# so a hardcoded value would be a publicly-known admin credential on every
+# deployment. Override with $CHATTER_USER_PASSWORD / $ADMIN_USER_PASSWORD for
+# fixed values; otherwise mint a fresh CSPRNG password each provision. The
+# clean-boot contract (create_human_user 409 → hard fail + delete ./secrets)
+# guarantees the minted value is what gets written to secrets/*, so it always
+# matches the account that was created.
+CHATTER_PASSWORD = os.environ.get("CHATTER_USER_PASSWORD") or gen_demo_password()
+ADMIN_PASSWORD = os.environ.get("ADMIN_USER_PASSWORD") or gen_demo_password()
 
 # admin-api OIDC WEB app (confidential server / BASIC + PKCE) — distinct from the
 # CLI's public NATIVE app above. Captures BOTH clientId and clientSecret (once).
@@ -474,20 +481,23 @@ def update_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
         resp.raise_for_status()
 
 
-def create_human_user(token: str, headers: dict, org_id) -> str:
-    """Create the demo human user via the v2 user API.
+def create_human_user(
+    token: str, headers: dict, org_id,
+    username: str, given: str, family: str, email: str, password: str,
+) -> str:
+    """Create a human user via the v2 user API.
 
     The v1 management /users/human endpoint silently ignored the password and
     left the user in the "initial" state (Zitadel's "Activate User / set your
     password" screen blocks login). The v2 endpoint takes a real password object
     with changeRequired=False, and a verified email, so the user is immediately
-    active and can sign in with the known demo password.
+    active and can sign in with the known password.
     """
     body = {
-        "username": DEMO_USERNAME,
-        "profile": {"givenName": "Demo", "familyName": "User"},
-        "email": {"email": DEMO_EMAIL, "isVerified": True},
-        "password": {"password": DEMO_PASSWORD, "changeRequired": False},
+        "username": username,
+        "profile": {"givenName": given, "familyName": family},
+        "email": {"email": email, "isVerified": True},
+        "password": {"password": password, "changeRequired": False},
     }
     if org_id:
         body["organization"] = {"orgId": org_id}
@@ -498,7 +508,7 @@ def create_human_user(token: str, headers: dict, org_id) -> str:
         return resp.json()["userId"]
     if resp.status_code == 409:
         raise SystemExit(
-            "demo user already exists (409): clean-boot contract — run "
+            f"{username} user already exists (409): clean-boot contract — run "
             "`docker compose down -v` AND delete ./secrets.")
     resp.raise_for_status()
     raise RuntimeError(f"create_human_user unexpected status {resp.status_code}")
@@ -553,28 +563,39 @@ def main() -> int:
 
     grant_role(token, headers, user_id, project_id)
 
-    # Interactive human-login path: an OIDC public app (PKCE) + a demo human
-    # user. The kabytech machine path above is for M2M callers; this is for a
-    # person logging in through the browser. The demo user is also the admin
-    # test operator, so its role grant is deferred until after the chat.admin
-    # role is created below.
+    # Interactive human-login path: an OIDC public app (PKCE) + two human users.
+    # The kabytech machine path above is for M2M callers; this is for people
+    # logging in through the browser.
     client_id = create_oidc_app(token, headers, project_id)
-    demo_user_id = create_human_user(token, headers, org_id)
     write_secret("oidc_client_id", client_id)
-    write_secret("demo_user", DEMO_USERNAME)
-    write_secret("demo_password", DEMO_PASSWORD)
 
     # ----- admin-api provisioning (appendix §2, §1.2) -----
     # Reuses the same bootstrap IAM_OWNER token/headers minted above:
     # assign_admin_member NEEDS org.member.write (§2.4), which the runtime
     # least-privilege SA will not have. Role creation stays here so the
-    # runtime SA needs no project.role.write.
+    # runtime SA needs no project.role.write. The chat.admin role must exist
+    # before we grant it (to the admin human and the runtime SA), so create it
+    # up front.
     create_admin_role(token, headers, project_id)
-    # The demo human is the test operator: chat.user lets it use /chat,
-    # chat.admin lets it sign in to admin-web. One grant carries both roles, so
-    # it must run after create_admin_role (the chat.admin role must exist).
-    grant_role(token, headers, demo_user_id, project_id,
+
+    # chatter — a plain chat user (chat.user only): can use /chat, NOT the Console.
+    chatter_id = create_human_user(
+        token, headers, org_id,
+        CHATTER_USERNAME, "Chatter", "User", CHATTER_EMAIL, CHATTER_PASSWORD)
+    grant_role(token, headers, chatter_id, project_id)  # chat.user
+    write_secret("chatter_user", CHATTER_USERNAME)
+    write_secret("chatter_password", CHATTER_PASSWORD)
+
+    # admin — the Console operator: chat.user lets it use /chat, chat.admin lets
+    # it sign into admin-web (:3000). One grant carries both roles.
+    admin_human_id = create_human_user(
+        token, headers, org_id,
+        ADMIN_USERNAME, "Console", "Admin", ADMIN_EMAIL, ADMIN_PASSWORD)
+    grant_role(token, headers, admin_human_id, project_id,
                role_keys=[ROLE_KEY, ADMIN_ROLE_KEY])
+    write_secret("admin_user", ADMIN_USERNAME)
+    write_secret("admin_password", ADMIN_PASSWORD)
+
     admin_sa_id = create_admin_sa(token, headers)
     admin_sa = generate_admin_key(token, headers, admin_sa_id)
     assign_admin_member(token, headers, admin_sa_id)
@@ -596,8 +617,9 @@ def main() -> int:
     write_secret("project_id", project_id)
     write_secret("kabytech_user_id", user_id)
     write_generated_env(project_id)
-    print(f"[provision] done: project_id={project_id} userId={user_id} "
-          f"oidc_client_id={client_id} demo_user={DEMO_USERNAME} "
+    print(f"[provision] done: project_id={project_id} kabytech_id={user_id} "
+          f"oidc_client_id={client_id} chatter={CHATTER_USERNAME} "
+          f"admin={ADMIN_USERNAME} admin_human_id={admin_human_id} "
           f"admin_sa_id={admin_sa_id}")
     return 0
 
