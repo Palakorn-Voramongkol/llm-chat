@@ -17,6 +17,7 @@ export interface ColumnHandlers {
   onDelete: (u: User) => void;
   onLifecycle: (u: User, action: Lifecycle) => void;
   onGrants: (u: User) => void;
+  onAccess: (u: User) => void;
   onKeys: (u: User) => void;
 }
 
@@ -145,6 +146,8 @@ export function buildColumns(
               )}
               <DropdownMenuItem data-testid="action-grants"
                 onSelect={() => h.onGrants(u)}>Access (grants)</DropdownMenuItem>
+              <DropdownMenuItem data-testid="action-access"
+                onSelect={() => h.onAccess(u)}>App access</DropdownMenuItem>
               {u.kind === "Machine" && (
                 <DropdownMenuItem data-testid="action-keys"
                   onSelect={() => h.onKeys(u)}>Credentials (keys)</DropdownMenuItem>

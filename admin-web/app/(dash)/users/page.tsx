@@ -10,6 +10,7 @@ import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { GrantsDialog } from "@/components/users/grants-dialog";
+import { AccessDialog } from "@/components/users/access-dialog";
 import { KeysDialog } from "@/components/users/keys-dialog";
 import { UsersFilterPanel, type UsersCategory } from "@/components/users/UsersFilterPanel";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
@@ -30,6 +31,7 @@ export default function UsersPage() {
   const [editTarget, setEditTarget] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const [grantsTarget, setGrantsTarget] = useState<User | null>(null);
+  const [accessTarget, setAccessTarget] = useState<User | null>(null);
   const [keysTarget, setKeysTarget] = useState<User | null>(null);
   const [selected, setSelected] = useState<User | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -167,6 +169,7 @@ export default function UsersPage() {
       onDelete: setDeleteTarget,
       onLifecycle,
       onGrants: setGrantsTarget,
+      onAccess: setAccessTarget,
       onKeys: setKeysTarget,
     },
     rolesByUser,
@@ -361,6 +364,8 @@ export default function UsersPage() {
         confirmLabel="Delete" onConfirm={confirmDelete} />
       <GrantsDialog user={grantsTarget} open={!!grantsTarget}
         onOpenChange={(o) => !o && setGrantsTarget(null)} onSaved={load} />
+      <AccessDialog user={accessTarget} open={!!accessTarget}
+        onOpenChange={(o) => !o && setAccessTarget(null)} onSaved={load} />
       <KeysDialog user={keysTarget} open={!!keysTarget}
         onOpenChange={(o) => !o && setKeysTarget(null)} />
     </div>

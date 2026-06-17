@@ -73,6 +73,32 @@ export interface GrantList {
   result: UserGrant[];
 }
 
+// ---- Multi-application authorization (design 2026-06-18, P1) ----
+// An "application" is a Zitadel Project with its own roles. Named AppProject to
+// avoid colliding with the home-project `Project` settings type above.
+export interface AppProject {
+  id: string;
+  name?: string;
+  state?: string;
+}
+export interface AppProjectList {
+  result: AppProject[];
+}
+
+// A grant on an application's roster: who can use the app + as which roles.
+// Zitadel returns `id` or `grantId` depending on the search/get shape.
+export interface ProjectGrant {
+  id?: string;
+  grantId?: string;
+  userId?: string;
+  userName?: string;
+  displayName?: string;
+  roleKeys?: string[];
+}
+export interface ProjectGrantList {
+  result: ProjectGrant[];
+}
+
 // ---- Machine-user credentials (service-account JSON keys, design §8) ----
 // A key as LISTED — metadata only; the private key is never in the list.
 export interface MachineKey {
