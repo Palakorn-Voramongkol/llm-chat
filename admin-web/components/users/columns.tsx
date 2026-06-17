@@ -12,6 +12,13 @@ import type { User, UserState } from "@/lib/types";
 export type Lifecycle =
   | "deactivate" | "reactivate" | "lock" | "unlock" | "resend-init";
 
+// A user's access grouped by application: the app NAME and the role keys the
+// user holds on that app. Preserves per-app grouping (vs. a flat key list).
+export interface AppAccess {
+  project: string; // application name (resolved from projectId)
+  roleKeys: string[];
+}
+
 export interface ColumnHandlers {
   onEdit: (u: User) => void;
   onDelete: (u: User) => void;
@@ -50,7 +57,7 @@ function roleChipClass(key: string): string {
 
 export function buildColumns(
   h: ColumnHandlers,
-  rolesByUser?: Map<string, string[]>,
+  rolesByUser?: Map<string, AppAccess[]>,
 ): ColumnDef<User>[] {
   return [
     {
@@ -92,20 +99,25 @@ export function buildColumns(
       },
     },
     {
-      id: "roles", header: "Roles", enableSorting: false,
+      id: "roles", header: "App access & roles", enableSorting: false,
       cell: ({ row }) => {
-        const keys = rolesByUser?.get(row.original.id);
-        if (!keys || keys.length === 0) {
+        const apps = rolesByUser?.get(row.original.id);
+        if (!apps || apps.length === 0) {
           return <span className="text-muted-foreground">—</span>;
         }
         return (
-          <span className="flex flex-wrap gap-1.5">
-            {keys.map((k) => (
-              <span
-                key={k}
-                className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${roleChipClass(k)}`}
-              >
-                {k}
+          <span className="flex flex-col gap-1.5">
+            {apps.map((app) => (
+              <span key={app.project} className="flex flex-wrap items-center gap-1.5">
+                <span className="text-muted-foreground text-xs">{app.project}</span>
+                {app.roleKeys.map((k) => (
+                  <span
+                    key={k}
+                    className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${roleChipClass(k)}`}
+                  >
+                    {k}
+                  </span>
+                ))}
               </span>
             ))}
           </span>

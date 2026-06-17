@@ -5,7 +5,7 @@ import type { GroupingState, VisibilityState } from "@tanstack/react-table";
 import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
 import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { buildColumns, type Lifecycle } from "@/components/users/columns";
+import { buildColumns, type Lifecycle, type AppAccess } from "@/components/users/columns";
 import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
@@ -18,16 +18,18 @@ import { Badge } from "@/components/ui/badge";
 import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
 import type {
-  ChatClient, ChatSessions, GrantList, Role, RoleList, SigninList,
-  User, UserList,
+  AppProjectList, ChatClient, ChatSessions, GrantList, Role, RoleList,
+  SigninList, User, UserList,
 } from "@/lib/types";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
-  // userId -> deduped role keys flattened across that user's grants. A user
-  // absent from the map had its grants fetch fail (cell shows "—").
-  const [rolesByUser, setRolesByUser] = useState<Map<string, string[]>>(new Map());
+  // userId -> the user's access grouped per application ({ app name, role
+  // keys }). A user absent from the map had its grants fetch fail (cell shows
+  // "—"). Grouping is preserved (not flattened) so the column can show which
+  // roles apply to which app.
+  const [rolesByUser, setRolesByUser] = useState<Map<string, AppAccess[]>>(new Map());
   const [editTarget, setEditTarget] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const [grantsTarget, setGrantsTarget] = useState<User | null>(null);
@@ -85,23 +87,45 @@ export default function UsersPage() {
     } catch {
       setRoles([]);
     }
+    // Resolve projectId -> application name (best-effort): used to label each
+    // app group in the grants column. An unknown id falls back to the raw id.
+    const nameByProject = new Map<string, string>();
+    try {
+      const pl = await api.get<AppProjectList>("/api/projects");
+      for (const p of pl.result ?? []) nameByProject.set(p.id, p.name || p.id);
+    } catch {
+      /* leave empty: ids will be shown raw as the group label */
+    }
     // Per-user grants in parallel + best-effort (like roles/page.tsx holders): a
-    // failed lookup simply omits that user so its Roles cell shows "—". Never
-    // blocks the list. Flatten + dedupe roleKeys across the user's grants.
+    // failed lookup simply omits that user so its access cell shows "—". Never
+    // blocks the list. Group roleKeys by projectId and map to the app name —
+    // grouping is preserved (not flattened).
     try {
       const pairs = await Promise.all(
-        loaded.map(async (u): Promise<[string, string[]] | null> => {
+        loaded.map(async (u): Promise<[string, AppAccess[]] | null> => {
           try {
             const g = await api.get<GrantList>(`/api/users/${u.id}/grants`);
-            const keys = [...new Set((g.result ?? []).flatMap((gr) => gr.roleKeys))];
-            return [u.id, keys];
+            // Merge any multiple grants on the same project, dedupe keys.
+            const keysByProject = new Map<string, Set<string>>();
+            for (const gr of g.result ?? []) {
+              const set = keysByProject.get(gr.projectId) ?? new Set<string>();
+              for (const k of gr.roleKeys) set.add(k);
+              keysByProject.set(gr.projectId, set);
+            }
+            const access: AppAccess[] = [...keysByProject.entries()].map(
+              ([pid, keys]) => ({
+                project: nameByProject.get(pid) ?? pid,
+                roleKeys: [...keys],
+              }),
+            );
+            return [u.id, access];
           } catch {
             return null;
           }
         }),
       );
       setRolesByUser(
-        new Map(pairs.filter((p): p is [string, string[]] => p !== null)),
+        new Map(pairs.filter((p): p is [string, AppAccess[]] => p !== null)),
       );
     } catch {
       setRolesByUser(new Map());
@@ -175,14 +199,27 @@ export default function UsersPage() {
     rolesByUser,
   );
 
+  // Flat set of role keys per user, derived from the grouped access structure
+  // (across all apps). Backs the BY ROLE counts + the role category filter,
+  // which are app-agnostic.
+  const flatKeysByUser = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const [uid, access] of rolesByUser) {
+      const set = new Set<string>();
+      for (const a of access) for (const k of a.roleKeys) set.add(k);
+      m.set(uid, set);
+    }
+    return m;
+  }, [rolesByUser]);
+
   // Left-panel counts (all REAL, from live data). Per-role count = number of
-  // users whose flattened grant role keys include that role.
+  // users whose grant role keys (across any app) include that role.
   const counts = useMemo(() => {
     const byRole = new Map<string, number>();
     for (const r of roles) {
       let n = 0;
       for (const u of users) {
-        if (rolesByUser.get(u.id)?.includes(r.key)) n++;
+        if (flatKeysByUser.get(u.id)?.has(r.key)) n++;
       }
       byRole.set(r.key, n);
     }
@@ -193,7 +230,7 @@ export default function UsersPage() {
       locked: users.filter((u) => u.state === "LOCKED").length,
       byRole,
     };
-  }, [users, roles, rolesByUser]);
+  }, [users, roles, flatKeysByUser]);
 
   // Apply the active category + the panel's free-text filter to the rows handed
   // to the DataTable (the DataTable's own field filters still layer on top).
@@ -206,7 +243,7 @@ export default function UsersPage() {
       else if (active === "locked") inCat = u.state === "LOCKED";
       else if (active.startsWith("role:")) {
         const key = active.slice("role:".length);
-        inCat = rolesByUser.get(u.id)?.includes(key) ?? false;
+        inCat = flatKeysByUser.get(u.id)?.has(key) ?? false;
       }
       if (!inCat) return false;
       if (!q) return true;
@@ -215,7 +252,7 @@ export default function UsersPage() {
         (u.email ?? "").toLowerCase().includes(q)
       );
     });
-  }, [users, active, panelQuery, rolesByUser]);
+  }, [users, active, panelQuery, flatKeysByUser]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">

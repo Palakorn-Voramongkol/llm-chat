@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { flexRender } from "@tanstack/react-table";
-import { buildColumns } from "../components/users/columns";
+import { buildColumns, type AppAccess } from "../components/users/columns";
 import type { User } from "../lib/types";
 
 const human: User = {
@@ -9,10 +9,14 @@ const human: User = {
   email: "alice@x.io", displayName: "Alice A",
 };
 
-function renderCell(colId: string, user: User) {
+function renderCell(
+  colId: string,
+  user: User,
+  rolesByUser?: Map<string, AppAccess[]>,
+) {
   const cols = buildColumns({
     onEdit: vi.fn(), onDelete: vi.fn(), onLifecycle: vi.fn(), onGrants: vi.fn(), onAccess: vi.fn(), onKeys: vi.fn(),
-  });
+  }, rolesByUser);
   const col = cols.find((c) => ("accessorKey" in c ? c.accessorKey : c.id) === colId);
   if (!col) throw new Error(`no column ${colId}`);
   const cell = (col as any).cell;
@@ -28,6 +32,21 @@ describe("user columns", () => {
     expect(ids).toEqual(
       expect.arrayContaining(["userName", "kind", "roles", "state", "actions"]),
     );
+  });
+
+  it("renders App access & roles grouped by application name", () => {
+    const rolesByUser = new Map<string, AppAccess[]>([
+      ["u1", [{ project: "LLM Chat", roleKeys: ["chat.admin", "chat.user"] }]],
+    ]);
+    renderCell("roles", human, rolesByUser);
+    expect(screen.getByText("LLM Chat")).toBeInTheDocument();
+    expect(screen.getByText("chat.admin")).toBeInTheDocument();
+    expect(screen.getByText("chat.user")).toBeInTheDocument();
+  });
+
+  it("renders an em-dash when a user has no app access", () => {
+    renderCell("roles", human);
+    expect(screen.getByText("—")).toBeInTheDocument();
   });
 
   it("renders state as a friendly title-cased label", () => {

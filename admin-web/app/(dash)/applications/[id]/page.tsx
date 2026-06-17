@@ -2,10 +2,13 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, ShieldCheck, AppWindow } from "lucide-react";
+import { ArrowLeft, ShieldCheck, AppWindow, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { ConfirmDialog } from "@/components/users/confirm-dialog";
+import { RoleCreateDialog } from "@/components/applications/role-create-dialog";
 import { appTypeLabel } from "@/components/apps/columns";
 import { avatarGradient, initials } from "@/lib/avatar";
 import { api, ApiError } from "@/lib/api";
@@ -28,6 +31,16 @@ export default function ApplicationDetailPage() {
   const [roles, setRoles] = useState<Role[]>([]);
   const [clients, setClients] = useState<OidcApp[]>([]);
   const [grants, setGrants] = useState<ProjectGrant[]>([]);
+  const [deleteRole, setDeleteRole] = useState<Role | null>(null);
+
+  // Refresh only the roles list (used after add/delete). Best-effort.
+  const loadRoles = useCallback(async () => {
+    if (!id) return;
+    try {
+      const rl = await api.get<RoleList>(`/api/projects/${id}/roles`);
+      setRoles(rl.result ?? []);
+    } catch { setRoles([]); }
+  }, [id]);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -59,6 +72,19 @@ export default function ApplicationDetailPage() {
     load();
   }, [load]);
 
+  async function confirmDeleteRole() {
+    if (!id || !deleteRole) return;
+    const key = deleteRole.key;
+    setDeleteRole(null);
+    try {
+      await api.del(`/api/projects/${id}/roles/${encodeURIComponent(key)}`);
+      toast.success("Role removed");
+      loadRoles();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Remove failed");
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
       <div className="space-y-2">
@@ -76,10 +102,11 @@ export default function ApplicationDetailPage() {
       </div>
 
       <div className="grid min-h-0 flex-1 gap-4 overflow-auto lg:grid-cols-3">
-        {/* Roles (read-only — CRUD is P2). */}
+        {/* Roles — manageable: add / delete (delete cascades across grants). */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
             <CardTitle className="text-base">Roles</CardTitle>
+            <RoleCreateDialog projectId={id} onCreated={loadRoles} />
           </CardHeader>
           <CardContent>
             {roles.length === 0 ? (
@@ -103,6 +130,16 @@ export default function ApplicationDetailPage() {
                         {r.group}
                       </span>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className={`text-muted-foreground hover:text-destructive shrink-0${r.group ? " ml-1.5" : " ml-auto"}`}
+                      data-testid="app-role-delete"
+                      aria-label={`Delete role ${r.key}`}
+                      onClick={() => setDeleteRole(r)}
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
                   </li>
                 ))}
               </ul>
@@ -198,6 +235,15 @@ export default function ApplicationDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={!!deleteRole}
+        onOpenChange={(o) => !o && setDeleteRole(null)}
+        title={`Remove role ${deleteRole?.key ?? ""}?`}
+        description="This cascades — the role is stripped from every user grant on this application. This cannot be undone."
+        confirmLabel="Remove role"
+        onConfirm={confirmDeleteRole}
+      />
     </div>
   );
 }
