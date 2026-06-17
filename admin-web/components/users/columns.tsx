@@ -17,6 +17,7 @@ export interface ColumnHandlers {
   onDelete: (u: User) => void;
   onLifecycle: (u: User, action: Lifecycle) => void;
   onGrants: (u: User) => void;
+  onKeys: (u: User) => void;
 }
 
 // Status dot per semantic token: ACTIVE=success, INITIAL=warning,
@@ -144,6 +145,10 @@ export function buildColumns(
               )}
               <DropdownMenuItem data-testid="action-grants"
                 onSelect={() => h.onGrants(u)}>Access (grants)</DropdownMenuItem>
+              {u.kind === "Machine" && (
+                <DropdownMenuItem data-testid="action-keys"
+                  onSelect={() => h.onKeys(u)}>Credentials (keys)</DropdownMenuItem>
+              )}
               <DropdownMenuItem data-testid="action-deactivate"
                 onSelect={() => h.onLifecycle(u, "deactivate")}>Deactivate</DropdownMenuItem>
               <DropdownMenuItem data-testid="action-reactivate"

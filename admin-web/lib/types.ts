@@ -73,6 +73,23 @@ export interface GrantList {
   result: UserGrant[];
 }
 
+// ---- Machine-user credentials (service-account JSON keys, design §8) ----
+// A key as LISTED — metadata only; the private key is never in the list.
+export interface MachineKey {
+  id?: string;            // the keyId
+  type?: string;          // e.g. KEY_TYPE_JSON
+  expirationDate?: string;
+  creationDate?: string;
+}
+export interface MachineKeyList { result: MachineKey[]; }
+// The create response: `keyDetails` is base64 of the serviceaccount JSON file,
+// returned ONCE. Decode it to produce the <user>-key.json the clients consume.
+export interface CreateKeyResponse {
+  id?: string;
+  keyId?: string;
+  keyDetails: string;
+}
+
 export type OidcAppType = "OIDC_APP_TYPE_WEB" | "OIDC_APP_TYPE_NATIVE" | "OIDC_APP_TYPE_USER_AGENT";
 export type OidcAuthMethod =
   | "OIDC_AUTH_METHOD_TYPE_BASIC" | "OIDC_AUTH_METHOD_TYPE_POST"
