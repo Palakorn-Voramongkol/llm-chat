@@ -28,6 +28,20 @@ pub fn project_grants_search_body(project_id: &str) -> Value {
     json!({ "queries": [{ "projectIdQuery": { "projectId": project_id } }] })
 }
 
+/// PURE: Zitadel's user-grant SEARCH returns the grant id as `id`, but `add`
+/// returns it as `userGrantId` and the Console contract uses `grantId`. Normalize
+/// so every grant carries `grantId` (PUT/DELETE target it). Without this the
+/// grant dialogs PUT to `/grants/undefined` and silently fail.
+pub fn normalize_grant_id(mut g: Value) -> Value {
+    if g.get("grantId").is_none() {
+        let id = g.get("id").or_else(|| g.get("userGrantId")).cloned();
+        if let (Some(id), Some(obj)) = (id, g.as_object_mut()) {
+            obj.insert("grantId".to_string(), id);
+        }
+    }
+    g
+}
+
 impl ZitadelClient {
     /// List the HOME project's roles (§3.3). Thin alias over `list_roles_for`.
     pub async fn list_roles(&self) -> Result<Vec<Value>, ZitadelError> {
@@ -45,19 +59,23 @@ impl ZitadelClient {
 
     /// List EVERY grant on a project (the per-app user roster): who can use this
     /// application and with which roles. POST /management/v1/users/grants/_search.
+    /// Grants are normalized to carry `grantId`.
     pub async fn list_project_grants(&self, project_id: &str) -> Result<Vec<Value>, ZitadelError> {
         let url = format!("{}/management/v1/users/grants/_search", self.cfg.issuer);
         let v = self.post_json(&url, &project_grants_search_body(project_id)).await?;
-        Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default())
+        Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default()
+            .into_iter().map(normalize_grant_id).collect())
     }
 
     /// List a user's grants: POST /management/v1/users/grants/_search filtered by
     /// userId (§3.4). NOTE the path is /users/grants/_search, not nested per-user.
+    /// Grants are normalized to carry `grantId` (see normalize_grant_id).
     pub async fn list_user_grants(&self, user_id: &str) -> Result<Vec<Value>, ZitadelError> {
         let url = format!("{}/management/v1/users/grants/_search", self.cfg.issuer);
         let body = json!({ "queries": [{ "userIdQuery": { "userId": user_id } }] });
         let v = self.post_json(&url, &body).await?;
-        Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default())
+        Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default()
+            .into_iter().map(normalize_grant_id).collect())
     }
 
     /// Add a grant on the HOME project. Thin alias over `add_grant_to`.
@@ -152,5 +170,18 @@ mod tests {
         let queries = body.get("queries").and_then(Value::as_array).unwrap();
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0]["projectIdQuery"]["projectId"], "p1");
+    }
+
+    #[test]
+    fn normalize_grant_id_maps_search_id_to_grant_id() {
+        let g = super::normalize_grant_id(json!({ "id": "g1", "roleKeys": ["chat.user"] }));
+        assert_eq!(g["grantId"], "g1");
+        assert_eq!(g["id"], "g1"); // original preserved
+    }
+
+    #[test]
+    fn normalize_grant_id_preserves_existing_grant_id() {
+        let g = super::normalize_grant_id(json!({ "grantId": "real", "id": "other" }));
+        assert_eq!(g["grantId"], "real"); // not overwritten
     }
 }
