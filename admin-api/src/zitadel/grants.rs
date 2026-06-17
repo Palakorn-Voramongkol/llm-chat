@@ -106,20 +106,32 @@ impl ZitadelClient {
         self.delete(&url).await.map(|_| ())
     }
 
-    /// Create a project role (§3.3): POST /projects/{pid}/roles {roleKey,
-    /// displayName, group}. `roleKey` is the unique id (no separate id returned).
+    /// Create a role on the HOME project. Thin alias over `create_role_in`.
     pub async fn create_role(&self, role_key: &str, display_name: &str, group: &str) -> Result<(), ZitadelError> {
-        let pid = &self.cfg.project_id;
-        let url = format!("{}/management/v1/projects/{}/roles", self.cfg.issuer, pid);
+        let pid = self.cfg.project_id.clone();
+        self.create_role_in(&pid, role_key, display_name, group).await
+    }
+
+    /// Create a role on ANY application (project the SA owns): POST
+    /// /projects/{pid}/roles {roleKey, displayName, group}. `roleKey` is the
+    /// unique id. Requires PROJECT_OWNER on `pid` (enforced by Zitadel).
+    pub async fn create_role_in(&self, project_id: &str, role_key: &str, display_name: &str, group: &str) -> Result<(), ZitadelError> {
+        let url = format!("{}/management/v1/projects/{}/roles", self.cfg.issuer, project_id);
         let body = json!({ "roleKey": role_key, "displayName": display_name, "group": group });
         self.post_json(&url, &body).await.map(|_| ())
     }
 
-    /// Delete a project role (§3.3): DELETE /projects/{pid}/roles/{roleKey}.
-    /// CASCADES — strips the role from every user grant (design §7 warning).
+    /// Delete a role on the HOME project. Thin alias over `delete_role_in`.
     pub async fn delete_role(&self, role_key: &str) -> Result<(), ZitadelError> {
-        let pid = &self.cfg.project_id;
-        let url = format!("{}/management/v1/projects/{}/roles/{}", self.cfg.issuer, pid, role_key);
+        let pid = self.cfg.project_id.clone();
+        self.delete_role_in(&pid, role_key).await
+    }
+
+    /// Delete a role on ANY application (project the SA owns): DELETE
+    /// /projects/{pid}/roles/{roleKey}. CASCADES — strips the role from every
+    /// user grant on that project (design §7 warning).
+    pub async fn delete_role_in(&self, project_id: &str, role_key: &str) -> Result<(), ZitadelError> {
+        let url = format!("{}/management/v1/projects/{}/roles/{}", self.cfg.issuer, project_id, role_key);
         self.delete(&url).await.map(|_| ())
     }
 

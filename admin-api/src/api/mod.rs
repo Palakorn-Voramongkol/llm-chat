@@ -54,7 +54,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/project", get(get_project).put(update_project))
         // Multi-application authorization (each project = one application).
         .route("/api/projects", get(list_projects))
-        .route("/api/projects/{pid}/roles", get(list_project_roles))
+        .route("/api/projects/{pid}/roles", get(list_project_roles).post(create_project_role))
+        .route("/api/projects/{pid}/roles/{roleKey}", delete(delete_project_role))
         .route("/api/projects/{pid}/apps", get(list_project_apps))
         .route("/api/projects/{pid}/grants", get(list_project_grants))
         .route("/api/org/policies/login", get(get_login_policy))
@@ -482,6 +483,19 @@ async fn list_projects(_op: Operator, State(st): State<AppState>) -> Result<Json
 async fn list_project_roles(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
     -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "result": st.zitadel.list_roles_for(&pid).await? })))
+}
+// Define a role IN an application (P2). Requires PROJECT_OWNER on pid — Zitadel
+// returns 403 otherwise (the SA owns its home + provisioner-owned projects).
+async fn create_project_role(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>, Json(b): Json<CreateRole>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.create_role_in(&pid, &b.role_key, &b.display_name, &b.group).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+// DELETE cascades — strips this role from every grant on the app (design §7).
+async fn delete_project_role(_op: Operator, State(st): State<AppState>, Path((pid, role_key)): Path<(String, String)>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.delete_role_in(&pid, &role_key).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 async fn list_project_apps(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
     -> Result<Json<Value>, ApiError> {
