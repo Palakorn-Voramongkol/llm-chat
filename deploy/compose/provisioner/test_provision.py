@@ -154,6 +154,29 @@ def test_create_human_user_409_is_systemexit():
                 "chatter@example.com", "pw")
 
 
+# ---------- opt-in Audit grant (instance-level IAM_OWNER_VIEWER) ----------
+
+def test_grant_iam_viewer_posts_instance_member_without_org_header():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured.update(method=method, url=url, headers=headers, body=json_body)
+        return _FakeResp(200)
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.grant_iam_viewer("tok", "sa-9")
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/admin/v1/members")        # instance-scoped admin API
+    assert "x-zitadel-orgid" not in captured["headers"]         # NOT org-scoped
+    assert captured["body"] == {"userId": "sa-9", "roles": ["IAM_OWNER_VIEWER"]}
+
+
+def test_grant_iam_viewer_409_is_success():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        provision.grant_iam_viewer("tok", "sa-9")  # 409 == already a member, no raise
+
+
 # ---------- chat.admin role + admin SA + admin OIDC WEB app (admin-api path) ----------
 
 def test_create_admin_role_posts_chat_admin_rolekey():

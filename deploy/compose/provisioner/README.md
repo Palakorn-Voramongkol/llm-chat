@@ -47,7 +47,14 @@ Reading the event log needs the **instance-level** `IAM_OWNER_VIEWER` role — a
 deliberately separate, explicit decision (design §3/§11), because that role can
 read **every org** on the instance (the Audit UI still confines its view to the
 SA's own org via `resourceOwner`). Grant it only if you want Audit, and only on
-a trusted single-tenant instance. To enable it live (bootstrap IAM_OWNER key):
+a trusted single-tenant instance.
+
+**Persist it across resets (recommended):** set `PROVISION_ENABLE_AUDIT=1` (e.g.
+in `.env`) — the provisioner then grants `IAM_OWNER_VIEWER` to the admin SA as
+part of provisioning, so Audit works after every clean `docker compose down -v`
++ re-provision. Off by default (keeps the SA least-privilege).
+
+To enable it live on an **already-provisioned** instance (bootstrap IAM_OWNER key):
 
 ```bash
 python - <<'PY'

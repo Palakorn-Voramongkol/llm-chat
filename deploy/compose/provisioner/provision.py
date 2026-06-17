@@ -95,6 +95,16 @@ ADMIN_OIDC_POST_LOGOUT_URI = os.environ.get(
 ADMIN_SA_ROLE = "ORG_USER_MANAGER"
 ADMIN_SA_PROJECT_ROLE = "PROJECT_OWNER"
 
+# Audit is OPT-IN (spec §3/§11). Reading the org event log needs the
+# instance-level IAM_OWNER_VIEWER role — broader than the least-privilege org +
+# project memberships above (it can read EVERY org on the instance; the Console
+# still confines the Audit view to the SA's own org via resourceOwner). OFF by
+# default; set $PROVISION_ENABLE_AUDIT=1 to grant it during provisioning so the
+# Audit page works and SURVIVES a clean reset. The role is read-only (VIEWER).
+ENABLE_AUDIT = os.environ.get("PROVISION_ENABLE_AUDIT", "").strip().lower() in (
+    "1", "true", "yes", "on")
+IAM_VIEWER_ROLE = "IAM_OWNER_VIEWER"
+
 MAX_ATTEMPTS = 10
 BACKOFF_SECONDS = 3
 REQUEST_TIMEOUT = 15
@@ -449,6 +459,22 @@ def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
         resp.raise_for_status()
 
 
+def grant_iam_viewer(token: str, sa_user_id: str) -> None:
+    """Add the admin SA as an INSTANCE member with IAM_OWNER_VIEWER (read-only),
+    enabling the Console's Audit page (spec §11). This is the opt-in audit grant
+    — only runs when $PROVISION_ENABLE_AUDIT is set. Instance-scoped admin API:
+    NO x-zitadel-orgid header (unlike the org/project member calls). MUST use the
+    BOOTSTRAP IAM_OWNER token. Idempotent: 409 == already a member."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/admin/v1/members",
+        headers={"Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"},
+        json_body={"userId": sa_user_id, "roles": [IAM_VIEWER_ROLE]},
+    )
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
+
+
 def assign_admin_project_member(token: str, headers: dict, project_id: str,
                                 sa_user_id: str) -> None:
     """Add the admin SA as a PROJECT member with PROJECT_OWNER on the llm-chat
@@ -613,6 +639,15 @@ def main() -> int:
     print(f"[provision] admin: sa_user_id={admin_sa_id} "
           f"admin_oidc_client_id={admin_cid} "
           f"org_role={ADMIN_SA_ROLE} project_role={ADMIN_SA_PROJECT_ROLE}")
+
+    # Opt-in Audit (spec §11): grant the SA the instance-level IAM_OWNER_VIEWER
+    # so the Console's Audit page works and survives a clean reset. Off unless
+    # $PROVISION_ENABLE_AUDIT is set — keeps the SA least-privilege by default.
+    if ENABLE_AUDIT:
+        grant_iam_viewer(token, admin_sa_id)
+        print(f"[provision] audit ENABLED: granted {IAM_VIEWER_ROLE} to SA {admin_sa_id}")
+    else:
+        print("[provision] audit disabled (default) — set PROVISION_ENABLE_AUDIT=1 to enable")
 
     write_secret("project_id", project_id)
     write_secret("kabytech_user_id", user_id)

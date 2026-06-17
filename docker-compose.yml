@@ -78,6 +78,11 @@ services:
       dockerfile: Dockerfile
     environment:
       PROVISION_ISSUER: http://host.docker.internal:8080
+      # Opt-in Audit (spec §11): set PROVISION_ENABLE_AUDIT=1 (e.g. in .env) to
+      # grant the admin SA the instance-level IAM_OWNER_VIEWER role so the
+      # Console's Audit page works and survives a clean reset. Off by default
+      # (least privilege). Read-only viewer role.
+      PROVISION_ENABLE_AUDIT: ${PROVISION_ENABLE_AUDIT:-0}
     depends_on:
       zitadel:
         condition: service_healthy
