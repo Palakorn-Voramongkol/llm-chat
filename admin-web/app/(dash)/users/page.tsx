@@ -1,6 +1,5 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AppWindow, Bot, User as UserIcon, Users as UsersIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { GroupingState, VisibilityState } from "@tanstack/react-table";
 import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
@@ -13,19 +12,17 @@ import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { GrantsDialog } from "@/components/users/grants-dialog";
 import { UsersFilterPanel, type UsersCategory } from "@/components/users/UsersFilterPanel";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
-import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
 import type {
   ChatClient, ChatSessions, GrantList, Role, RoleList, SigninList,
-  Stats, User, UserList,
+  User, UserList,
 } from "@/lib/types";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
-  const [appsCount, setAppsCount] = useState<number | null>(null);
   // userId -> deduped role keys flattened across that user's grants. A user
   // absent from the map had its grants fetch fail (cell shows "—").
   const [rolesByUser, setRolesByUser] = useState<Map<string, string[]>>(new Map());
@@ -83,13 +80,6 @@ export default function UsersPage() {
       setRoles(rl.result ?? []);
     } catch {
       setRoles([]);
-    }
-    // Apps count for the stat card (null on failure -> renders "—").
-    try {
-      const s = await api.get<Stats>("/api/stats");
-      setAppsCount(s.apps ?? null);
-    } catch {
-      setAppsCount(null);
     }
     // Per-user grants in parallel + best-effort (like roles/page.tsx holders): a
     // failed lookup simply omits that user so its Roles cell shows "—". Never
@@ -221,14 +211,6 @@ export default function UsersPage() {
     });
   }, [users, active, panelQuery, rolesByUser]);
 
-  // Stat cards (mockup `.stats`): tinted icon tile + bold count + muted label.
-  const statCards = [
-    { label: "Total users", value: String(users.length), Icon: UsersIcon, bg: "bg-indigo-500/12", fg: "text-indigo-600" },
-    { label: "Humans", value: String(counts.humans), Icon: UserIcon, bg: "bg-blue-500/12", fg: "text-blue-600" },
-    { label: "Machine accounts", value: String(counts.machines), Icon: Bot, bg: "bg-cyan-500/14", fg: "text-cyan-600" },
-    { label: "Apps", value: appsCount == null ? "—" : String(appsCount), Icon: AppWindow, bg: "bg-violet-500/14", fg: "text-violet-600" },
-  ];
-
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
       <PageHeader
@@ -257,17 +239,6 @@ export default function UsersPage() {
           onCreate={() => setCreateOpen(true)}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-4">
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            {statCards.map(({ label, value, Icon, bg, fg }) => (
-              <Card key={label} className="gap-0 p-4">
-                <div className={`mb-3 flex size-9 items-center justify-center rounded-xl ${bg} ${fg}`}>
-                  <Icon className="size-5" />
-                </div>
-                <div className="text-2xl font-bold tracking-tight tabular-nums">{value}</div>
-                <div className="text-muted-foreground text-sm">{label}</div>
-              </Card>
-            ))}
-          </div>
           <div className="min-h-0 flex-1">
           <DataTable columns={columns} data={visibleUsers}
             filterFields={[
