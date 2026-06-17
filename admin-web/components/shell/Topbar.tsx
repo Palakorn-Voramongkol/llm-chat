@@ -2,6 +2,7 @@
 import { usePathname } from "next/navigation";
 import { NAV, isActive } from "./nav";
 import { GlobalSearch } from "./GlobalSearch";
+import { OperatorBadge } from "./OperatorBadge";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 
@@ -17,6 +18,7 @@ export function Topbar() {
       <GlobalSearch />
       <NotificationBell />
       <ThemeToggle />
+      <OperatorBadge variant="bar" />
     </header>
   );
 }

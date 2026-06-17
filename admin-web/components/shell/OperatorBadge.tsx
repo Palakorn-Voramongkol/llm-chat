@@ -25,11 +25,14 @@ function expiresIn(expiresAt: string | null): string {
   return h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
 }
 
-/** The account avatar pinned to the bottom of the activity-bar ribbon
- * (console-shell mockup `.rail .avatar`). Click it to open a menu with the
- * operator's OWN session detail (identity, roles, expiry) + sign out — the
- * Sessions page itself is reserved for monitoring ALL users. */
-export function OperatorBadge() {
+/** The operator account menu — identity, roles, session expiry + sign out.
+ * Two placements (console-shell mockup has both):
+ *  - "rail": a white circle avatar pinned to the bottom of the activity-bar
+ *    ribbon (the Sidebar); the dropdown opens to the right.
+ *  - "bar": the top-right of the top bar as name + gradient avatar (mockup
+ *    `.me`); the dropdown opens below.
+ * The menu body is identical for both. */
+export function OperatorBadge({ variant = "rail" }: { variant?: "rail" | "bar" }) {
   const [status, setStatus] = useState<Status | null>(null);
 
   useEffect(() => {
@@ -44,19 +47,38 @@ export function OperatorBadge() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        {/* Mockup `.avatar`: white circle, violet initials. The name is kept as
-            an sr-only label (accessible name + visible only in the menu). */}
-        <button
-          type="button"
-          aria-label="Account menu"
-          title={`${name} — sign out`}
-          className="flex size-[34px] items-center justify-center rounded-full bg-white text-[13px] font-extrabold text-violet-600 shadow-sm transition hover:ring-2 hover:ring-white/50 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none"
-        >
-          {initials(name)}
-          <span className="sr-only">{name}</span>
-        </button>
+        {variant === "bar" ? (
+          // Top bar (mockup `.me`): name + gradient avatar.
+          <button
+            type="button"
+            aria-label="Account menu"
+            className="hover:bg-muted flex items-center gap-2 rounded-full py-1 pr-1 pl-3 text-sm font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            <span className="max-w-[10rem] truncate">{name}</span>
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-indigo-500 to-violet-500 text-xs font-bold text-white">
+              {initials(name)}
+            </span>
+          </button>
+        ) : (
+          // Ribbon (mockup `.avatar`): white circle, violet initials; the name is
+          // an sr-only label (accessible name + visible only in the menu).
+          <button
+            type="button"
+            aria-label="Account menu"
+            title={`${name} — sign out`}
+            className="flex size-[34px] items-center justify-center rounded-full bg-white text-[13px] font-extrabold text-violet-600 shadow-sm transition hover:ring-2 hover:ring-white/50 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:outline-none"
+          >
+            {initials(name)}
+            <span className="sr-only">{name}</span>
+          </button>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="right" align="end" sideOffset={10} className="w-72">
+      <DropdownMenuContent
+        side={variant === "bar" ? "bottom" : "right"}
+        align="end"
+        sideOffset={variant === "bar" ? 8 : 10}
+        className="w-72"
+      >
         <DropdownMenuLabel className="flex items-center gap-2.5 font-normal">
           <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-indigo-500 to-violet-500 text-xs font-bold text-white">
             {initials(name)}
