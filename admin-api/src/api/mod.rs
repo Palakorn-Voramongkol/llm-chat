@@ -52,6 +52,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps/{appId}", get(get_app).put(update_oidc_config).delete(delete_app))
         .route("/api/apps/{appId}/secret", post(regenerate_app_secret))
         .route("/api/project", get(get_project).put(update_project))
+        // Multi-application authorization (each project = one application).
+        .route("/api/projects", get(list_projects))
+        .route("/api/projects/{pid}/roles", get(list_project_roles))
+        .route("/api/projects/{pid}/apps", get(list_project_apps))
+        .route("/api/projects/{pid}/grants", get(list_project_grants))
         .route("/api/org/policies/login", get(get_login_policy))
         .route("/api/org/policies/password-complexity", get(get_password_complexity_policy))
         .route("/api/org/policies/lockout", get(get_lockout_policy))
@@ -335,10 +340,19 @@ async fn list_grants(_op: Operator, State(st): State<AppState>, Path(id): Path<S
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AddGrant { role_keys: Vec<String> }
+struct AddGrant {
+    role_keys: Vec<String>,
+    // Which application (project) to grant on. Omitted => the home project (the
+    // single-project Access dialog); the access matrix sends it explicitly.
+    #[serde(default)]
+    project_id: Option<String>,
+}
 async fn add_grant(_op: Operator, State(st): State<AppState>, Path(id): Path<String>, Json(b): Json<AddGrant>)
     -> Result<Json<Value>, ApiError> {
-    let grant_id = st.zitadel.add_grant(&id, &b.role_keys).await?;
+    let grant_id = match b.project_id.as_deref() {
+        Some(pid) => st.zitadel.add_grant_to(&id, pid, &b.role_keys).await?,
+        None => st.zitadel.add_grant(&id, &b.role_keys).await?,
+    };
     Ok(Json(json!({ "userGrantId": grant_id })))
 }
 
@@ -450,6 +464,32 @@ struct UpdateProject {
 
 async fn get_project(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(st.zitadel.get_project().await?))
+}
+
+// ---- Multi-application authorization (each project = one application) ----
+// All Operator-gated. Read surfaces for P1: list applications, an application's
+// roles + login clients, and its user roster (who can use it, with which roles).
+async fn list_projects(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    // Exclude Zitadel's reserved internal "ZITADEL" project: it is not a
+    // user-facing application, and granting its IAM roles is out of scope for a
+    // chat.admin operator. The Console manages user applications only.
+    let apps: Vec<Value> = st.zitadel.list_projects().await?
+        .into_iter()
+        .filter(|p| p.get("name").and_then(Value::as_str) != Some("ZITADEL"))
+        .collect();
+    Ok(Json(json!({ "result": apps })))
+}
+async fn list_project_roles(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(json!({ "result": st.zitadel.list_roles_for(&pid).await? })))
+}
+async fn list_project_apps(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(json!({ "result": st.zitadel.list_apps_for(&pid).await? })))
+}
+async fn list_project_grants(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(json!({ "result": st.zitadel.list_project_grants(&pid).await? })))
 }
 async fn update_project(_op: Operator, State(st): State<AppState>, Json(b): Json<UpdateProject>) -> Result<Json<Value>, ApiError> {
     st.zitadel.update_project(&b.name, b.project_role_assertion, b.project_role_check, b.has_project_check).await?;

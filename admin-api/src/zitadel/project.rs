@@ -12,6 +12,14 @@ fn update_project_body(name: &str, role_assertion: bool, role_check: bool, has_p
 }
 
 impl ZitadelClient {
+    /// List ALL projects in the org (each = one application in the multi-app
+    /// model): POST /management/v1/projects/_search. Operator-gated upstream.
+    pub async fn list_projects(&self) -> Result<Vec<Value>, ZitadelError> {
+        let url = format!("{}/management/v1/projects/_search", self.cfg.issuer);
+        let v = self.post_json(&url, &json!({})).await?;
+        Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default())
+    }
+
     /// GET /management/v1/projects/{id} — returns the project entity (unwrapped
     /// from its { "project": {...} } envelope; falls back to the whole value).
     pub async fn get_project(&self) -> Result<Value, ZitadelError> {

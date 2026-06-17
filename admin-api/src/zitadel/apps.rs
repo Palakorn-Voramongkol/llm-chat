@@ -59,10 +59,17 @@ fn oidc_update_body(
 }
 
 impl ZitadelClient {
-    /// List apps: POST /management/v1/projects/{pid}/apps/_search (§8 ✅).
+    /// List the HOME project's apps (§8 ✅). Thin alias over `list_apps_for`.
     pub async fn list_apps(&self) -> Result<Vec<Value>, ZitadelError> {
-        let pid = &self.cfg.project_id;
-        let url = format!("{}/management/v1/projects/{}/apps/_search", self.cfg.issuer, pid);
+        let pid = self.cfg.project_id.clone();
+        self.list_apps_for(&pid).await
+    }
+
+    /// List ANY project's apps (login clients): POST
+    /// /management/v1/projects/{pid}/apps/_search. Each application (project)
+    /// has its own login clients in the multi-app model.
+    pub async fn list_apps_for(&self, project_id: &str) -> Result<Vec<Value>, ZitadelError> {
+        let url = format!("{}/management/v1/projects/{}/apps/_search", self.cfg.issuer, project_id);
         let v = self.post_json(&url, &json!({})).await?;
         Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default())
     }

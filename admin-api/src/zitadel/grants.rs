@@ -22,12 +22,32 @@ pub fn holders_search_body(project_id: &str, role_key: &str) -> Value {
     ] })
 }
 
+/// Pure: the grants/_search body for EVERY grant on a project (the per-app
+/// roster — who can use this application, with which roles). Filters by project.
+pub fn project_grants_search_body(project_id: &str) -> Value {
+    json!({ "queries": [{ "projectIdQuery": { "projectId": project_id } }] })
+}
+
 impl ZitadelClient {
-    /// List project roles: POST /management/v1/projects/{pid}/roles/_search (§3.3).
+    /// List the HOME project's roles (§3.3). Thin alias over `list_roles_for`.
     pub async fn list_roles(&self) -> Result<Vec<Value>, ZitadelError> {
-        let pid = &self.cfg.project_id;
-        let url = format!("{}/management/v1/projects/{}/roles/_search", self.cfg.issuer, pid);
+        let pid = self.cfg.project_id.clone();
+        self.list_roles_for(&pid).await
+    }
+
+    /// List ANY project's roles: POST /management/v1/projects/{pid}/roles/_search
+    /// (multi-app authorization — each application is a project with its roles).
+    pub async fn list_roles_for(&self, project_id: &str) -> Result<Vec<Value>, ZitadelError> {
+        let url = format!("{}/management/v1/projects/{}/roles/_search", self.cfg.issuer, project_id);
         let v = self.post_json(&url, &json!({})).await?;
+        Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default())
+    }
+
+    /// List EVERY grant on a project (the per-app user roster): who can use this
+    /// application and with which roles. POST /management/v1/users/grants/_search.
+    pub async fn list_project_grants(&self, project_id: &str) -> Result<Vec<Value>, ZitadelError> {
+        let url = format!("{}/management/v1/users/grants/_search", self.cfg.issuer);
+        let v = self.post_json(&url, &project_grants_search_body(project_id)).await?;
         Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default())
     }
 
@@ -40,10 +60,18 @@ impl ZitadelClient {
         Ok(v.get("result").and_then(Value::as_array).cloned().unwrap_or_default())
     }
 
-    /// Add a grant (one per user+project): POST /users/{id}/grants -> userGrantId.
+    /// Add a grant on the HOME project. Thin alias over `add_grant_to`.
     pub async fn add_grant(&self, user_id: &str, role_keys: &[String]) -> Result<String, ZitadelError> {
+        let pid = self.cfg.project_id.clone();
+        self.add_grant_to(user_id, &pid, role_keys).await
+    }
+
+    /// Add a grant on ANY project (one per user+project): POST /users/{id}/grants
+    /// -> userGrantId. This is how "user U can use application P as roles R" is
+    /// recorded in the multi-app model.
+    pub async fn add_grant_to(&self, user_id: &str, project_id: &str, role_keys: &[String]) -> Result<String, ZitadelError> {
         let url = format!("{}/management/v1/users/{}/grants", self.cfg.issuer, user_id);
-        let body = json!({ "projectId": self.cfg.project_id, "roleKeys": role_keys });
+        let body = json!({ "projectId": project_id, "roleKeys": role_keys });
         let v = self.post_json(&url, &body).await?;
         Ok(v.get("userGrantId").and_then(Value::as_str).unwrap_or_default().to_string())
     }
@@ -116,5 +144,13 @@ mod tests {
         assert_eq!(queries.len(), 2);
         assert_eq!(queries[0]["projectIdQuery"]["projectId"], "p1");
         assert_eq!(queries[1]["roleKeyQuery"]["roleKey"], "chat.admin");
+    }
+
+    #[test]
+    fn project_grants_query_filters_by_project_only() {
+        let body = super::project_grants_search_body("p1");
+        let queries = body.get("queries").and_then(Value::as_array).unwrap();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0]["projectIdQuery"]["projectId"], "p1");
     }
 }
