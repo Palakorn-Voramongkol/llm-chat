@@ -5,7 +5,8 @@ import type { GroupingState, VisibilityState } from "@tanstack/react-table";
 import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
 import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
-import { buildColumns, type Lifecycle, type AppAccess } from "@/components/users/columns";
+import { Boxes } from "lucide-react";
+import { buildColumns, roleChipFull, type Lifecycle, type AppAccess } from "@/components/users/columns";
 import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
@@ -30,6 +31,8 @@ export default function UsersPage() {
   // "—"). Grouping is preserved (not flattened) so the column can show which
   // roles apply to which app.
   const [rolesByUser, setRolesByUser] = useState<Map<string, AppAccess[]>>(new Map());
+  // projectId -> application name, for labelling a user's grants by app.
+  const [projectNames, setProjectNames] = useState<Map<string, string>>(new Map());
   const [editTarget, setEditTarget] = useState<User | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<User | null>(null);
   const [grantsTarget, setGrantsTarget] = useState<User | null>(null);
@@ -93,6 +96,7 @@ export default function UsersPage() {
     try {
       const pl = await api.get<AppProjectList>("/api/projects");
       for (const p of pl.result ?? []) nameByProject.set(p.id, p.name || p.id);
+      setProjectNames(nameByProject);
     } catch {
       /* leave empty: ids will be shown raw as the group label */
     }
@@ -362,25 +366,36 @@ export default function UsersPage() {
                   );
                 })()}
               </PanelSection>
-              <PanelSection title="Access (grants)">
+              {/* App access & roles — what applications this user can use and
+                  the roles they hold in each (read view; edit via "App access"). */}
+              <PanelSection title="App access & roles">
                 {selGrants === null ? (
                   <p className="text-muted-foreground text-sm">Loading…</p>
                 ) : selGrants.result.length === 0 ? (
-                  <p className="text-muted-foreground text-sm">No grants.</p>
+                  <p className="text-muted-foreground text-sm">
+                    No application access. Use “App access” to grant some.
+                  </p>
                 ) : (
-                  <ul className="space-y-2">
+                  <ul className="space-y-2.5">
                     {selGrants.result.map((g, i) => (
-                      <li key={g.grantId || g.projectId || i}>
-                        <div className="font-mono text-xs text-muted-foreground">
-                          {g.projectId}
+                      <li key={g.grantId || g.projectId || i}
+                        className="rounded-lg border p-2.5">
+                        <div className="flex items-center gap-2">
+                          <span aria-hidden
+                            className="flex size-6 shrink-0 items-center justify-center rounded-md bg-violet-500/10 text-violet-600">
+                            <Boxes className="size-3.5" />
+                          </span>
+                          <span className="text-sm font-medium">
+                            {projectNames.get(g.projectId) ?? g.projectId}
+                          </span>
                         </div>
-                        <div className="mt-1 flex flex-wrap gap-1">
+                        <div className="mt-1.5 flex flex-wrap gap-1 pl-8">
                           {g.roleKeys.length ? (
                             g.roleKeys.map((rk) => (
-                              <Badge key={rk} variant="secondary">{rk}</Badge>
+                              <span key={rk} className={roleChipFull(rk)}>{rk}</span>
                             ))
                           ) : (
-                            <span className="text-muted-foreground text-xs">—</span>
+                            <span className="text-muted-foreground text-xs">no roles</span>
                           )}
                         </div>
                       </li>

@@ -49,10 +49,16 @@ const STATE_LABEL: Partial<Record<UserState, string>> = {
 
 // A user's role chip palette: chat.admin = indigo, chat.user = emerald,
 // everything else = slate.
-function roleChipClass(key: string): string {
+export function roleChipClass(key: string): string {
   if (key === "chat.admin") return "bg-indigo-500/10 text-indigo-600";
   if (key === "chat.user") return "bg-emerald-500/10 text-emerald-600";
   return "bg-slate-500/10 text-slate-600";
+}
+
+// The full role-chip className (wrapper + palette) — shared by the Users column
+// and the per-user access panel.
+export function roleChipFull(key: string): string {
+  return `inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${roleChipClass(key)}`;
 }
 
 export function buildColumns(
