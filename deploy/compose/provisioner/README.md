@@ -39,6 +39,29 @@ curl -s -X POST "$PROVISION_ISSUER/management/v1/projects/$PROJECT_ID/members/_s
   -d '{}' | python -c 'import sys,json; [print(m["userId"], m["roles"]) for m in json.load(sys.stdin).get("result", [])]'
 ```
 
+## Create a new application (multi-app authorization)
+
+Each "application" is a Zitadel **project** with its own roles; users get
+per-app role grants (design `2026-06-18-multi-project-authorization-design.md`).
+The Console fully **manages** any application the runtime SA owns (roles, login
+clients, user grants), but it does **not** create new ones — the SA is kept
+least-privilege (creating + owning arbitrary projects would need org-wide
+`ORG_OWNER`, verified). New apps are created with this one-off runbook, which
+uses the **bootstrap IAM_OWNER** key to create the project AND make the SA its
+`PROJECT_OWNER` (same grant as the home project), so the Console can manage it:
+
+```bash
+# from the repo root, stack up
+docker compose run --rm \
+  -e APP_NAME=lumina \
+  -e APP_ROLES=lumina.viewer,lumina.editor \
+  --entrypoint python zitadel-init /app/new_app.py
+```
+
+`APP_NAME` is required; `APP_ROLES` (comma-separated) is optional initial roles.
+After it prints `DONE`, open `/applications/<id>` in the Console to manage the
+app — add/remove roles, register login clients, and assign users.
+
 ## Enable the Audit log (optional, opt-in — instance-level)
 
 The Console's Audit page is **capability-gated** and OFF by default: the
