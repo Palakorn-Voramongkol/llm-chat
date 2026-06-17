@@ -1,6 +1,7 @@
 "use client";
 import { usePathname } from "next/navigation";
 import { NAV, isActive } from "./nav";
+import { GlobalSearch } from "./GlobalSearch";
 import { ThemeToggle } from "./ThemeToggle";
 import { NotificationBell } from "./NotificationBell";
 
@@ -13,6 +14,7 @@ export function Topbar() {
         Console / <span className="text-foreground font-medium">{current?.label ?? "Home"}</span>
       </span>
       <span className="flex-1" />
+      <GlobalSearch />
       <NotificationBell />
       <ThemeToggle />
     </header>
