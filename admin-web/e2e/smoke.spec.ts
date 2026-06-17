@@ -1,7 +1,32 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { login } from "./auth";
 
 const FULL = process.env.ADMIN_IT === "1";
+
+// The table filter is collapsed behind a "Show filter" toggle and uses
+// "Search <field>…" placeholders. Open it if not already shown, then fill.
+async function filterBy(page: Page, placeholder: RegExp, value: string) {
+  const input = page.getByPlaceholder(placeholder);
+  if (!(await input.isVisible().catch(() => false))) {
+    await page.getByRole("button", { name: "Show filter" }).click();
+  }
+  await input.fill(value);
+}
+
+// The shell's OperatorBadge fetches /api/status; mocked (no-session) tests must
+// stub it or lib/api 401-redirects the page to /login before content renders.
+function mockOperatorStatus(page: Page, events: boolean) {
+  return page.route("**/api/status", (r) =>
+    r.fulfill({
+      json: {
+        operator: { userId: "op-1", name: "operator", roles: ["chat.admin"] },
+        session: { expiresAt: null },
+        health: { zitadel: true },
+        capabilities: { events, chatSessions: false },
+      },
+    }),
+  );
+}
 
 test("unauthenticated visit to /users redirects toward /login (BFF nav)", async ({ page }) => {
   // No session cookie: lib/api 401 -> window.location.assign('/login'),
@@ -23,6 +48,7 @@ test("audit page fails closed: capabilities.events=false shows the IAM_OWNER_VIE
   await page.route("**/api/me", (r) =>
     r.fulfill({ json: { userId: "op-1", name: "operator", roles: ["chat.admin"] } }),
   );
+  await mockOperatorStatus(page, false);
   await page.route("**/api/capabilities", (r) => r.fulfill({ json: { events: false } }));
   // If the page ever calls /api/events with the capability off, fail loudly.
   let eventsCalled = false;
@@ -44,6 +70,7 @@ test("audit page with capability on lists events", async ({ page }) => {
   await page.route("**/api/me", (r) =>
     r.fulfill({ json: { userId: "op-1", name: "operator", roles: ["chat.admin"] } }),
   );
+  await mockOperatorStatus(page, true);
   await page.route("**/api/capabilities", (r) => r.fulfill({ json: { events: true } }));
   await page.route("**/api/events*", (r) =>
     r.fulfill({
@@ -95,7 +122,7 @@ test.describe("authenticated operator flow", () => {
     await page.getByRole("button", { name: "Create" }).click();
 
     // New row appears (filter then assert).
-    await page.getByPlaceholder(/filter by username/i).fill(uname);
+    await filterBy(page, /search username/i, uname);
     await expect(page.getByText(uname)).toBeVisible();
   });
 
@@ -124,7 +151,7 @@ test.describe("authenticated operator flow", () => {
     await page.getByLabel("Display name").fill("PW Role");
     await page.getByRole("button", { name: "Create" }).click();
 
-    await page.getByPlaceholder(/filter by key/i).fill(key);
+    await filterBy(page, /search key/i, key);
     await expect(page.getByText(key)).toBeVisible();
 
     // Delete via the row action -> cascade confirm.
@@ -146,7 +173,7 @@ test.describe("authenticated operator flow", () => {
     await page.getByLabel("Username").fill(uname);
     await page.getByLabel("Display name").fill(uname);
     await page.getByRole("button", { name: "Create" }).click();
-    await page.getByPlaceholder(/filter by username/i).fill(uname);
+    await filterBy(page, /search username/i, uname);
     await expect(page.getByText(uname)).toBeVisible();
 
     // Open Access (grants), assign chat.user (POST create grant).
@@ -192,7 +219,7 @@ test.describe("authenticated operator flow", () => {
     // dismiss -> the secret is gone and NOT recoverable from the list page.
     await page.getByTestId("reveal-done").click();
     await expect(page.getByTestId("reveal-client-secret")).toHaveCount(0);
-    await page.getByPlaceholder(/filter by name/i).fill(appName);
+    await filterBy(page, /search name/i, appName);
     await expect(page.getByText(appName)).toBeVisible();
     // the row shows clientId but never the secret value.
     await expect(page.getByText(secretValue)).toHaveCount(0);
