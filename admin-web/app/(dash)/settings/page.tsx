@@ -106,7 +106,7 @@ export default function SettingsPage() {
         title="Project & Org"
         description="The platform project is editable here. Org policies are read-only and provisioner-managed — changes are made out-of-band, not in the Console."
       />
-      <OrgCard org={org} />
+      <OrgCard org={org} onSaved={load} />
       <ProjectCard project={project} onSaved={load} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <PolicyCard

@@ -12,14 +12,20 @@ fn update_project_body(name: &str, role_assertion: bool, role_check: bool, has_p
 }
 
 impl ZitadelClient {
-    /// GET /management/v1/orgs/me — the org the SA belongs to (name + id). The
-    /// SA can READ this (ORG_USER_MANAGER); RENAMING needs ORG_OWNER, which the
-    /// least-privilege SA does NOT have (use the org_rename runbook instead).
+    /// GET /management/v1/orgs/me — the org the SA belongs to (name + id).
     /// Unwrapped from its { "org": {...} } envelope.
     pub async fn get_org(&self) -> Result<Value, ZitadelError> {
         let url = format!("{}/management/v1/orgs/me", self.cfg.issuer);
         let v = self.get_json(&url).await?;
         Ok(v.get("org").cloned().unwrap_or(v))
+    }
+
+    /// PUT /management/v1/orgs/me {name} — rename the organization. Needs
+    /// `org.write`, granted to the SA via ORG_SETTINGS_MANAGER (minimal role;
+    /// NOT ORG_OWNER). Zitadel rejects a no-op rename with 400 "not changed".
+    pub async fn update_org(&self, name: &str) -> Result<(), ZitadelError> {
+        let url = format!("{}/management/v1/orgs/me", self.cfg.issuer);
+        self.put_json(&url, &json!({ "name": name })).await.map(|_| ())
     }
 
     /// List ALL projects in the org (each = one application in the multi-app

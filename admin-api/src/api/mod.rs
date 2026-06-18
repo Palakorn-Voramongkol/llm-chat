@@ -51,7 +51,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/apps", get(list_apps).post(create_oidc_app))
         .route("/api/apps/{appId}", get(get_app).put(update_oidc_config).delete(delete_app))
         .route("/api/apps/{appId}/secret", post(regenerate_app_secret))
-        .route("/api/org", get(get_org))
+        .route("/api/org", get(get_org).put(update_org))
         .route("/api/project", get(get_project).put(update_project))
         // Multi-application authorization (each project = one application).
         .route("/api/projects", get(list_projects))
@@ -464,10 +464,18 @@ struct UpdateProject {
     #[serde(default)] has_project_check: bool,
 }
 
-// The organization (name + id). Read-only in the Console: renaming needs
-// ORG_OWNER, kept off the least-privilege SA (use the org_rename runbook).
+// The organization (name + id). Renaming is allowed via ORG_SETTINGS_MANAGER on
+// the SA (minimal org role; NOT ORG_OWNER).
 async fn get_org(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(st.zitadel.get_org().await?))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateOrg { name: String }
+async fn update_org(_op: Operator, State(st): State<AppState>, Json(b): Json<UpdateOrg>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.update_org(&b.name).await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 async fn get_project(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {

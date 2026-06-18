@@ -294,7 +294,9 @@ def test_assign_admin_member_posts_user_manager():
     assert captured["url"].endswith("/management/v1/orgs/me/members")
     b = captured["body"]
     assert b["userId"] == "sa-123"
-    assert b["roles"] == ["ORG_USER_MANAGER"]  # least privilege, NOT ORG_OWNER
+    # least privilege: user manager + settings manager (org rename), NOT ORG_OWNER
+    assert b["roles"] == ["ORG_USER_MANAGER", "ORG_SETTINGS_MANAGER"]
+    assert "ORG_OWNER" not in b["roles"]
 
 
 def test_assign_admin_project_member_posts_project_owner():
@@ -335,7 +337,7 @@ def test_update_admin_member_puts_user_manager_to_member_path():
         provision.update_admin_member("boot-tok", {"h": "1"}, "sa-123")
     assert captured["method"] == "PUT"
     assert captured["url"].endswith("/management/v1/orgs/me/members/sa-123")
-    assert captured["body"]["roles"] == ["ORG_USER_MANAGER"]
+    assert captured["body"]["roles"] == ["ORG_USER_MANAGER", "ORG_SETTINGS_MANAGER"]
 
 
 def test_update_admin_member_raises_on_hard_error():

@@ -88,11 +88,11 @@ ADMIN_OIDC_POST_LOGOUT_URI = os.environ.get(
     "ADMIN_OIDC_POST_LOGOUT_URI", "http://localhost:3000/")
 # Least privilege (security review, spec §3/§5): the runtime admin-api SA is a
 # long-lived principal whose key is persisted to ./secrets, so it must NOT hold
-# standing ORG_OWNER. It gets only ORG_USER_MANAGER at the org level (users +
-# grants) plus PROJECT_OWNER on the llm-chat project (apps + roles). Org policies
-# are written by THIS one-time provisioner (bootstrap IAM_OWNER token), never by
-# the runtime SA.
-ADMIN_SA_ROLE = "ORG_USER_MANAGER"
+# standing ORG_OWNER. At the org level it gets ORG_USER_MANAGER (users + grants)
+# and ORG_SETTINGS_MANAGER (lets the Console rename the org — minimal role that
+# grants org.write, verified; NOT ORG_OWNER), plus PROJECT_OWNER per project
+# (apps + roles). Org POLICIES remain provisioner-managed (read-only in Console).
+ADMIN_SA_ORG_ROLES = ["ORG_USER_MANAGER", "ORG_SETTINGS_MANAGER"]
 ADMIN_SA_PROJECT_ROLE = "PROJECT_OWNER"
 
 # Audit is OPT-IN (spec §3/§11). Reading the org event log needs the
@@ -453,7 +453,7 @@ def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
     from assign_admin_project_member (PROJECT_OWNER), not from org ownership."""
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/orgs/me/members", headers=headers,
-        json_body={"userId": sa_user_id, "roles": [ADMIN_SA_ROLE]},
+        json_body={"userId": sa_user_id, "roles": ADMIN_SA_ORG_ROLES},
     )
     if not is_success(resp.status_code):
         resp.raise_for_status()
@@ -492,7 +492,7 @@ def assign_admin_project_member(token: str, headers: dict, project_id: str,
 
 
 def update_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
-    """Idempotently set an EXISTING org member's roles to [ADMIN_SA_ROLE]
+    """Idempotently set an EXISTING org member roles to ADMIN_SA_ORG_ROLES
     (ORG_USER_MANAGER). On the already-provisioned instance the SA is already an
     ORG_USER_MANAGER member, so this is a no-op there; it exists so a re-run can
     correct the org role if it ever drifted. The NEW least-privilege capability a
@@ -501,7 +501,7 @@ def update_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
     BOOTSTRAP IAM_OWNER token (org.member.write)."""
     resp = request_with_retry(
         "PUT", f"{ISSUER}/management/v1/orgs/me/members/{sa_user_id}",
-        headers=headers, json_body={"roles": [ADMIN_SA_ROLE]},
+        headers=headers, json_body={"roles": ADMIN_SA_ORG_ROLES},
     )
     if not is_success(resp.status_code):
         resp.raise_for_status()
@@ -638,7 +638,7 @@ def main() -> int:
     write_secret("admin_oidc_client_secret", admin_secret)
     print(f"[provision] admin: sa_user_id={admin_sa_id} "
           f"admin_oidc_client_id={admin_cid} "
-          f"org_role={ADMIN_SA_ROLE} project_role={ADMIN_SA_PROJECT_ROLE}")
+          f"org_roles={ADMIN_SA_ORG_ROLES} project_role={ADMIN_SA_PROJECT_ROLE}")
 
     # Opt-in Audit (spec §11): grant the SA the instance-level IAM_OWNER_VIEWER
     # so the Console's Audit page works and survives a clean reset. Off unless

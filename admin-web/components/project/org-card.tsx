@@ -1,15 +1,45 @@
+"use client";
+import { useEffect, useState } from "react";
 import { Building2 } from "lucide-react";
+import { toast } from "sonner";
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { api, ApiError } from "@/lib/api";
 import type { Org } from "@/lib/types";
 
-// Read-only view of the platform organization (design §9). The Console's service
-// account is least-privilege and CANNOT rename the org (that needs ORG_OWNER), so
-// there is NO write path here — only a display of the name + id and a runbook note.
-export function OrgCard({ org }: { org: Org | null }) {
+// The platform organization (design §9). Editable: the runtime SA holds
+// ORG_SETTINGS_MANAGER (minimal org.write role — NOT ORG_OWNER), so the Console
+// can rename the org. Org POLICIES remain provisioner-managed (read-only).
+export function OrgCard({ org, onSaved }: { org: Org | null; onSaved?: () => void }) {
+  const [name, setName] = useState(org?.name ?? "");
+  const [saving, setSaving] = useState(false);
+
+  // Re-seed the field whenever the loaded org changes.
+  useEffect(() => {
+    setName(org?.name ?? "");
+  }, [org?.name]);
+
+  const trimmed = name.trim();
+  const dirty = !!org && trimmed.length > 0 && trimmed !== (org.name ?? "");
+
+  async function save() {
+    if (!dirty) return;
+    setSaving(true);
+    try {
+      await api.put("/api/org", { name: trimmed });
+      toast.success("Organization renamed");
+      onSaved?.();
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Rename failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <Card data-testid="org-card">
       <CardHeader>
@@ -21,7 +51,7 @@ export function OrgCard({ org }: { org: Org | null }) {
           <CardTitle>Organization</CardTitle>
         </div>
         <CardDescription>
-          The platform organization that owns the project, users, and policies.
+          The platform organization that owns every project, user, and policy.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -30,20 +60,15 @@ export function OrgCard({ org }: { org: Org | null }) {
           <Input
             id="org-name"
             data-testid="org-name"
-            value={org?.name ?? "—"}
-            readOnly
-            disabled
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Organization name"
           />
         </div>
         <p className="text-muted-foreground font-mono text-xs">{org?.id ?? "—"}</p>
-        <p className="text-muted-foreground text-sm">
-          Renaming the organization requires ORG_OWNER. The Console&apos;s service
-          account is least-privilege, so rename it with the runbook:{" "}
-          <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">
-            docker compose run --rm -e ORG_NAME=&quot;…&quot; --entrypoint python
-            zitadel-init /app/org_rename.py
-          </code>
-        </p>
+        <Button data-testid="org-save" onClick={save} disabled={!dirty || saving}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
       </CardContent>
     </Card>
   );
