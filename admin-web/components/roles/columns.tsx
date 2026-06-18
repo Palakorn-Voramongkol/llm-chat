@@ -63,6 +63,7 @@ export function buildRoleColumns(
   return [
     {
       accessorKey: "key", header: "Key",
+      meta: { description: "The role's unique key — used in grants and embedded in access tokens (e.g. chat.user)." },
       cell: ({ row }) => (
         <span className="flex items-center gap-2.5">
           <span aria-hidden
@@ -73,9 +74,13 @@ export function buildRoleColumns(
         </span>
       ),
     },
-    { accessorKey: "displayName", header: "Display name" },
+    {
+      accessorKey: "displayName", header: "Display name",
+      meta: { description: "Human-friendly label for the role." },
+    },
     {
       accessorKey: "group", header: "Group",
+      meta: { description: "Optional grouping label for related roles; blank if ungrouped." },
       cell: ({ row }) =>
         row.original.group
           ? (
@@ -89,6 +94,7 @@ export function buildRoleColumns(
       id: "holders",
       header: "Holders",
       enableSorting: false,
+      meta: { description: "Users who currently hold this role. Hover an avatar for who; click to manage." },
       cell: ({ row }) => (
         <HolderAvatars
           role={row.original}

@@ -22,6 +22,7 @@ export const auditColumns: ColumnDef<AuditEvent>[] = [
     accessorFn: (e) =>
       e.editor?.displayName ?? e.editor?.userId ?? e.editor?.service ?? "—",
     header: "Editor",
+    meta: { description: "Who performed the action — a user (or the 'zitadel' system service for automated events)." },
     cell: ({ row, getValue }) => {
       const name = getValue<string>();
       const isService = !row.original.editor?.displayName
@@ -42,6 +43,7 @@ export const auditColumns: ColumnDef<AuditEvent>[] = [
     id: "eventType",
     accessorFn: (e) => eventLabel(e.type),
     header: "Event",
+    meta: { description: "What happened — the Zitadel event type (e.g. user.human.added, oidc_session.added)." },
     cell: ({ row, getValue }) => (
       <span className={eventChipClass(row.original.type?.type)}>
         {getValue<string>()}
@@ -58,6 +60,7 @@ export const auditColumns: ColumnDef<AuditEvent>[] = [
       return label ? `${label}${id ? ` · ${id}` : ""}` : id || "—";
     },
     header: "Aggregate",
+    meta: { description: "The object the event acted on — its type and id (user, project, org, …)." },
     cell: ({ row }) => {
       const e = row.original;
       const label =
@@ -76,6 +79,7 @@ export const auditColumns: ColumnDef<AuditEvent>[] = [
     id: "creationDate",
     accessorFn: (e) => e.creationDate ?? "",
     header: "Date",
+    meta: { description: "When the event occurred (your local time)." },
     cell: ({ getValue }) => {
       const raw = getValue<string>();
       if (!raw) return <span className="text-muted-foreground">—</span>;

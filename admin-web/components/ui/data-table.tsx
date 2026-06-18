@@ -31,6 +31,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Tooltip, TooltipContent, TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Markdown } from "@/components/ui/markdown";
 import {
   DropdownMenu, DropdownMenuContent,
   DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
@@ -437,7 +438,7 @@ export function DataTable<TData, TValue>({
                             <span className="inline-flex cursor-help items-center">{inner}</span>
                           </TooltipTrigger>
                           <TooltipContent className="max-w-xs text-xs font-normal normal-case tracking-normal">
-                            {desc}
+                            <Markdown>{desc}</Markdown>
                           </TooltipContent>
                         </Tooltip>
                       ) : (

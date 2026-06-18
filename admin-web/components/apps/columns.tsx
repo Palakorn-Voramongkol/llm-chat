@@ -42,6 +42,7 @@ export function buildAppColumns(h: AppColumnHandlers): ColumnDef<OidcApp>[] {
   return [
     {
       accessorKey: "name", header: "Name",
+      meta: { description: "The login client's display name." },
       cell: ({ row }) => (
         <span className="flex items-center gap-2.5">
           <span aria-hidden
@@ -56,6 +57,7 @@ export function buildAppColumns(h: AppColumnHandlers): ColumnDef<OidcApp>[] {
       id: "clientId",
       accessorFn: (a) => a.oidcConfig?.clientId ?? "",
       header: "Client ID",
+      meta: { description: "The OIDC client_id apps use to authenticate at the IdP." },
       cell: ({ row }) => (
         <code className="font-mono text-xs text-muted-foreground">
           {row.original.oidcConfig?.clientId ?? "—"}
@@ -67,6 +69,7 @@ export function buildAppColumns(h: AppColumnHandlers): ColumnDef<OidcApp>[] {
       accessorFn: (a) => appTypeLabel(a),
       header: "Type",
       filterFn: "equalsString",
+      meta: { description: "OIDC client type: WEB (server, confidential), NATIVE (desktop/mobile), or USER_AGENT (SPA)." },
       cell: ({ row }) => {
         const t = appTypeLabel(row.original);
         if (!t) return <span className="text-muted-foreground">—</span>;

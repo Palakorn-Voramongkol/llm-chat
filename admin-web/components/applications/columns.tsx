@@ -16,6 +16,7 @@ export function buildApplicationColumns(
   return [
     {
       accessorKey: "name", header: "Application",
+      meta: { description: "The application (a Zitadel project) — its name and id. Click the row to manage its roles, clients and users." },
       cell: ({ row }) => {
         const p = row.original;
         return (
@@ -36,6 +37,7 @@ export function buildApplicationColumns(
     },
     {
       id: "roles", header: "Roles", enableSorting: false,
+      meta: { description: "How many roles this application defines, and their keys." },
       cell: ({ row }) => {
         const meta = metaById?.get(row.original.id);
         if (!meta) return <span className="text-muted-foreground text-xs">…</span>;
@@ -64,6 +66,7 @@ export function buildApplicationColumns(
     },
     {
       id: "users", header: "Users", enableSorting: false,
+      meta: { description: "How many distinct users have access to this application." },
       cell: ({ row }) => {
         const meta = metaById?.get(row.original.id);
         if (!meta) return <span className="text-muted-foreground text-xs">…</span>;
