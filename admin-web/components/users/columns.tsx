@@ -68,6 +68,7 @@ export function buildColumns(
   return [
     {
       accessorKey: "userName", header: "User",
+      meta: { description: "The account's username (login name) and email. Click a row to open full details." },
       cell: ({ row }) => {
         const u = row.original;
         const display = u.displayName || u.userName;
@@ -91,6 +92,7 @@ export function buildColumns(
     },
     {
       accessorKey: "kind", header: "Type", filterFn: "equalsString",
+      meta: { description: "Human (a person who signs in via browser) or Machine (a service account / app server using a key)." },
       cell: ({ row }) => {
         const human = row.original.kind === "Human";
         return (
@@ -106,6 +108,7 @@ export function buildColumns(
     },
     {
       id: "roles", header: "App access & roles", enableSorting: false,
+      meta: { description: "The applications this user can access and the roles they hold in each. Edit via the row menu → App access." },
       cell: ({ row }) => {
         const apps = rolesByUser?.get(row.original.id);
         if (!apps || apps.length === 0) {
@@ -132,6 +135,7 @@ export function buildColumns(
     },
     {
       accessorKey: "state", header: "Status", filterFn: "equalsString",
+      meta: { description: "Account lifecycle: Active (usable), Initial (awaiting first sign-in / password set), Locked, or Inactive (deactivated)." },
       cell: ({ row }) => {
         const s = row.original.state;
         return (

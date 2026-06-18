@@ -5,7 +5,17 @@ import {
   getGroupedRowModel, getExpandedRowModel,
   useReactTable, type SortingState, type ColumnFiltersState,
   type VisibilityState, type OnChangeFn, type GroupingState, type ExpandedState,
+  type RowData,
 } from "@tanstack/react-table";
+
+// Column header tooltip: set `meta: { description }` on a column and the header
+// shows it on hover (see the Tooltip wrap in the header render below).
+declare module "@tanstack/react-table" {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData extends RowData, TValue> {
+    description?: string;
+  }
+}
 import { useState, type ReactNode } from "react";
 import {
   ArrowDown, ArrowUp, ArrowUpDown, ChevronRight, Columns3, Filter, Group, Rows3, X,
@@ -18,6 +28,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  Tooltip, TooltipContent, TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   DropdownMenu, DropdownMenuContent,
   DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
@@ -392,29 +405,43 @@ export function DataTable<TData, TValue>({
                 {hg.headers.map((h) => {
                   const canSort = h.column.getCanSort();
                   const dir = h.column.getIsSorted();
+                  const desc = h.column.columnDef.meta?.description;
+                  const inner = canSort ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="-ml-2.5 h-7 gap-1 px-2.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                      onClick={h.column.getToggleSortingHandler()}
+                    >
+                      {flexRender(h.column.columnDef.header, h.getContext())}
+                      {dir === "asc" ? (
+                        <ArrowUp className="size-3.5" />
+                      ) : dir === "desc" ? (
+                        <ArrowDown className="size-3.5" />
+                      ) : (
+                        <ArrowUpDown className="size-3.5 opacity-50" />
+                      )}
+                    </Button>
+                  ) : (
+                    <span>{flexRender(h.column.columnDef.header, h.getContext())}</span>
+                  );
                   return (
                     <TableHead
                       key={h.id}
                       className="sticky top-0 z-10 bg-card px-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground shadow-[inset_0_-1px_0_var(--border)]"
                     >
-                      {h.isPlaceholder ? null : canSort ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="-ml-2.5 h-7 gap-1 px-2.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase"
-                          onClick={h.column.getToggleSortingHandler()}
-                        >
-                          {flexRender(h.column.columnDef.header, h.getContext())}
-                          {dir === "asc" ? (
-                            <ArrowUp className="size-3.5" />
-                          ) : dir === "desc" ? (
-                            <ArrowDown className="size-3.5" />
-                          ) : (
-                            <ArrowUpDown className="size-3.5 opacity-50" />
-                          )}
-                        </Button>
+                      {h.isPlaceholder ? null : desc ? (
+                        // Hover the column name to see what the field means.
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-flex cursor-help items-center">{inner}</span>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs text-xs font-normal normal-case tracking-normal">
+                            {desc}
+                          </TooltipContent>
+                        </Tooltip>
                       ) : (
-                        flexRender(h.column.columnDef.header, h.getContext())
+                        inner
                       )}
                     </TableHead>
                   );
