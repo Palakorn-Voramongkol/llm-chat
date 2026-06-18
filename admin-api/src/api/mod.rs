@@ -43,7 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/events", get(list_events))
         .route("/api/capabilities", get(list_capabilities))
         .route("/api/stats", get(stats))
-        .route("/api/roles/{roleKey}", delete(delete_role))
+        .route("/api/roles/{roleKey}", put(update_role).delete(delete_role))
         .route("/api/roles/{roleKey}/holders", get(list_role_holders))
         .route("/api/users/{id}/keys", get(list_keys).post(create_key))
         .route("/api/users/{id}/keys/{keyId}", delete(delete_key))
@@ -56,7 +56,7 @@ pub fn router(state: AppState) -> Router {
         // Multi-application authorization (each project = one application).
         .route("/api/projects", get(list_projects))
         .route("/api/projects/{pid}/roles", get(list_project_roles).post(create_project_role))
-        .route("/api/projects/{pid}/roles/{roleKey}", delete(delete_project_role))
+        .route("/api/projects/{pid}/roles/{roleKey}", put(update_project_role).delete(delete_project_role))
         .route("/api/projects/{pid}/apps", get(list_project_apps))
         .route("/api/projects/{pid}/grants", get(list_project_grants))
         .route("/api/org/policies/login", get(get_login_policy))
@@ -324,6 +324,16 @@ async fn create_role(_op: Operator, State(st): State<AppState>, Json(b): Json<Cr
     Ok(Json(json!({ "ok": true })))
 }
 
+// Rename a role's display name + group (the key is immutable). Home project.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateRole { display_name: String, #[serde(default)] group: String }
+async fn update_role(_op: Operator, State(st): State<AppState>, Path(role_key): Path<String>, Json(b): Json<UpdateRole>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.update_role(&role_key, &b.display_name, &b.group).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 // DELETE cascades — strips this role from every grant (design §7).
 async fn delete_role(_op: Operator, State(st): State<AppState>, Path(role_key): Path<String>)
     -> Result<Json<Value>, ApiError> {
@@ -504,6 +514,12 @@ async fn list_project_roles(_op: Operator, State(st): State<AppState>, Path(pid)
 async fn create_project_role(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>, Json(b): Json<CreateRole>)
     -> Result<Json<Value>, ApiError> {
     st.zitadel.create_role_in(&pid, &b.role_key, &b.display_name, &b.group).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+// Rename a role's display name + group on an application (key immutable).
+async fn update_project_role(_op: Operator, State(st): State<AppState>, Path((pid, role_key)): Path<(String, String)>, Json(b): Json<UpdateRole>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.update_role_in(&pid, &role_key, &b.display_name, &b.group).await?;
     Ok(Json(json!({ "ok": true })))
 }
 // DELETE cascades — strips this role from every grant on the app (design §7).

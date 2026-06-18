@@ -2,13 +2,14 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { ArrowLeft, ShieldCheck, AppWindow, Trash2 } from "lucide-react";
+import { ArrowLeft, ShieldCheck, AppWindow, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { RoleCreateDialog } from "@/components/applications/role-create-dialog";
+import { RoleEditDialog } from "@/components/roles/role-edit-dialog";
 import { appTypeLabel } from "@/components/apps/columns";
 import { avatarGradient, initials } from "@/lib/avatar";
 import { api, ApiError } from "@/lib/api";
@@ -32,6 +33,7 @@ export default function ApplicationDetailPage() {
   const [clients, setClients] = useState<OidcApp[]>([]);
   const [grants, setGrants] = useState<ProjectGrant[]>([]);
   const [deleteRole, setDeleteRole] = useState<Role | null>(null);
+  const [editRole, setEditRole] = useState<Role | null>(null);
 
   // Refresh only the roles list (used after add/delete). Best-effort.
   const loadRoles = useCallback(async () => {
@@ -133,7 +135,17 @@ export default function ApplicationDetailPage() {
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      className={`text-muted-foreground hover:text-destructive shrink-0${r.group ? " ml-1.5" : " ml-auto"}`}
+                      className={`text-muted-foreground hover:text-foreground shrink-0${r.group ? " ml-1.5" : " ml-auto"}`}
+                      data-testid="app-role-edit"
+                      aria-label={`Edit role ${r.key}`}
+                      onClick={() => setEditRole(r)}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="text-muted-foreground hover:text-destructive ml-0.5 shrink-0"
                       data-testid="app-role-delete"
                       aria-label={`Delete role ${r.key}`}
                       onClick={() => setDeleteRole(r)}
@@ -235,6 +247,14 @@ export default function ApplicationDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      <RoleEditDialog
+        role={editRole}
+        endpoint={`/api/projects/${id}/roles/${encodeURIComponent(editRole?.key ?? "")}`}
+        open={!!editRole}
+        onOpenChange={(o) => !o && setEditRole(null)}
+        onSaved={loadRoles}
+      />
 
       <ConfirmDialog
         open={!!deleteRole}

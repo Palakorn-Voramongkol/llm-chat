@@ -10,6 +10,7 @@ import { avatarGradient, initials } from "@/lib/avatar";
 import type { Role, RoleHolder } from "@/lib/types";
 
 export interface RoleColumnHandlers {
+  onEdit: (r: Role) => void;
   onHolders: (r: Role) => void;
   onDelete: (r: Role) => void;
 }
@@ -117,6 +118,8 @@ export function buildRoleColumns(
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>Actions</DropdownMenuLabel>
+              <DropdownMenuItem data-testid="role-edit"
+                onSelect={() => h.onEdit(r)}>Edit</DropdownMenuItem>
               <DropdownMenuItem data-testid="role-holders"
                 onSelect={() => h.onHolders(r)}>View holders</DropdownMenuItem>
               <DropdownMenuSeparator />

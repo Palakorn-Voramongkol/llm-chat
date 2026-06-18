@@ -121,6 +121,21 @@ impl ZitadelClient {
         self.post_json(&url, &body).await.map(|_| ())
     }
 
+    /// Update a role on the HOME project. Thin alias over `update_role_in`.
+    pub async fn update_role(&self, role_key: &str, display_name: &str, group: &str) -> Result<(), ZitadelError> {
+        let pid = self.cfg.project_id.clone();
+        self.update_role_in(&pid, role_key, display_name, group).await
+    }
+
+    /// Rename a role's DISPLAY NAME (and group) on any owned project: PUT
+    /// /projects/{pid}/roles/{roleKey}. The `roleKey` itself is the immutable id
+    /// (Zitadel ignores a changed key here) — only displayName + group change.
+    pub async fn update_role_in(&self, project_id: &str, role_key: &str, display_name: &str, group: &str) -> Result<(), ZitadelError> {
+        let url = format!("{}/management/v1/projects/{}/roles/{}", self.cfg.issuer, project_id, role_key);
+        let body = json!({ "roleKey": role_key, "displayName": display_name, "group": group });
+        self.put_json(&url, &body).await.map(|_| ())
+    }
+
     /// Delete a role on the HOME project. Thin alias over `delete_role_in`.
     pub async fn delete_role(&self, role_key: &str) -> Result<(), ZitadelError> {
         let pid = self.cfg.project_id.clone();

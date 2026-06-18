@@ -7,6 +7,7 @@ import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { buildRoleColumns } from "@/components/roles/columns";
 import { CreateRoleDialog } from "@/components/roles/create-role-dialog";
+import { RoleEditDialog } from "@/components/roles/role-edit-dialog";
 import { HoldersDialog } from "@/components/roles/holders-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
@@ -20,6 +21,7 @@ export default function RolesPage() {
   const [holdersByKey, setHoldersByKey] =
     useState<Map<string, RoleHolder[]>>(new Map());
   const [holdersTarget, setHoldersTarget] = useState<Role | null>(null);
+  const [editTarget, setEditTarget] = useState<Role | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Role | null>(null);
   const [selected, setSelected] = useState<Role | null>(null);
   const [filterOpen, setFilterOpen] = useFilterOpen();
@@ -73,6 +75,7 @@ export default function RolesPage() {
 
   const columns = buildRoleColumns(
     {
+      onEdit: setEditTarget,
       onHolders: setHoldersTarget,
       onDelete: setDeleteTarget,
     },
@@ -163,6 +166,12 @@ export default function RolesPage() {
           })()}
         </DetailPanel>
       </div>
+      <RoleEditDialog
+        role={editTarget}
+        endpoint={`/api/roles/${encodeURIComponent(editTarget?.key ?? "")}`}
+        open={!!editTarget}
+        onOpenChange={(o) => !o && setEditTarget(null)}
+        onSaved={load} />
       <HoldersDialog role={holdersTarget} open={!!holdersTarget}
         onOpenChange={(o) => !o && setHoldersTarget(null)} />
       <ConfirmDialog open={!!deleteTarget}
