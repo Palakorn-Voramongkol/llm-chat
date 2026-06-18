@@ -13,6 +13,20 @@ async function filterBy(page: Page, placeholder: RegExp, value: string) {
   await input.fill(value);
 }
 
+// Delete a row by name via its action menu, so creating tests clean up after
+// themselves (no accumulating pw-* fixtures). Users and apps both use the
+// action-delete item + a "Delete" confirm button.
+async function deleteRow(page: Page, name: string) {
+  await page.getByRole("row", { name: new RegExp(name) })
+    .getByRole("button", { name: /open menu/i }).click();
+  await page.getByTestId("action-delete").click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  // Assert the success toast ("User deleted" / "Application deleted"), which is
+  // immediate — NOT the row vanishing: Zitadel's _search is eventually
+  // consistent, so the re-fetched list can briefly still include the deleted row.
+  await expect(page.getByText(/deleted/i)).toBeVisible();
+}
+
 // The shell's OperatorBadge fetches /api/status; mocked (no-session) tests must
 // stub it or lib/api 401-redirects the page to /login before content renders.
 function mockOperatorStatus(page: Page, events: boolean) {
@@ -124,6 +138,9 @@ test.describe("authenticated operator flow", () => {
     // New row appears (filter then assert).
     await filterBy(page, /search username/i, uname);
     await expect(page.getByText(uname)).toBeVisible();
+
+    // Clean up the throwaway user so runs don't accumulate fixtures.
+    await deleteRow(page, uname);
   });
 
   test("dashboard is the landing and renders stat cards", async ({ page }) => {
@@ -192,6 +209,9 @@ test.describe("authenticated operator flow", () => {
     await page.getByTestId("grant-role-chat.user").click(); // uncheck
     await page.getByTestId("grants-save").click();
     await expect(page.getByText("Access updated")).toBeVisible();
+
+    // Clean up the throwaway user.
+    await deleteRow(page, uname);
   });
 
   test("create OIDC app reveals the client secret exactly once", async ({ page }) => {
@@ -223,6 +243,9 @@ test.describe("authenticated operator flow", () => {
     await expect(page.getByText(appName)).toBeVisible();
     // the row shows clientId but never the secret value.
     await expect(page.getByText(secretValue)).toHaveCount(0);
+
+    // Clean up the throwaway OIDC client so runs don't accumulate apps.
+    await deleteRow(page, appName);
   });
 
   test("Project & Org settings renders editable project + read-only policies", async ({ page }) => {
