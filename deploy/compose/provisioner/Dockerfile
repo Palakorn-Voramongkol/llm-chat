@@ -9,5 +9,7 @@ COPY provision.py /app/provision.py
 # new_app.py — one-off runbook to create a new application (project) + grant the
 # SA PROJECT_OWNER, run via `--entrypoint python ... /app/new_app.py`.
 COPY new_app.py /app/new_app.py
+# org_rename.py — one-off runbook to rename the organization (bootstrap key).
+COPY org_rename.py /app/org_rename.py
 
 ENTRYPOINT ["python", "/app/provision.py"]

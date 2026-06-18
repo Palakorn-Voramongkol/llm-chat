@@ -162,6 +162,9 @@ export interface AppSecret {
 }
 
 // ---- Project & Org settings (design §9) ----
+// The platform org as read from GET /api/org. Read-only in the Console: renaming
+// requires ORG_OWNER and is done out-of-band with the runbook.
+export interface Org { id: string; name?: string; }
 export interface Project { id: string; name: string; projectRoleAssertion?: boolean; projectRoleCheck?: boolean; hasProjectCheck?: boolean; }
 export interface UpdateProjectInput { name: string; projectRoleAssertion: boolean; projectRoleCheck: boolean; hasProjectCheck: boolean; }
 // Org policies are READ-ONLY (design §9): no Update*Policy type. Duration fields

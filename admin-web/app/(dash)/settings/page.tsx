@@ -3,10 +3,12 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { KeyRound, Lock, LogIn } from "lucide-react";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { OrgCard } from "@/components/project/org-card";
 import { ProjectCard } from "@/components/project/project-card";
 import { PolicyCard, type PolicyRow } from "@/components/project/policy-card";
 import { api, ApiError } from "@/lib/api";
 import type {
+  Org,
   Project,
   PolicyEnvelope,
   LoginPolicy,
@@ -30,6 +32,7 @@ function yesNo(v: boolean | undefined): string {
 }
 
 export default function SettingsPage() {
+  const [org, setOrg] = useState<Org | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [login, setLogin] = useState<PolicyEnvelope<LoginPolicy>>(UNAVAILABLE);
   const [complexity, setComplexity] =
@@ -37,6 +40,12 @@ export default function SettingsPage() {
   const [lockout, setLockout] = useState<PolicyEnvelope<LockoutPolicy>>(UNAVAILABLE);
 
   const load = useCallback(async () => {
+    // Best-effort org read: on failure the card shows "—" (org name is informational).
+    try {
+      setOrg(await api.get<Org>("/api/org"));
+    } catch {
+      setOrg(null);
+    }
     try {
       setProject(await api.get<Project>("/api/project"));
     } catch (e) {
@@ -97,6 +106,7 @@ export default function SettingsPage() {
         title="Project & Org"
         description="The platform project is editable here. Org policies are read-only and provisioner-managed — changes are made out-of-band, not in the Console."
       />
+      <OrgCard org={org} />
       <ProjectCard project={project} onSaved={load} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <PolicyCard
