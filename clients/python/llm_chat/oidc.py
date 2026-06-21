@@ -173,7 +173,9 @@ def login(issuer: str, client_id: str, project: str, *, redirect_port: int = 847
     endpoints = discover(issuer)
     verifier, challenge = make_pkce()
     state = make_state()
-    redirect_uri = f"http://localhost:{redirect_port}/callback"
+    # RFC 8252: 127.0.0.1 loopback literal (not "localhost", which a hosts-file
+    # entry could hijack). The callback server binds 127.0.0.1.
+    redirect_uri = f"http://127.0.0.1:{redirect_port}/callback"
     scope = build_scope(project)
     url = build_authorize_url(endpoints.authorize, client_id=client_id,
                               redirect_uri=redirect_uri, scope=scope,

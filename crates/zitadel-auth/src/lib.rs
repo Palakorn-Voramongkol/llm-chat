@@ -172,6 +172,12 @@ impl JwksCache {
         };
 
         let mut validation = Validation::new(Algorithm::RS256);
+        // Fail closed: require these claims to be PRESENT, not just checked when
+        // present. Without this, set_issuer/set_audience only validate iss/aud
+        // *if* the token carries them, so a signature-valid token omitting `aud`
+        // would slip past audience pinning. `sub` is required so identity can
+        // never be blank (it feeds per-user confinement downstream).
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
         validation.set_issuer(&[self.cfg.issuer.as_str()]);
         let aud_refs: Vec<&str> = self.cfg.audience.iter().map(|s| s.as_str()).collect();
         validation.set_audience(&aud_refs);
@@ -183,7 +189,8 @@ impl JwksCache {
         let user_id = claims
             .get("sub")
             .and_then(|v| v.as_str())
-            .unwrap_or("")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AuthError::Invalid("missing or empty sub claim".into()))?
             .to_string();
         let org_id = claims
             .get("urn:zitadel:iam:user:resourceowner:id")
@@ -209,7 +216,10 @@ impl JwksCache {
 }
 
 /// Pull `Authorization: Bearer <token>` from a tungstenite handshake request.
-/// Falls back to `?token=…` query param.
+/// HEADER-ONLY by design: a JWT in a `?token=` URL would leak into access /
+/// proxy logs and browser history, so the query-param form is NOT accepted
+/// (fail-closed against token leakage). Every WS client — the python and rust
+/// chat clients and the admin-api `/control` caller — sends the header.
 pub fn extract_bearer(req: &Request) -> Result<String, AuthError> {
     if let Some(auth) = req.headers().get("authorization") {
         if let Ok(s) = auth.to_str() {
@@ -219,13 +229,6 @@ pub fn extract_bearer(req: &Request) -> Result<String, AuthError> {
             return Err(AuthError::Malformed);
         }
         return Err(AuthError::Malformed);
-    }
-    if let Some(query) = req.uri().query() {
-        for kv in query.split('&') {
-            if let Some(t) = kv.strip_prefix("token=") {
-                return Ok(t.to_string());
-            }
-        }
     }
     Err(AuthError::Missing)
 }

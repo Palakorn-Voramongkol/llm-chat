@@ -173,7 +173,8 @@ fn attachment_dir(sid: &str) -> std::path::PathBuf {
 
 fn sanitize_path_component(s: &str) -> String {
     // Drop anything that could escape the directory or look weird in a path.
-    s.chars()
+    let cleaned: String = s
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
                 c
@@ -181,7 +182,41 @@ fn sanitize_path_component(s: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    // `.` is allowed above, so an input of "", ".", or ".." would survive and
+    // escape the attachments dir — e.g. attachment_dir("..") = <data>/.. (the
+    // parent holding auth.token + the sqlite DBs), which cleanup_attachments
+    // would remove_dir_all. Fail closed those degenerate components to a safe
+    // placeholder so a path component can never traverse upward.
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "_".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Max bytes for a single decoded attachment. Bounds memory + disk for one
+/// `save_attachment` (the payload is base64 in a /control frame).
+const MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+
+#[cfg(test)]
+mod attachment_path_tests {
+    use super::sanitize_path_component;
+
+    #[test]
+    fn rejects_dot_dotdot_and_empty_so_no_upward_traversal() {
+        // These would otherwise resolve to the parent of the attachments dir.
+        assert_eq!(sanitize_path_component(".."), "_");
+        assert_eq!(sanitize_path_component("."), "_");
+        assert_eq!(sanitize_path_component(""), "_");
+    }
+
+    #[test]
+    fn maps_separators_and_keeps_safe_names() {
+        assert_eq!(sanitize_path_component("../../etc"), ".._.._etc"); // '/' -> '_'
+        assert_eq!(sanitize_path_component("s1700000000"), "s1700000000");
+        assert_eq!(sanitize_path_component("a.b-c_d"), "a.b-c_d");
+    }
 }
 
 fn save_attachment(
@@ -193,10 +228,26 @@ fn save_attachment(
     if !ATTACHMENT_ALLOWED_MIME.contains(&mime) {
         return Err(format!("MIME type not allowed: {}", mime));
     }
+    // Bound the encoded size before allocating the decode buffer (base64 is
+    // ~4/3 of the raw bytes) so an oversized payload is rejected cheaply.
+    if b64.len() / 4 * 3 > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "attachment too large: ~{} bytes (max {})",
+            b64.len() / 4 * 3,
+            MAX_ATTACHMENT_BYTES
+        ));
+    }
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| format!("base64 decode: {}", e))?;
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "attachment too large: {} bytes (max {})",
+            bytes.len(),
+            MAX_ATTACHMENT_BYTES
+        ));
+    }
     let dir = attachment_dir(sid);
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {}", dir.display(), e))?;
     let safe_name = sanitize_path_component(name);
@@ -1178,6 +1229,10 @@ fn do_spawn_session(
     cols: u16,
     rows: u16,
     cwd: Option<String>,
+    // When Some, the canonical per-user root the resolved `cwd` MUST stay under.
+    // Re-checked on the exact path we spawn in, closing the TOCTOU between
+    // open_cwd's proof and this spawn. None for cwd-less (inherit) sessions.
+    confine_root: Option<std::path::PathBuf>,
     state: &AppState,
     sink: &Arc<dyn EventSink>,
 ) -> Result<String, String> {
@@ -1207,6 +1262,18 @@ fn do_spawn_session(
                 .map_err(|e| format!("cwd {:?} invalid: {}", p, e))?;
             if !resolved.is_dir() {
                 return Err(format!("cwd {:?} is not a directory", resolved));
+            }
+            // Re-prove confinement on the SAME canonical path we are about to
+            // spawn in. open_cwd proved an earlier resolution, but a symlink
+            // component could be swapped in the interim (TOCTOU); without this
+            // re-check, that swap would escape the per-user root. Fail closed.
+            if let Some(root) = confine_root.as_deref() {
+                if !resolved.starts_with(root) {
+                    return Err(format!(
+                        "cwd {:?} escapes the per-user root {:?} — rejected (fail closed)",
+                        resolved, root
+                    ));
+                }
             }
             let s = resolved.to_string_lossy().into_owned();
             if let Err(e) = ensure_claude_trusts(&s) {
@@ -1315,7 +1382,7 @@ fn spawn_session(
     #[cfg(any(unix, windows))]
     {
         let sink: Arc<dyn EventSink> = Arc::new(TauriSink(app_handle));
-        return do_spawn_session(session_id, cols, rows, None, &state, &sink);
+        return do_spawn_session(session_id, cols, rows, None, None, &state, &sink);
     }
     #[allow(unreachable_code)]
     Err("Unsupported platform".into())
@@ -2030,8 +2097,21 @@ fn worker_bind_addr(bind: Option<String>, port: u16) -> Result<String, String> {
 }
 
 fn load_or_generate_auth_token() -> String {
+    // A short operator-supplied shared secret is brute-forceable; the auto-
+    // generated fallback is 32 random bytes (64 hex). Require comparable
+    // entropy and fail fast on a weak value rather than accept it (fail closed).
+    const MIN_AUTH_TOKEN_LEN: usize = 32;
     if let Ok(t) = std::env::var("LLM_CHAT_AUTH_TOKEN") {
         if !t.is_empty() {
+            if t.len() < MIN_AUTH_TOKEN_LEN {
+                eprintln!(
+                    "FATAL: LLM_CHAT_AUTH_TOKEN is too short ({} chars; min {}). \
+                     Use a high-entropy value, e.g. `openssl rand -hex 32`.",
+                    t.len(),
+                    MIN_AUTH_TOKEN_LEN
+                );
+                std::process::exit(1);
+            }
             return t;
         }
     }
@@ -2448,7 +2528,12 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                     Ok(p) => {
                                         tracing::info!(target: "backend::open", cwd = %p.display(), "open cwd confined; spawning claude");
                                         let cwd = Some(p.to_string_lossy().into_owned());
-                                        match do_spawn_session(id.clone(), 120, 30, cwd, st_handle, &sink_ctrl) {
+                                        // Canonical per-user root for the spawn-time confinement
+                                        // re-proof inside do_spawn_session (closes the TOCTOU).
+                                        let confine_root = user_id
+                                            .map(|uid| base.join(uid))
+                                            .and_then(|r| r.canonicalize().ok());
+                                        match do_spawn_session(id.clone(), 120, 30, cwd, confine_root, st_handle, &sink_ctrl) {
                                             Ok(_) => {
                                                 let _ = sink_ctrl.emit(
                                                     "external-session-added",

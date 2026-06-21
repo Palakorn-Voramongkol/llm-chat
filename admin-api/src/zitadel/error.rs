@@ -40,7 +40,16 @@ impl std::error::Error for ZitadelError {}
 /// `send_json`, so the boundary holds for every call site — present and future
 /// — without each one having to remember to validate. Fail closed.
 pub fn path_has_traversal(url: &str) -> bool {
-    url.split('/').any(|seg| seg == "." || seg == "..")
+    if url.split('/').any(|seg| seg == "." || seg == "..") {
+        return true;
+    }
+    // We only ever build clean resource PATHS (no query/fragment) against the
+    // pinned issuer host. A '?' or '#' here can only have come from a path-param
+    // id that decoded to one — appending a query string or truncating the path
+    // on the privileged service-account request. Zitadel ids are numeric
+    // snowflakes and role keys are dotted alphanumerics, so these chars never
+    // appear legitimately. Reject (fail closed, defense in depth).
+    url.contains('?') || url.contains('#')
 }
 
 /// PURE: map an upstream HTTP status (+ raw body for context) to a typed
@@ -79,6 +88,14 @@ mod tests {
         ));
         // A dotted value that is not a bare dot-segment must pass.
         assert!(!path_has_traversal("https://id.example.com/v2/users/a..b"));
+    }
+
+    #[test]
+    fn query_or_fragment_in_id_is_rejected() {
+        // An id that decoded to `?`/`#` would append a query / truncate the
+        // privileged path — we never build those, so reject.
+        assert!(path_has_traversal("https://id.example.com/v2/users/x?foo=bar"));
+        assert!(path_has_traversal("https://id.example.com/v2/users/x#frag"));
     }
 
     #[test]

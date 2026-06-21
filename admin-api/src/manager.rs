@@ -29,12 +29,20 @@ pub fn combine_control_replies(list: Value, instances: Value, clients: Value) ->
 
 /// Open the manager /control WS, send one command, read one reply.
 /// The hello frame ({"ok":true,"hello":"manager-control"}) is consumed first.
-/// Token rides the `?token=` query param (the manager's extract_bearer
-/// supports it; this stays inside the compose network).
+/// The token rides the `Authorization: Bearer` header (never the URL, so it
+/// can't leak into access/proxy logs) — same as the python/rust chat clients.
 pub async fn control_query(url: &str, token: &str, cmd: &str) -> Result<Value, String> {
-    let sep = if url.contains('?') { '&' } else { '?' };
-    let full = format!("{url}{sep}token={}", urlencode(token));
-    let (mut ws, _) = tokio_tungstenite::connect_async(&full)
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = url
+        .into_client_request()
+        .map_err(|e| format!("bad manager control URL {url}: {e}"))?;
+    request.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|e| format!("bad auth header: {e}"))?,
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .map_err(|e| format!("manager connect: {e}"))?;
 
@@ -72,13 +80,6 @@ async fn read_text(
     }
 }
 
-/// Minimal percent-encoding for a JWT in a query value (JWTs are base64url +
-/// dots; only '+'/'/'/'=' style chars would need escaping and never appear,
-/// but encode defensively anyway).
-fn urlencode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,11 +107,5 @@ mod tests {
         );
         assert_eq!(out["ok"], true); // one good reply still renders
         assert_eq!(out["list"]["error"], "backend down");
-    }
-
-    #[test]
-    fn jwt_urlencode_is_identity_for_base64url() {
-        let tok = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig-123_ABC";
-        assert_eq!(urlencode(tok), tok);
     }
 }

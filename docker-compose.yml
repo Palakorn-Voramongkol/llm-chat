@@ -54,7 +54,7 @@ services:
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINEKEY_TYPE: 1
       ZITADEL_FIRSTINSTANCE_MACHINEKEYPATH: /machinekey/zitadel-admin-sa.json
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"   # loopback-only: local-dev stack must not be internet-facing
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,7 +107,7 @@ services:
       # trace the full chat data path.
       RUST_LOG: ${RUST_LOG:-info}
     ports:
-      - "7777:7777"
+      - "127.0.0.1:7777:7777"   # loopback-only (local-dev)
     depends_on:
       zitadel-init:
         condition: service_completed_successfully
@@ -150,7 +150,7 @@ services:
       MANAGER_CONTROL_URL: ws://manager:7777/control
       RUST_LOG: ${RUST_LOG:-info}
     ports:
-      - "7676:7676"
+      - "127.0.0.1:7676:7676"   # loopback-only (local-dev)
     depends_on:
       zitadel-init:
         condition: service_completed_successfully
@@ -170,7 +170,7 @@ services:
       # (same-origin proxy: no CORS, SameSite=Lax cookie). In-network DNS name.
       ADMIN_API_ORIGIN: http://admin-api:7676
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"   # loopback-only (local-dev)
     depends_on:
       admin-api:
         condition: service_started
@@ -178,5 +178,10 @@ services:
 
 volumes:
   pgdata:
+  # Holds the bootstrap IAM_OWNER SA key (zitadel-admin-sa.json). It is all-
+  # powerful and only needed by the provisioner + the one-off runbooks
+  # (new_app.py / org_rename.py). SECURITY: after provisioning, rotate/destroy
+  # it — `docker compose down -v` wipes it between clean boots; for a long-lived
+  # stack, delete the key from this volume once the runtime SA keys exist.
   machinekey:
   genenv:

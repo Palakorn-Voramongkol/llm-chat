@@ -236,7 +236,9 @@ pub fn login(
     let endpoints = discover(issuer);
     let (verifier, challenge) = make_pkce();
     let state = make_state();
-    let redirect_uri = format!("http://localhost:{redirect_port}/callback");
+    // RFC 8252: 127.0.0.1 loopback literal (not "localhost", which a hosts-file
+    // entry could hijack). The callback server binds 127.0.0.1.
+    let redirect_uri = format!("http://127.0.0.1:{redirect_port}/callback");
     let scope = build_scope(project);
     let url = build_authorize_url(
         &endpoints.authorize,

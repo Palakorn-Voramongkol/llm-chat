@@ -677,6 +677,24 @@ fn extract_token(req: &Request) -> Option<String> {
     None
 }
 
+/// Redact any `token=`/`access_token=` value from a query string before it is
+/// logged, so a bearer/shared token presented in the URL never lands in logs
+/// (defense-in-depth — the JWT path is header-only, but a client could still
+/// append `?token=` and the legacy shared-token path still reads it).
+fn redact_query(q: &str) -> String {
+    q.split('&')
+        .map(|kv| {
+            let name = kv.split('=').next().unwrap_or("");
+            if name.eq_ignore_ascii_case("token") || name.eq_ignore_ascii_case("access_token") {
+                format!("{name}=<redacted>")
+            } else {
+                kv.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 /// Live registry entry for one connected /chat client. Mutated as the client
 /// sends questions; removed when the connection ends. Purely in-memory — the
 /// chat_question table has the persistent record of what they sent.
@@ -1108,7 +1126,7 @@ async fn handle_client(
     let req_path = path_holder.lock().unwrap().clone();
     let req_query = query_holder.lock().unwrap().clone();
     let user_id = user_id_holder.lock().unwrap().clone();
-    tracing::info!(target: "manager", path = %req_path, query = %req_query, user_id = ?user_id, "post-handshake routing");
+    tracing::info!(target: "manager", path = %req_path, query = %redact_query(&req_query), user_id = ?user_id, "post-handshake routing");
 
     if req_path == "/control" {
         let uid = match user_id {
@@ -1171,7 +1189,8 @@ async fn handle_client(
         return bridge_session(ws, state, &sid, "/qa/").await;
     }
     if req_path == "/" || req_path.is_empty() {
-        return handle_root(ws, state).await;
+        let is_admin = roles_holder.lock().unwrap().iter().any(|r| r == "chat.admin");
+        return handle_root(ws, state, user_id, is_admin).await;
     }
 
     let (mut sink, _) = ws.split();
@@ -2452,14 +2471,40 @@ async fn bridge_to_backend(
 
 // ---------- / (root) ----------
 
+/// Scope a flat session-id list to the caller. PURE (design §auth): `chat.admin`
+/// sees every session (the ops view, like /control); a shared-token/dev caller
+/// (no per-user identity, `caller_uid == None`) sees all; otherwise a plain
+/// `chat.user` sees ONLY sessions they own — so `/` can't enumerate other users'
+/// session ids/count/timing.
+fn scope_sessions_to_caller(
+    all: Vec<String>,
+    caller_uid: Option<&str>,
+    is_admin: bool,
+    owners: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    match (caller_uid, is_admin) {
+        (_, true) | (None, _) => all,
+        (Some(uid), false) => all
+            .into_iter()
+            .filter(|sid| owners.get(sid).map(|o| o == uid).unwrap_or(false))
+            .collect(),
+    }
+}
+
 async fn handle_root(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     state: SharedState,
+    caller_uid: Option<String>,
+    is_admin: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut sink, _) = ws.split();
-    let (ports, token) = {
+    let (ports, token, owners) = {
         let st = state.lock().await;
-        (st.instance_ports.clone(), st.auth_token.clone())
+        (
+            st.instance_ports.clone(),
+            st.auth_token.clone(),
+            st.session_to_owner.clone(),
+        )
     };
     let mut all: Vec<String> = Vec::new();
     for p in &ports {
@@ -2479,6 +2524,7 @@ async fn handle_root(
             let _ = bws.send(Message::Close(None)).await;
         }
     }
+    let all = scope_sessions_to_caller(all, caller_uid.as_deref(), is_admin, &owners);
     let _ = sink
         .send(Message::Text(
             serde_json::to_string(&all).unwrap_or_default(),
@@ -2490,6 +2536,34 @@ async fn handle_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_sessions_chat_user_sees_only_own() {
+        let mut owners = std::collections::HashMap::new();
+        owners.insert("s1".to_string(), "alice".to_string());
+        owners.insert("s2".to_string(), "bob".to_string());
+        let all = vec!["s1".to_string(), "s2".to_string(), "s3".to_string()];
+        // alice (chat.user) sees only her own session, never bob's or the
+        // owner-less s3.
+        assert_eq!(
+            scope_sessions_to_caller(all.clone(), Some("alice"), false, &owners),
+            vec!["s1".to_string()]
+        );
+        // chat.admin sees everything (ops view).
+        assert_eq!(
+            scope_sessions_to_caller(all.clone(), Some("alice"), true, &owners),
+            all
+        );
+        // shared-token / dev mode (no per-user identity) sees everything.
+        assert_eq!(scope_sessions_to_caller(all.clone(), None, false, &owners), all);
+    }
+
+    #[test]
+    fn redact_query_hides_token_keeps_other_params() {
+        assert_eq!(redact_query("token=secret.jwt.sig&cwd=svc"), "token=<redacted>&cwd=svc");
+        assert_eq!(redact_query("Access_Token=abc"), "Access_Token=<redacted>");
+        assert_eq!(redact_query("cwd=svc"), "cwd=svc");
+    }
 
     #[test]
     fn require_addr_errors_when_none() {

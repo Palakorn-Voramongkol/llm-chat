@@ -318,7 +318,9 @@ pub async fn login(state: State<'_, AppState>) -> Result<Identity, String> {
     let endpoints = discover(&cfg.issuer).await;
     let (verifier, challenge) = make_pkce();
     let st = make_state();
-    let redirect_uri = format!("http://localhost:{LOOPBACK_PORT}/callback");
+    // RFC 8252: 127.0.0.1 loopback literal (not "localhost", which a hosts-file
+    // entry could hijack). The callback server binds 127.0.0.1.
+    let redirect_uri = format!("http://127.0.0.1:{LOOPBACK_PORT}/callback");
     let url = build_authorize_url(
         &endpoints.authorize,
         &client_id,

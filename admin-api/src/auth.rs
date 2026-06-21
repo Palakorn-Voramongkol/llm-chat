@@ -131,6 +131,10 @@ pub async fn callback(
         roles: principal.roles.clone(),
     };
     let _ = session.remove::<String>("pkce_verifier").await;
+    // Privilege transition: regenerate the session id so a pre-auth session
+    // cookie an attacker may have planted on the victim cannot be fixated across
+    // the unauthenticated -> operator elevation.
+    let _ = session.cycle_id().await;
     if session.insert("operator", &op).await.is_err() {
         return (StatusCode::INTERNAL_SERVER_ERROR, "session write failed").into_response();
     }
