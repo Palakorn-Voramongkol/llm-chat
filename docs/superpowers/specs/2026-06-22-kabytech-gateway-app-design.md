@@ -3,8 +3,8 @@
 **Status:** designed 2026-06-22; not yet implemented. First slice of the kabytech
 gateway (the [pass-through design](2026-06-22-gateway-identity-passthrough-design.md)).
 
-**One-liner:** A standalone web app — `kabytech/backend` (Rust/axum OIDC Relying
-Party) + `kabytech/frontend` (Next.js 16 + Tailwind v4) — that logs an end-user
+**One-liner:** A standalone web app — `services/kabytech/backend` (Rust/axum OIDC Relying
+Party) + `services/kabytech/frontend` (Next.js 16 + Tailwind v4) — that logs an end-user
 in against Zitadel and establishes an authenticated session. It mirrors the
 `admin-api` ↔ `admin-web` pattern, gating on `chat.user` instead of `chat.admin`.
 
@@ -22,10 +22,10 @@ is added).
 ## Architecture
 
 ```
-Browser ─▶ kabytech/frontend (Next.js 16, :3001)
+Browser ─▶ services/kabytech/frontend (Next.js 16, :3001)
               │ same-origin proxy (next.config rewrites): /login /callback /logout /api/me
               ▼
-          kabytech/backend (Rust axum, :7670) ── OIDC Auth Code + PKCE ─▶ Zitadel (:8080)
+          services/kabytech/backend (Rust axum, :7670) ── OIDC Auth Code + PKCE ─▶ Zitadel (:8080)
                                                   uses the kabytech-gateway OIDC client
 ```
 
@@ -33,13 +33,13 @@ Same shape as `admin-web` ↔ `admin-api`. The backend is the OIDC Relying Party
 and the only holder of the client secret + session; the frontend is UI + a
 same-origin proxy (no CORS, `SameSite=Lax` cookie).
 
-## kabytech/backend (Rust axum) — mirrors `admin-api/src/auth.rs`
+## services/kabytech/backend (Rust axum) — mirrors `admin-api/src/auth.rs`
 
-**Crate:** new Cargo **workspace member** `kabytech/backend` (added to the root
+**Crate:** new Cargo **workspace member** `services/kabytech/backend` (added to the root
 `Cargo.toml` `members`, so compose Dockerfiles build it in the full workspace).
 
 **Files (one responsibility each):**
-- `kabytech/backend/Cargo.toml` — deps: `axum`, `tokio`, `tower-sessions`,
+- `services/kabytech/backend/Cargo.toml` — deps: `axum`, `tokio`, `tower-sessions`,
   `serde`, `serde_json`, `reqwest`, `base64`, `sha2`, `rand`, `url`, `tracing`,
   and the workspace `zitadel-auth` crate (shared JWKS verify).
 - `src/config.rs` — `KabyConfig` from env, **fail-fast** on any missing required
@@ -77,13 +77,13 @@ config; gate strictly on `chat.user`; `cookie_secure` defaults to the secure
 value (only set false for local plain-HTTP dev); identity + authz ride the
 **verified JWT**, never client input; the client secret never leaves the backend.
 
-## kabytech/frontend (Next.js 16.2.7 + Tailwind v4) — mirrors `admin-web`
+## services/kabytech/frontend (Next.js 16.2.7 + Tailwind v4) — mirrors `admin-web`
 
 **Files:**
-- `kabytech/frontend/package.json` — same Next/React/Tailwind versions as
+- `services/kabytech/frontend/package.json` — same Next/React/Tailwind versions as
   `admin-web` (`next@16.2.7`, `react@19`, `tailwindcss@4`, `@tailwindcss/postcss`),
   trimmed to what the MVP needs (no shadcn/tanstack/recharts yet).
-- `kabytech/frontend/next.config.ts` — security headers + `rewrites()` proxying
+- `services/kabytech/frontend/next.config.ts` — security headers + `rewrites()` proxying
   `/login`, `/callback`, `/logout`, `/api/:path*` to `KABY_BACKEND_ORIGIN`.
 - `app/layout.tsx`, `app/globals.css` (Tailwind v4), `app/page.tsx`.
 

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A standalone end-user login app — `kabytech/backend` (Rust/axum OIDC Relying Party gating `chat.user`) + `kabytech/frontend` (Next.js 16 + Tailwind v4) — that completes a browser login round-trip against Zitadel and establishes an authenticated session.
+**Goal:** A standalone end-user login app — `services/kabytech/backend` (Rust/axum OIDC Relying Party gating `chat.user`) + `services/kabytech/frontend` (Next.js 16 + Tailwind v4) — that completes a browser login round-trip against Zitadel and establishes an authenticated session.
 
 **Architecture:** Port the proven `admin-api` ↔ `admin-web` pattern: the backend owns the OIDC Auth Code + PKCE flow, the client secret, and a signed-cookie session; the frontend is UI + a same-origin proxy. The browser only ever holds an opaque session cookie. Gate on `chat.user` (vs admin-api's `chat.admin`).
 
@@ -15,7 +15,7 @@
 - **Same-origin-proxy redirect rule:** `KABY_PUBLIC_ORIGIN` is the **frontend** origin (`http://localhost:3001`), so the OIDC `redirect_uri = {KABY_PUBLIC_ORIGIN}/callback = http://localhost:3001/callback`. The browser must land on the proxied frontend origin or the `SameSite=Lax` cookie is dropped. (This corrects the design doc, which loosely said the backend origin.)
 - **Identity + authz ride the verified JWT** (`zitadel_auth::JwksCache::verify_sync` → `Principal`), never client input. The client secret never leaves the backend.
 - **Ports:** backend `127.0.0.1:7670`, frontend `127.0.0.1:3001` — loopback-only in compose, like every other service.
-- **Workspace:** `kabytech/backend` is a Cargo workspace member; its compose Dockerfile builds it in the full workspace (copy every member's manifest+src), mirroring `admin-api.Dockerfile`.
+- **Workspace:** `services/kabytech/backend` is a Cargo workspace member; its compose Dockerfile builds it in the full workspace (copy every member's manifest+src), mirroring `admin-api.Dockerfile`.
 - **Scopes requested at login:** `openid profile email offline_access`, `urn:zitadel:iam:org:project:id:{project_id}:aud`, `urn:zitadel:iam:org:projects:roles`.
 - **MVP only:** no chat forwarding, no `/chat` WS, no token-refresh loop, no upstream-IdP federation in app code.
 
@@ -23,14 +23,14 @@
 
 ### Task 1: Backend crate skeleton + fail-fast config
 
-Create the `kabytech/backend` crate as a workspace member with `KabyConfig`, ported from `admin-api/src/config.rs` (trimmed: no `sa_key_path`, no `manager_control_url`; OIDC vars renamed `KABY_*`).
+Create the `services/kabytech/backend` crate as a workspace member with `KabyConfig`, ported from `admin-api/src/config.rs` (trimmed: no `sa_key_path`, no `manager_control_url`; OIDC vars renamed `KABY_*`).
 
 **Files:**
-- Modify: `Cargo.toml` (root) — add `"kabytech/backend"` to `members`
-- Create: `kabytech/backend/Cargo.toml`
-- Create: `kabytech/backend/src/lib.rs`
-- Create: `kabytech/backend/src/config.rs`
-- Create: `kabytech/backend/src/main.rs` (minimal stub this task; fleshed out in Task 4)
+- Modify: `Cargo.toml` (root) — add `"services/kabytech/backend"` to `members`
+- Create: `services/kabytech/backend/Cargo.toml`
+- Create: `services/kabytech/backend/src/lib.rs`
+- Create: `services/kabytech/backend/src/config.rs`
+- Create: `services/kabytech/backend/src/main.rs` (minimal stub this task; fleshed out in Task 4)
 
 **Interfaces:**
 - Produces: `kabytech_backend::config::{require_var, parse_cookie_secure, KabyConfig}`. `KabyConfig` fields: `issuer, project_id, audience, oidc_client_id, oidc_client_secret, bind_addr, public_origin, allowed_origin, session_key, cookie_secure: bool`. `KabyConfig::from_map(get: &dyn Fn(&str)->Option<String>) -> Result<KabyConfig, String>` and `from_env()`.
@@ -40,10 +40,10 @@ Create the `kabytech/backend` crate as a workspace member with `KabyConfig`, por
 In root `Cargo.toml`, change the members line to:
 
 ```toml
-members = ["manager", "worker", "crates/zitadel-auth", "admin-api", "clients/rust", "kabytech/backend"]
+members = ["manager", "worker", "crates/zitadel-auth", "admin-api", "clients/rust", "services/kabytech/backend"]
 ```
 
-- [ ] **Step 2: Create `kabytech/backend/Cargo.toml`**
+- [ ] **Step 2: Create `services/kabytech/backend/Cargo.toml`**
 
 ```toml
 [package]
@@ -65,7 +65,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
-zitadel-auth = { path = "../../crates/zitadel-auth" }
+zitadel-auth = { path = "../../../crates/zitadel-auth" }
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "set-header"] }
@@ -80,7 +80,7 @@ time = "0.3"
 
 - [ ] **Step 3: Write the failing config tests**
 
-Create `kabytech/backend/src/config.rs` with ONLY this test module first (the impl in Step 5 makes it pass):
+Create `services/kabytech/backend/src/config.rs` with ONLY this test module first (the impl in Step 5 makes it pass):
 
 ```rust
 #[cfg(test)]
@@ -217,7 +217,7 @@ impl KabyConfig {
 }
 ```
 
-- [ ] **Step 6: Create `kabytech/backend/src/lib.rs`**
+- [ ] **Step 6: Create `services/kabytech/backend/src/lib.rs`**
 
 ```rust
 //! kabytech-backend — end-user login gateway (OIDC Relying Party). The browser
@@ -240,9 +240,9 @@ pub struct AppState {
 
 - [ ] **Step 7: Create stub `auth.rs`, `session.rs`, `main.rs` so the crate compiles**
 
-`kabytech/backend/src/auth.rs`: `// filled in Task 2/4`
-`kabytech/backend/src/session.rs`: `// filled in Task 3`
-`kabytech/backend/src/main.rs`:
+`services/kabytech/backend/src/auth.rs`: `// filled in Task 2/4`
+`services/kabytech/backend/src/session.rs`: `// filled in Task 3`
+`services/kabytech/backend/src/main.rs`:
 
 ```rust
 fn main() {
@@ -260,7 +260,7 @@ Expected: PASS (config tests green; crate compiles).
 - [ ] **Step 9: Commit**
 
 ```bash
-git add Cargo.toml Cargo.lock kabytech/backend
+git add Cargo.toml Cargo.lock services/kabytech/backend
 git commit -m "feat(kabytech-backend): crate skeleton + fail-fast KabyConfig"
 ```
 
@@ -271,7 +271,7 @@ git commit -m "feat(kabytech-backend): crate skeleton + fail-fast KabyConfig"
 Port the pure, unit-testable OIDC helpers from `admin-api/src/auth.rs`, requesting the same scopes.
 
 **Files:**
-- Modify: `kabytech/backend/src/auth.rs`
+- Modify: `services/kabytech/backend/src/auth.rs`
 
 **Interfaces:**
 - Consumes: `crate::config::KabyConfig`.
@@ -279,7 +279,7 @@ Port the pure, unit-testable OIDC helpers from `admin-api/src/auth.rs`, requesti
 
 - [ ] **Step 1: Write the failing tests**
 
-Replace `kabytech/backend/src/auth.rs` with the test module first:
+Replace `services/kabytech/backend/src/auth.rs` with the test module first:
 
 ```rust
 #[cfg(test)]
@@ -398,7 +398,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add kabytech/backend/src/auth.rs
+git add services/kabytech/backend/src/auth.rs
 git commit -m "feat(kabytech-backend): PKCE + authorize-URL OIDC helpers"
 ```
 
@@ -409,14 +409,14 @@ git commit -m "feat(kabytech-backend): PKCE + authorize-URL OIDC helpers"
 Port `admin-api/src/session.rs`, gating on `chat.user` (not `chat.admin`).
 
 **Files:**
-- Modify: `kabytech/backend/src/session.rs`
+- Modify: `services/kabytech/backend/src/session.rs`
 
 **Interfaces:**
 - Produces: `session::EndUser { user_id: String, name: String, roles: Vec<String> }` with `has(&self, role) -> bool` and an axum `FromRequestParts` impl that returns `Ok(EndUser)` only when the session has an `EndUser` with `chat.user` and a fresh `login_at`; else 401/403.
 
 - [ ] **Step 1: Write the failing test**
 
-Put this test module in `kabytech/backend/src/session.rs` (impl follows in Step 3):
+Put this test module in `services/kabytech/backend/src/session.rs` (impl follows in Step 3):
 
 ```rust
 #[cfg(test)]
@@ -518,7 +518,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add kabytech/backend/src/session.rs
+git add services/kabytech/backend/src/session.rs
 git commit -m "feat(kabytech-backend): EndUser session model + fail-closed chat.user extractor"
 ```
 
@@ -529,8 +529,8 @@ git commit -m "feat(kabytech-backend): EndUser session model + fail-closed chat.
 Add the network handlers (`login`, `callback`, `logout`, `api_me`) to `auth.rs`, and wire the router/state/JWKS/session layer in `main.rs` — ported from `admin-api/src/{auth.rs,main.rs}`, gating `chat.user`, redirecting to the frontend origin. Handlers are network code (verified by the Task 6 gated live smoke + the pure tests already passing).
 
 **Files:**
-- Modify: `kabytech/backend/src/auth.rs` (append handlers)
-- Modify: `kabytech/backend/src/main.rs` (full wiring)
+- Modify: `services/kabytech/backend/src/auth.rs` (append handlers)
+- Modify: `services/kabytech/backend/src/main.rs` (full wiring)
 
 **Interfaces:**
 - Consumes: `crate::AppState`, `crate::config::KabyConfig`, `crate::session::EndUser`, `crate::auth::{pkce_pair, build_authorize_url}`, `zitadel_auth::{JwksCache, ZitadelConfig}`.
@@ -799,7 +799,7 @@ Expected: PASS — all unit tests (config, pkce, authorize-url, session, issuer-
 - [ ] **Step 4: Commit**
 
 ```bash
-git add kabytech/backend/src/auth.rs kabytech/backend/src/main.rs Cargo.lock
+git add services/kabytech/backend/src/auth.rs services/kabytech/backend/src/main.rs Cargo.lock
 git commit -m "feat(kabytech-backend): OIDC login/callback/logout/me handlers + runnable wiring"
 ```
 
@@ -807,10 +807,10 @@ git commit -m "feat(kabytech-backend): OIDC login/callback/logout/me handlers + 
 
 ### Task 5: Frontend scaffold (Next.js 16 + Tailwind v4) + login/home page
 
-Create `kabytech/frontend` by copying `admin-web`'s build config (Next 16 is version-sensitive — copy, don't hand-write), trimmed to the MVP: one page with two states driven by `/api/me`, plus the same-origin proxy.
+Create `services/kabytech/frontend` by copying `admin-web`'s build config (Next 16 is version-sensitive — copy, don't hand-write), trimmed to the MVP: one page with two states driven by `/api/me`, plus the same-origin proxy.
 
 **Files:**
-- Create: `kabytech/frontend/package.json`, `next.config.ts`, `tsconfig.json`, `postcss.config.mjs`, `app/layout.tsx`, `app/globals.css`, `app/page.tsx`, `app/page.test.tsx`, `vitest.config.ts`, `vitest.setup.ts`, `.gitignore`, `eslint.config.mjs`
+- Create: `services/kabytech/frontend/package.json`, `next.config.ts`, `tsconfig.json`, `postcss.config.mjs`, `app/layout.tsx`, `app/globals.css`, `app/page.tsx`, `app/page.test.tsx`, `vitest.config.ts`, `vitest.setup.ts`, `.gitignore`, `eslint.config.mjs`
 
 **Interfaces:**
 - Consumes: backend routes `/login`, `/logout`, `/api/me` via the proxy.
@@ -819,26 +819,26 @@ Create `kabytech/frontend` by copying `admin-web`'s build config (Next 16 is ver
 - [ ] **Step 1: Copy the build/config scaffold from admin-web**
 
 ```bash
-mkdir -p kabytech/frontend/app
-cp admin-web/tsconfig.json kabytech/frontend/tsconfig.json
-cp admin-web/postcss.config.mjs kabytech/frontend/postcss.config.mjs
-cp admin-web/eslint.config.mjs kabytech/frontend/eslint.config.mjs
-cp admin-web/.gitignore kabytech/frontend/.gitignore
-cp admin-web/vitest.config.ts kabytech/frontend/vitest.config.ts
-cp admin-web/vitest.setup.ts kabytech/frontend/vitest.setup.ts
+mkdir -p services/kabytech/frontend/app
+cp admin-web/tsconfig.json services/kabytech/frontend/tsconfig.json
+cp admin-web/postcss.config.mjs services/kabytech/frontend/postcss.config.mjs
+cp admin-web/eslint.config.mjs services/kabytech/frontend/eslint.config.mjs
+cp admin-web/.gitignore services/kabytech/frontend/.gitignore
+cp admin-web/vitest.config.ts services/kabytech/frontend/vitest.config.ts
+cp admin-web/vitest.setup.ts services/kabytech/frontend/vitest.setup.ts
 ```
 
 Do **NOT** copy `admin-web/app/globals.css` — it `@import`s `tw-animate-css` and
 `shadcn/tailwind.css`, which kabytech does not depend on (the build would fail).
 Write a minimal Tailwind v4 stylesheet instead:
 
-`kabytech/frontend/app/globals.css`:
+`services/kabytech/frontend/app/globals.css`:
 
 ```css
 @import "tailwindcss";
 ```
 
-- [ ] **Step 2: Write `kabytech/frontend/package.json`** (trimmed — no shadcn/tanstack/recharts)
+- [ ] **Step 2: Write `services/kabytech/frontend/package.json`** (trimmed — no shadcn/tanstack/recharts)
 
 ```json
 {
@@ -875,7 +875,7 @@ Write a minimal Tailwind v4 stylesheet instead:
 }
 ```
 
-- [ ] **Step 3: Write `kabytech/frontend/next.config.ts`** (proxy → backend; security headers)
+- [ ] **Step 3: Write `services/kabytech/frontend/next.config.ts`** (proxy → backend; security headers)
 
 ```ts
 import type { NextConfig } from "next";
@@ -907,7 +907,7 @@ const nextConfig: NextConfig = {
 export default nextConfig;
 ```
 
-- [ ] **Step 4: Write `kabytech/frontend/app/layout.tsx`** (minimal — no shadcn)
+- [ ] **Step 4: Write `services/kabytech/frontend/app/layout.tsx`** (minimal — no shadcn)
 
 ```tsx
 import type { Metadata } from "next";
@@ -927,7 +927,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
 }
 ```
 
-- [ ] **Step 5: Write the failing component test `kabytech/frontend/app/page.test.tsx`**
+- [ ] **Step 5: Write the failing component test `services/kabytech/frontend/app/page.test.tsx`**
 
 ```tsx
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -956,10 +956,10 @@ describe("kabytech login page", () => {
 
 - [ ] **Step 6: Run to verify fail**
 
-Run: `cd kabytech/frontend && pnpm install && pnpm test`
+Run: `cd services/kabytech/frontend && pnpm install && pnpm test`
 Expected: FAIL (`./page` has no default export yet).
 
-- [ ] **Step 7: Write `kabytech/frontend/app/page.tsx`**
+- [ ] **Step 7: Write `services/kabytech/frontend/app/page.tsx`**
 
 ```tsx
 "use client";
@@ -1008,13 +1008,13 @@ export default function Page() {
 
 - [ ] **Step 8: Run to verify pass + build**
 
-Run: `cd kabytech/frontend && pnpm test && pnpm run build`
+Run: `cd services/kabytech/frontend && pnpm test && pnpm run build`
 Expected: PASS (2 tests) and a successful standalone build.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add kabytech/frontend
+git add services/kabytech/frontend
 git commit -m "feat(kabytech-frontend): Next.js 16 login/home page + same-origin proxy"
 ```
 
@@ -1049,8 +1049,8 @@ COPY admin-api/Cargo.toml ./admin-api/Cargo.toml
 COPY admin-api/src ./admin-api/src
 COPY clients/rust/Cargo.toml ./clients/rust/Cargo.toml
 COPY clients/rust/src ./clients/rust/src
-COPY kabytech/backend/Cargo.toml ./kabytech/backend/Cargo.toml
-COPY kabytech/backend/src ./kabytech/backend/src
+COPY services/kabytech/backend/Cargo.toml ./services/kabytech/backend/Cargo.toml
+COPY services/kabytech/backend/src ./services/kabytech/backend/src
 RUN cargo build --release --locked -p kabytech-backend
 
 FROM debian:bookworm-slim
@@ -1103,7 +1103,7 @@ EXPOSE 3000
 CMD ["node", "server.js"]
 ```
 
-(Generate the lockfile first: `cd kabytech/frontend && pnpm install` so `pnpm-lock.yaml` exists for `--frozen-lockfile`. If `kabytech/frontend/public` does not exist, create it: `mkdir -p kabytech/frontend/public && touch kabytech/frontend/public/.gitkeep`.)
+(Generate the lockfile first: `cd services/kabytech/frontend && pnpm install` so `pnpm-lock.yaml` exists for `--frozen-lockfile`. If `services/kabytech/frontend/public` does not exist, create it: `mkdir -p services/kabytech/frontend/public && touch services/kabytech/frontend/public/.gitkeep`.)
 
 - [ ] **Step 4: Add the two compose services** to `docker-compose.yml`
 
@@ -1132,7 +1132,7 @@ CMD ["node", "server.js"]
 
   kabytech-frontend:
     build:
-      context: ./kabytech/frontend
+      context: ./services/kabytech/frontend
       dockerfile: ../../deploy/compose/kabytech-frontend.Dockerfile
     environment:
       NODE_ENV: production
@@ -1184,7 +1184,7 @@ git commit -m "feat(kabytech): compose services + dev redirect URI + login smoke
 ## Final verification (after all tasks)
 
 1. **Backend unit tests green:** `cargo test -p kabytech-backend` → config, pkce, authorize-url, session, issuer-match all pass.
-2. **Frontend tests + build green:** `cd kabytech/frontend && pnpm test && pnpm run build`.
+2. **Frontend tests + build green:** `cd services/kabytech/frontend && pnpm test && pnpm run build`.
 3. **Login round-trip works** (Task 6 Step 6): sign in as `chatter` → see the user → `/api/me` 200 → log out → `/api/me` 401.
 4. **Per-user attribution still holds:** after a kabytech login chats (later phase), the Console attributes usage to that user's `sub` — out of scope for this MVP but unblocked by it.
 
