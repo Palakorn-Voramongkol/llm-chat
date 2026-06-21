@@ -67,6 +67,27 @@ where
     }
 }
 
+/// A chat.admin operator session (for /invite). Builds on the EndUser extractor
+/// (same store key + lifetime gate) but additionally requires chat.admin. Fail
+/// closed: a non-admin authenticated user gets 403.
+pub struct Operator(pub EndUser);
+
+impl<S> FromRequestParts<S> for Operator
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, &'static str);
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let user = EndUser::from_request_parts(parts, state).await?;
+        if user.has("chat.admin") {
+            Ok(Operator(user))
+        } else {
+            Err((StatusCode::FORBIDDEN, "operator lacks chat.admin"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

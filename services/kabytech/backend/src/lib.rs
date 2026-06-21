@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod config;
 pub mod session;
+pub mod zitadel;
 
 use std::sync::Arc;
 use zitadel_auth::JwksCache;
@@ -13,4 +14,5 @@ pub struct AppState {
     pub cfg: config::KabyConfig,
     pub jwks: JwksCache,
     pub http: Arc<reqwest::Client>,
+    pub zitadel: zitadel::Zitadel,
 }

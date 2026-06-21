@@ -83,7 +83,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let state = AppState { cfg: cfg.clone(), jwks, http: Arc::new(http) };
+    let http = Arc::new(http); // shadow Client -> Arc<Client>, shared with Zitadel
+    let zitadel = kabytech_backend::zitadel::Zitadel {
+        http: http.clone(),
+        issuer: cfg.issuer.clone(),
+        project_id: cfg.project_id.clone(),
+        sa_key_path: cfg.sa_key_path.clone(),
+    };
+    let state = AppState { cfg: cfg.clone(), jwks, http: http.clone(), zitadel };
 
     let session_layer = SessionManagerLayer::new(MemoryStore::default())
         .with_name("id")

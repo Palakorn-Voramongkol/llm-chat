@@ -198,6 +198,7 @@ mod tests {
             public_origin: "http://localhost:3001".into(),
             allowed_origin: "http://localhost:3001".into(),
             session_key: "k".into(),
+            sa_key_path: "/x".into(),
             cookie_secure: true,
         }
     }

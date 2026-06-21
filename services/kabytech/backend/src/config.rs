@@ -33,6 +33,9 @@ pub struct KabyConfig {
     pub public_origin: String,
     pub allowed_origin: String,
     pub session_key: String,
+    /// Path to the kabytech-login SA JSON key (jwt-bearer → Management token for
+    /// invite/accept; Phase 2 Session API). Required.
+    pub sa_key_path: String,
     pub cookie_secure: bool,
 }
 
@@ -54,6 +57,7 @@ impl KabyConfig {
             public_origin,
             allowed_origin: require_var("KABY_ALLOWED_ORIGIN", get("KABY_ALLOWED_ORIGIN"))?,
             session_key: require_var("KABY_SESSION_KEY", get("KABY_SESSION_KEY"))?,
+            sa_key_path: require_var("KABY_SA_KEY_PATH", get("KABY_SA_KEY_PATH"))?,
             cookie_secure: parse_cookie_secure(get("KABY_COOKIE_SECURE")),
         })
     }
@@ -83,6 +87,7 @@ mod tests {
             ("KABY_PUBLIC_ORIGIN", "http://localhost:3001/"),
             ("KABY_ALLOWED_ORIGIN", "http://localhost:3001"),
             ("KABY_SESSION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            ("KABY_SA_KEY_PATH", "/secrets/kabytech-login-key.json"),
         ])
     }
 
