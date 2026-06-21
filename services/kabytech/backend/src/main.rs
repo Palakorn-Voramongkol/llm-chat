@@ -99,7 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_expiry(Expiry::OnInactivity(time::Duration::hours(8)));
 
     let app = Router::new()
-        .route("/login", get(auth::login))
+        .route("/api/login/start", get(auth::login_start))
+        .route("/api/login", post(auth::api_login))
         .route("/callback", get(auth::callback))
         .route("/logout", get(auth::logout))
         .route("/api/me", get(auth::api_me))

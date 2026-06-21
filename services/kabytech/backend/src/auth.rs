@@ -57,7 +57,7 @@ use tower_sessions::Session;
 use crate::session::EndUser;
 use crate::AppState;
 
-pub async fn login(State(st): State<AppState>, session: Session) -> Response {
+pub async fn login_start(State(st): State<AppState>, session: Session) -> Response {
     let seed = b64url(&rand::random::<[u8; 16]>());
     let (verifier, challenge) = pkce_pair(&seed);
     let state = b64url(&rand::random::<[u8; 16]>());
@@ -246,6 +246,33 @@ pub async fn api_accept(State(st): State<AppState>, Json(req): Json<AcceptReq>) 
         return (StatusCode::BAD_GATEWAY, e).into_response();
     }
     Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+// ---------------- custom login (identity UX Phase 2 — Session API) ----------------
+
+#[derive(Deserialize)]
+pub struct LoginReq {
+    pub auth_request: String,
+    pub login_name: String,
+    pub password: String,
+}
+
+/// Custom-login: create a Zitadel session (password check), finalize the OIDC
+/// auth request, and return the callback URL the browser follows to finish the
+/// code flow (-> /callback -> token exchange -> chat.user gate -> cookie).
+pub async fn api_login(State(st): State<AppState>, Json(req): Json<LoginReq>) -> Response {
+    let token = match st.zitadel.mint_token().await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    let (sid, stok) = match st.zitadel.create_session(&token, req.login_name.trim(), &req.password).await {
+        Ok(s) => s,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid credentials").into_response(),
+    };
+    match st.zitadel.finalize_auth_request(&token, &req.auth_request, &sid, &stok).await {
+        Ok(callback) => Json(serde_json::json!({ "callbackUrl": callback })).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
 }
 
 #[cfg(test)]
