@@ -280,6 +280,20 @@ export interface UsageRow {
   lastUsed: string | null;
 }
 
+export interface DailyRow {
+  userId: string | null;
+  day: string; // "YYYY-MM-DD"
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number;
+}
+
+export interface UsageDailyResponse {
+  ok?: boolean;
+  configured?: boolean;
+  days?: DailyRow[];
+}
+
 export interface UsageResponse {
   ok: boolean;
   users: UsageRow[];
