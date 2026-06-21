@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use kabytech_backend::config::KabyConfig;
 use kabytech_backend::{auth, AppState};
@@ -103,6 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/callback", get(auth::callback))
         .route("/logout", get(auth::logout))
         .route("/api/me", get(auth::api_me))
+        .route("/api/invite", post(auth::api_invite))
+        .route("/api/accept", post(auth::api_accept))
         .layer(session_layer)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

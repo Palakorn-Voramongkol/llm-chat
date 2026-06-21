@@ -67,6 +67,99 @@ impl Zitadel {
         let j: Value = resp.json().await.map_err(|e| format!("token json: {e}"))?;
         j["access_token"].as_str().map(String::from).ok_or_else(|| "no access_token".into())
     }
+
+    /// POST /v2/users/human → create the invited user (emails the invite link).
+    pub async fn create_invited_user(
+        &self, token: &str, email: &str, given: &str, family: &str, accept_base: &str,
+    ) -> Result<String, String> {
+        let resp = self
+            .http
+            .post(format!("{}/v2/users/human", self.issuer))
+            .bearer_auth(token)
+            .json(&invite_user_body(email, given, family, accept_base))
+            .send()
+            .await
+            .map_err(|e| format!("create user: {e}"))?;
+        let status = resp.status();
+        let body: Value = resp.json().await.map_err(|e| format!("create user json: {e}"))?;
+        if status.is_success() {
+            return body["userId"].as_str().map(String::from).ok_or_else(|| "no userId".into());
+        }
+        if status.as_u16() == 409 {
+            return Err("a user with that email already exists".into());
+        }
+        Err(format!("create user returned {status}: {body}"))
+    }
+
+    /// Grant exactly chat.user on the chat project (v1 mgmt grant). 409 == ok.
+    pub async fn grant_chat_user(&self, token: &str, user_id: &str) -> Result<(), String> {
+        let resp = self
+            .http
+            .post(format!("{}/management/v1/users/{}/grants", self.issuer, user_id))
+            .bearer_auth(token)
+            .json(&json!({ "projectId": self.project_id, "roleKeys": ["chat.user"] }))
+            .send()
+            .await
+            .map_err(|e| format!("grant: {e}"))?;
+        if resp.status().is_success() || resp.status().as_u16() == 409 {
+            Ok(())
+        } else {
+            Err(format!("grant returned {}", resp.status()))
+        }
+    }
+
+    /// Verify the emailed code (proves email ownership). v2:
+    /// POST /v2/users/{id}/email/verify { verificationCode }.
+    pub async fn verify_email(&self, token: &str, user_id: &str, code: &str) -> Result<(), String> {
+        let resp = self
+            .http
+            .post(format!("{}/v2/users/{}/email/verify", self.issuer, user_id))
+            .bearer_auth(token)
+            .json(&json!({ "verificationCode": code }))
+            .send()
+            .await
+            .map_err(|e| format!("verify email: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err("invalid or expired invite code".into())
+        }
+    }
+
+    /// Set the user's password (SA-authorized; valid while the user is Initial).
+    pub async fn set_password(&self, token: &str, user_id: &str, password: &str) -> Result<(), String> {
+        let resp = self
+            .http
+            .put(format!("{}/management/v1/users/{}/password", self.issuer, user_id))
+            .bearer_auth(token)
+            .json(&set_password_body(password))
+            .send()
+            .await
+            .map_err(|e| format!("set password: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("set password returned {}", resp.status()))
+        }
+    }
+}
+
+/// PURE: the v2 create-human body for an INVITE — email with a sendCode
+/// urlTemplate pointing at kabytech /accept; NO password (set on accept).
+pub fn invite_user_body(email: &str, given: &str, family: &str, accept_base: &str) -> Value {
+    let tmpl = format!(
+        "{accept_base}/accept?userID={{{{.UserID}}}}&code={{{{.Code}}}}&orgID={{{{.OrgID}}}}"
+    );
+    json!({
+        "username": email,
+        "profile": { "givenName": given, "familyName": family },
+        "email": { "email": email, "sendCode": { "urlTemplate": tmpl } },
+    })
+}
+
+/// PURE: the v1 set-password body (no forced change).
+pub fn set_password_body(password: &str) -> Value {
+    json!({ "newPassword": { "password": password, "changeRequired": false } })
 }
 
 #[cfg(test)]
@@ -77,5 +170,24 @@ mod tests {
     fn build_assertion_rejects_bad_pem() {
         let err = build_assertion("u", "k", "not a pem", "http://iss", 0).unwrap_err();
         assert!(err.to_lowercase().contains("pem") || err.to_lowercase().contains("key"));
+    }
+
+    #[test]
+    fn invite_user_body_carries_email_and_accept_url_template() {
+        let b = invite_user_body("a@b.c", "Ada", "Lovelace", "http://localhost:3001");
+        assert_eq!(b["username"], "a@b.c");
+        assert_eq!(b["profile"]["givenName"], "Ada");
+        assert_eq!(b["email"]["email"], "a@b.c");
+        let tmpl = b["email"]["sendCode"]["urlTemplate"].as_str().unwrap();
+        assert!(tmpl.starts_with("http://localhost:3001/accept?userID="));
+        assert!(tmpl.contains("{{.UserID}}") && tmpl.contains("{{.Code}}") && tmpl.contains("{{.OrgID}}"));
+        assert!(b.get("password").is_none()); // invite-only: no password at creation
+    }
+
+    #[test]
+    fn set_password_body_shape() {
+        let b = set_password_body("hunter2");
+        assert_eq!(b["newPassword"]["password"], "hunter2");
+        assert_eq!(b["newPassword"]["changeRequired"], false);
     }
 }

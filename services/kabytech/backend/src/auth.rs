@@ -180,6 +180,70 @@ fn b64_basic(id: &str, secret: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", enc(id), enc(secret)))
 }
 
+// ---------------- invitation + registration (identity UX Phase 1) ----------------
+
+use crate::session::Operator;
+
+#[derive(Deserialize)]
+pub struct InviteReq {
+    pub email: String,
+    pub given: Option<String>,
+    pub family: Option<String>,
+}
+
+/// chat.admin only (the Operator extractor enforces it). Creates the invited
+/// user (Zitadel emails the link) + grants chat.user.
+pub async fn api_invite(_op: Operator, State(st): State<AppState>, Json(req): Json<InviteReq>) -> Response {
+    let email = req.email.trim();
+    if email.is_empty() || !email.contains('@') {
+        return (StatusCode::BAD_REQUEST, "a valid email is required").into_response();
+    }
+    let token = match st.zitadel.mint_token().await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    let given = req.given.as_deref().unwrap_or("");
+    let family = req.family.as_deref().unwrap_or("");
+    let uid = match st
+        .zitadel
+        .create_invited_user(&token, email, given, family, &st.cfg.public_origin)
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => return (StatusCode::CONFLICT, e).into_response(),
+    };
+    if let Err(e) = st.zitadel.grant_chat_user(&token, &uid).await {
+        return (StatusCode::BAD_GATEWAY, e).into_response();
+    }
+    Json(serde_json::json!({ "ok": true, "userId": uid, "email": email })).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct AcceptReq {
+    pub user_id: String,
+    pub code: String,
+    pub password: String,
+}
+
+/// Unauthenticated by necessity, but fail-closed: the emailed code MUST verify
+/// (proves email ownership) before any password is set.
+pub async fn api_accept(State(st): State<AppState>, Json(req): Json<AcceptReq>) -> Response {
+    if req.password.len() < 8 {
+        return (StatusCode::BAD_REQUEST, "password must be at least 8 characters").into_response();
+    }
+    let token = match st.zitadel.mint_token().await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    if let Err(e) = st.zitadel.verify_email(&token, &req.user_id, &req.code).await {
+        return (StatusCode::FORBIDDEN, e).into_response(); // bad/expired code → reject
+    }
+    if let Err(e) = st.zitadel.set_password(&token, &req.user_id, &req.password).await {
+        return (StatusCode::BAD_GATEWAY, e).into_response();
+    }
+    Json(serde_json::json!({ "ok": true })).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
