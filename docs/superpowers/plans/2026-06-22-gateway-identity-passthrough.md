@@ -133,8 +133,9 @@ def create_grant_action(token: str, headers: dict, project_id: str) -> str:
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/actions",
         headers=headers, json_body=build_grant_action_body(project_id, ROLE_KEY))
-    if is_success(resp.status_code):
+    if resp.status_code == 200:
         return resp.json()["id"]
+    resp.raise_for_status()
     raise RuntimeError(f"create_grant_action unexpected status {resp.status_code}")
 
 
@@ -210,6 +211,14 @@ def test_kabytech_oidc_app_body_token_type_is_jwt():
     b = provision.build_kabytech_oidc_app_body(["https://gw.example/callback"], [])
     # JWT access tokens so the manager validates them via JWKS (not opaque).
     assert b["accessTokenType"] == "OIDC_TOKEN_TYPE_JWT"
+
+
+def test_kabytech_oidc_app_asserts_roles_in_access_token():
+    # The manager reads chat.user from the ACCESS token, and the chat project
+    # has projectRoleAssertion=false, so the app must force role assertion or
+    # chat.user never rides in the token and the manager 403s every end-user.
+    b = provision.build_kabytech_oidc_app_body(["https://gw.example/callback"], [])
+    assert b["accessTokenRoleAssertion"] is True
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -245,25 +254,33 @@ def build_kabytech_oidc_app_body(redirect_uris: list, post_logout_uris: list) ->
         "appType": "OIDC_APP_TYPE_WEB",
         "authMethodType": "OIDC_AUTH_METHOD_TYPE_BASIC",
         "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
+        # Force chat.user into the ACCESS-token JWT (the chat project has
+        # projectRoleAssertion=false); without this the manager 403s end-users.
+        "accessTokenRoleAssertion": True,
+        "idTokenRoleAssertion": True,
         "devMode": False,
     }
 
 
 def create_kabytech_oidc_app(token: str, headers: dict, project_id: str):
     """Register the kabytech gateway's confidential OIDC web client. Returns
-    (clientId, clientSecret); the secret is shown ONCE (clean-boot contract)."""
+    (clientId, clientSecret); the secret is shown ONCE (clean-boot contract).
+    Mirrors create_admin_oidc_app's status handling: 200 returns creds, 409 is
+    the clean-boot contract (is_success() conflates 200/409, so check 200
+    explicitly)."""
     body = build_kabytech_oidc_app_body(
         [KABYTECH_OIDC_REDIRECT_URI], [KABYTECH_OIDC_POST_LOGOUT_URI])
     resp = request_with_retry(
         "POST", f"{ISSUER}/management/v1/projects/{project_id}/apps/oidc",
         headers=headers, json_body=body)
-    if is_success(resp.status_code):
+    if resp.status_code == 200:
         b = resp.json()
         return b["clientId"], b["clientSecret"]
     if resp.status_code == 409:
-        raise RuntimeError(
+        raise SystemExit(
             "kabytech OIDC app already exists (409): clean-boot contract — run "
             "`docker compose down -v` AND delete ./secrets.")
+    resp.raise_for_status()
     raise RuntimeError(f"create_kabytech_oidc_app unexpected status {resp.status_code}")
 ```
 

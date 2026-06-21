@@ -371,6 +371,10 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
          mock.patch.object(provision, "generate_json_key",
                            return_value={"userId": "kaby-1"}), \
          mock.patch.object(provision, "grant_role"), \
+         mock.patch.object(provision, "create_grant_action",
+                           return_value="act-1"), \
+         mock.patch.object(provision, "bind_post_creation_trigger",
+                           side_effect=lambda t, h, aid: calls.append(("trigger", aid))), \
          mock.patch.object(provision, "create_oidc_app",
                            return_value="cli-cid"), \
          mock.patch.object(provision, "create_human_user",
@@ -398,3 +402,79 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
     assert written["admin_oidc_client_secret"] == "admin-secret"
     assert ("member", "sa-9") in calls
     assert "role" in calls
+    # gateway pass-through (design 2026-06-22): auto-grant action bound to trigger
+    assert ("trigger", "act-1") in calls
+
+
+# ---------- Gateway identity pass-through: auto-grant action + trigger (Task 1) ----------
+
+def test_grant_action_script_embeds_project_and_role():
+    s = provision.build_grant_action_script("proj-123", "chat.user")
+    # The Zitadel v1 action runtime invokes the function whose name == the action name.
+    assert f"function {provision.GRANT_ACTION_NAME}(ctx, api)" in s
+    assert "api.userGrants.push(" in s
+    assert "projectID: 'proj-123'" in s
+    assert "roles: ['chat.user']" in s
+
+
+def test_grant_action_body_shape():
+    b = provision.build_grant_action_body("proj-123", "chat.user")
+    assert b["name"] == provision.GRANT_ACTION_NAME
+    assert b["timeout"] == "10s"
+    assert b["allowedToFail"] is False
+    assert "api.userGrants.push(" in b["script"]
+
+
+def test_grant_action_grants_only_chat_user_least_privilege():
+    s = provision.build_grant_action_script("p", "chat.user")
+    assert "chat.admin" not in s
+
+
+def test_trigger_constants_are_external_auth_post_creation():
+    assert provision.FLOW_TYPE_EXTERNAL_AUTHENTICATION == "FLOW_TYPE_EXTERNAL_AUTHENTICATION"
+    assert provision.TRIGGER_TYPE_POST_CREATION == "TRIGGER_TYPE_POST_CREATION"
+
+
+def test_create_grant_action_searches_then_posts_when_absent():
+    calls = []
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        calls.append((url, json_body))
+        if url.endswith("/actions/_search"):
+            return _FakeResp(200, {"result": []})
+        return _FakeResp(200, {"id": "act-77"})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        aid = provision.create_grant_action("tok", {"h": "1"}, "proj-1")
+    assert aid == "act-77"
+    assert calls[0][0].endswith("/management/v1/actions/_search")
+    assert calls[1][0].endswith("/management/v1/actions")
+    assert calls[1][1]["name"] == provision.GRANT_ACTION_NAME
+
+
+def test_create_grant_action_reuses_existing_by_name_idempotent():
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        if url.endswith("/actions/_search"):
+            return _FakeResp(200, {"result": [
+                {"id": "act-existing", "name": provision.GRANT_ACTION_NAME}]})
+        raise AssertionError("must not POST a new action when one exists")
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        aid = provision.create_grant_action("tok", {}, "proj-1")
+    assert aid == "act-existing"
+
+
+def test_bind_post_creation_trigger_sets_actionids_on_external_auth_flow():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.bind_post_creation_trigger("tok", {"h": "1"}, "act-77")
+    assert captured["url"].endswith(
+        "/management/v1/flows/FLOW_TYPE_EXTERNAL_AUTHENTICATION"
+        "/trigger/TRIGGER_TYPE_POST_CREATION")
+    assert captured["body"] == {"actionIds": ["act-77"]}

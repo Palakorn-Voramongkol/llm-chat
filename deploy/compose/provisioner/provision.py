@@ -377,6 +377,79 @@ def grant_role(token: str, headers: dict, user_id: str, project_id: str,
         resp.raise_for_status()
 
 
+# ---- Auto-grant on external-IdP JIT (design 2026-06-22) ----
+# A Zitadel v1 action bound to the External-Authentication > Post-Creation
+# trigger. It grants chat.user to every user JIT-created via a federated IdP,
+# so the user's first token already carries the role the manager requires.
+GRANT_ACTION_NAME = "grantChatUser"
+# Flow/trigger enum identifiers (Zitadel mgmt v1, management.proto
+# SetTriggerActionsRequest). The numeric forms "1"/"3" are accepted equivalents.
+FLOW_TYPE_EXTERNAL_AUTHENTICATION = "FLOW_TYPE_EXTERNAL_AUTHENTICATION"
+TRIGGER_TYPE_POST_CREATION = "TRIGGER_TYPE_POST_CREATION"
+
+
+def build_grant_action_script(project_id: str, role_key: str) -> str:
+    """The action body: a JS function (name MUST equal the action name) that
+    pushes a single chat.user grant on the chat project. Least-privilege: it
+    grants exactly role_key on exactly project_id."""
+    return (
+        f"function {GRANT_ACTION_NAME}(ctx, api) {{\n"
+        f"  api.userGrants.push({{\n"
+        f"    projectID: '{project_id}',\n"
+        f"    roles: ['{role_key}']\n"
+        f"  }});\n"
+        f"}}\n"
+    )
+
+
+def build_grant_action_body(project_id: str, role_key: str) -> dict:
+    return {
+        "name": GRANT_ACTION_NAME,
+        "script": build_grant_action_script(project_id, role_key),
+        "timeout": "10s",
+        "allowedToFail": False,
+    }
+
+
+def find_action_id_by_name(token: str, headers: dict, name: str):
+    """Idempotency: actions are not deduplicated by name, so search first."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/actions/_search",
+        headers=headers, json_body={})
+    if not is_success(resp.status_code):
+        raise RuntimeError(f"actions _search status {resp.status_code}")
+    for a in resp.json().get("result", []):
+        if a.get("name") == name:
+            return a.get("id")
+    return None
+
+
+def create_grant_action(token: str, headers: dict, project_id: str) -> str:
+    existing = find_action_id_by_name(token, headers, GRANT_ACTION_NAME)
+    if existing:
+        print(f"[provision] grant action already exists id={existing}")
+        return existing
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/actions",
+        headers=headers, json_body=build_grant_action_body(project_id, ROLE_KEY))
+    if resp.status_code == 200:
+        return resp.json()["id"]
+    resp.raise_for_status()
+    raise RuntimeError(f"create_grant_action unexpected status {resp.status_code}")
+
+
+def bind_post_creation_trigger(token: str, headers: dict, action_id: str) -> None:
+    """SetTriggerActions is a SET (idempotent): binds [action_id] to the
+    External-Authentication Post-Creation trigger."""
+    resp = request_with_retry(
+        "POST",
+        f"{ISSUER}/management/v1/flows/{FLOW_TYPE_EXTERNAL_AUTHENTICATION}"
+        f"/trigger/{TRIGGER_TYPE_POST_CREATION}",
+        headers=headers, json_body={"actionIds": [action_id]})
+    if not is_success(resp.status_code):
+        raise RuntimeError(f"bind_post_creation_trigger status {resp.status_code}")
+
+
 def create_oidc_app(token: str, headers: dict, project_id: str) -> str:
     """Register the public OIDC native app the interactive CLI logs in through.
 
@@ -601,6 +674,13 @@ def main() -> int:
         print(f"[provision] wrote kabytech-key.json for userId={user_id}")
 
     grant_role(token, headers, user_id, project_id)
+
+    # Auto-grant chat.user to every externally-federated (JIT) user, so
+    # kabytech's end-users reach the manager with chat.user on their first token.
+    grant_action_id = create_grant_action(token, headers, project_id)
+    bind_post_creation_trigger(token, headers, grant_action_id)
+    print(f"[provision] external-auth post-creation auto-grant bound "
+          f"action_id={grant_action_id} role={ROLE_KEY}")
 
     # Interactive human-login path: an OIDC public app (PKCE) + two human users.
     # The kabytech machine path above is for M2M callers; this is for people
