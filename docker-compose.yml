@@ -176,6 +176,47 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ---- kabytech gateway (end-user login app; design 2026-06-22) ----
+  kabytech-backend:
+    build:
+      context: .
+      dockerfile: deploy/compose/kabytech-backend.Dockerfile
+    environment:
+      ZITADEL_ISSUER: http://host.docker.internal:8080
+      KABY_BIND_ADDR: 0.0.0.0:7670
+      # public_origin is the FRONTEND origin (:3001): the OIDC redirect_uri is
+      # {public_origin}/callback, and the browser must land on the proxied
+      # frontend or the SameSite=Lax cookie is dropped (same rule as admin-api).
+      KABY_PUBLIC_ORIGIN: http://localhost:3001
+      KABY_ALLOWED_ORIGIN: http://localhost:3001
+      KABY_SESSION_KEY: ${KABY_SESSION_KEY}
+      # Local stack is plain HTTP — the session cookie must NOT be Secure.
+      KABY_COOKIE_SECURE: "false"
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "127.0.0.1:7670:7670"   # loopback-only (local-dev)
+    depends_on:
+      zitadel-init:
+        condition: service_completed_successfully
+    volumes:
+      - genenv:/out:ro
+      - ./secrets:/secrets:ro
+    restart: unless-stopped
+
+  kabytech-frontend:
+    build:
+      context: ./services/kabytech/frontend
+      dockerfile: ../../../deploy/compose/kabytech-frontend.Dockerfile
+    environment:
+      NODE_ENV: production
+      KABY_BACKEND_ORIGIN: http://kabytech-backend:7670
+    ports:
+      - "127.0.0.1:3001:3000"   # loopback-only (local-dev)
+    depends_on:
+      kabytech-backend:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   pgdata:
   # Holds the bootstrap IAM_OWNER SA key (zitadel-admin-sa.json). It is all-
