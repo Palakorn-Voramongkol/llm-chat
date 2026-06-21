@@ -195,3 +195,59 @@ sudo nginx -t && sudo systemctl reload nginx
 
 `/etc/zitadel/` and `/var/lib/zitadel/` are kept on uninstall — wipe them
 manually if you don't want them around.
+
+## Federating kabytech's upstream IdP (JIT) for end-user pass-through
+
+End-users authenticate against an upstream IdP that Zitadel federates and
+JIT-provisions; the `grantChatUser` action (created by the provisioner) then
+grants `chat.user` automatically. Registering the IdP needs that IdP's real
+client id/secret, so it is an operator step (not run by the provisioner).
+
+### 1. Register the IdP (generic OIDC example)
+
+Using a bootstrap IAM_OWNER management token (`$TOKEN`) and the platform org id
+(`$ORG`), against `$ISSUER` (e.g. `http://host.docker.internal:8080`):
+
+```bash
+curl -sS -X POST "$ISSUER/management/v1/idps/generic_oidc" \
+  -H "Authorization: Bearer $TOKEN" -H "x-zitadel-orgid: $ORG" \
+  -H "Content-Type: application/json" -d '{
+    "name": "kabytech-upstream",
+    "issuer": "https://upstream-idp.example",
+    "clientId": "<UPSTREAM_CLIENT_ID>",
+    "clientSecret": "<UPSTREAM_CLIENT_SECRET>",
+    "scopes": ["openid", "profile", "email"],
+    "isAutoCreation": true,
+    "isAutoUpdate": true,
+    "autoLinkingOption": "AUTO_LINKING_OPTION_EMAIL"
+  }'
+```
+
+- `isAutoCreation: true` is the **JIT** switch — Zitadel creates the local user
+  on first login.
+- For Google use `/idps/google`; for SAML use `/idps/saml`. The JIT/auto-create
+  field is the same `isAutoCreation`.
+
+### 2. Add the IdP to the login policy
+
+```bash
+curl -sS -X POST "$ISSUER/management/v1/policies/login/idps" \
+  -H "Authorization: Bearer $TOKEN" -H "x-zitadel-orgid: $ORG" \
+  -H "Content-Type: application/json" -d '{"idpId":"<IDP_ID_FROM_STEP_1>","ownerType":"IDP_OWNER_TYPE_ORG"}'
+```
+
+### 3. Confirm the auto-grant fires
+
+Log in once through the upstream IdP (a fresh external identity), then check the
+new Zitadel user has a `chat.user` grant on the chat project:
+
+```bash
+curl -sS -X POST "$ISSUER/management/v1/users/grants/_search" \
+  -H "Authorization: Bearer $TOKEN" -H "x-zitadel-orgid: $ORG" \
+  -H "Content-Type: application/json" \
+  -d '{"queries":[{"roleKeyQuery":{"roleKey":"chat.user"}}]}' | python -m json.tool
+```
+
+Expected: the newly federated user appears with `roleKeys: ["chat.user"]`. If it
+does not, the `grantChatUser` action/trigger binding is wrong — re-check
+`/management/v1/flows/FLOW_TYPE_EXTERNAL_AUTHENTICATION/trigger/TRIGGER_TYPE_POST_CREATION`.
