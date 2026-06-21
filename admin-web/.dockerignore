@@ -4,3 +4,7 @@ node_modules
 Dockerfile
 .dockerignore
 npm-debug.log*
+# pnpm can drop an `allowBuilds:`-only placeholder here (no `packages:` field),
+# which makes `pnpm run build` fail with "packages field missing or empty".
+# This repo has no pnpm workspace, so never ship it into the image.
+pnpm-workspace.yaml
