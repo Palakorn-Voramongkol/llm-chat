@@ -176,13 +176,17 @@ impl ChatDb {
         time_in: &str,
         attachment_paths_json: Option<&str>,
         user_id: Option<&str>,
+        chars_in: i64,
+        files: i64,
+        file_bytes: i64,
     ) -> Result<i64, sqlx::Error> {
         match self {
             ChatDb::Sqlite(p) => {
                 let r = sqlx::query(
                     "INSERT INTO chat_question
-                     (connection_id, sid, q_id, text, time_in, status, attachment_paths, user_id)
-                     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                     (connection_id, sid, q_id, text, time_in, status, attachment_paths, user_id,
+                      chars_in, files, file_bytes)
+                     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
                 )
                 .bind(connection_id)
                 .bind(sid)
@@ -191,6 +195,9 @@ impl ChatDb {
                 .bind(time_in)
                 .bind(attachment_paths_json)
                 .bind(user_id)
+                .bind(chars_in)
+                .bind(files)
+                .bind(file_bytes)
                 .execute(p)
                 .await?;
                 Ok(r.last_insert_rowid())
@@ -198,8 +205,9 @@ impl ChatDb {
             ChatDb::Postgres(p) => {
                 let row: (i64,) = sqlx::query_as(
                     "INSERT INTO chat_question
-                     (connection_id, sid, q_id, text, time_in, status, attachment_paths, user_id)
-                     VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7) RETURNING seq",
+                     (connection_id, sid, q_id, text, time_in, status, attachment_paths, user_id,
+                      chars_in, files, file_bytes)
+                     VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10) RETURNING seq",
                 )
                 .bind(connection_id)
                 .bind(sid)
@@ -208,6 +216,9 @@ impl ChatDb {
                 .bind(time_in)
                 .bind(attachment_paths_json)
                 .bind(user_id)
+                .bind(chars_in)
+                .bind(files)
+                .bind(file_bytes)
                 .fetch_one(p)
                 .await?;
                 Ok(row.0)
@@ -306,10 +317,11 @@ impl ChatDb {
             ChatDb::Sqlite(p) => {
                 sqlx::query(
                     "UPDATE chat_question SET answer_text = ?, status = 'answered',
-                     time_out = ? WHERE seq = ?",
+                     time_out = ?, chars_out = ? WHERE seq = ?",
                 )
                 .bind(answer_text)
                 .bind(time_out)
+                .bind(answer_text.chars().count() as i64)
                 .bind(seq)
                 .execute(p)
                 .await?;
@@ -317,10 +329,11 @@ impl ChatDb {
             ChatDb::Postgres(p) => {
                 sqlx::query(
                     "UPDATE chat_question SET answer_text = $1, status = 'answered',
-                     time_out = $2 WHERE seq = $3",
+                     time_out = $2, chars_out = $3 WHERE seq = $4",
                 )
                 .bind(answer_text)
                 .bind(time_out)
+                .bind(answer_text.chars().count() as i64)
                 .bind(seq)
                 .execute(p)
                 .await?;
@@ -501,6 +514,10 @@ async fn init_schema_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "ALTER TABLE chat_question ADD COLUMN cache_creation_tokens INTEGER;",
         "ALTER TABLE chat_question ADD COLUMN cost_usd REAL;",
         "ALTER TABLE chat_question ADD COLUMN model TEXT;",
+        "ALTER TABLE chat_question ADD COLUMN chars_in INTEGER;",
+        "ALTER TABLE chat_question ADD COLUMN chars_out INTEGER;",
+        "ALTER TABLE chat_question ADD COLUMN files INTEGER;",
+        "ALTER TABLE chat_question ADD COLUMN file_bytes INTEGER;",
     ] {
         let _ = sqlx::query(col).execute(pool).await;
     }
@@ -546,6 +563,10 @@ async fn init_schema_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
         "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS cache_creation_tokens BIGINT;",
         "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION;",
         "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS model TEXT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS chars_in BIGINT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS chars_out BIGINT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS files BIGINT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS file_bytes BIGINT;",
     ] {
         sqlx::query(col).execute(pool).await?;
     }
@@ -1899,6 +1920,16 @@ async fn bridge_session_auto(
 // On client disconnect, manager closes the session.
 
 /// Current UTC time in RFC 3339 / ISO 8601 with ms precision.
+/// PURE: decoded byte length of a base64 string, computed from its length (no
+/// decode, no dependency). Exact for well-formed base64; 0 for empty.
+fn b64_decoded_len(s: &str) -> i64 {
+    if s.is_empty() {
+        return 0;
+    }
+    let pad = s.bytes().rev().take_while(|&b| b == b'=').count();
+    (s.len() / 4 * 3 - pad) as i64
+}
+
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -1925,15 +1956,12 @@ fn latency_ms(time_in: &str, time_out: &str) -> i64 {
 /// SELECT-then-UPDATE in pop_sent/mark_answered is not atomic, so two
 /// concurrent flushes could otherwise pop the same oldest row). The legacy PTY
 /// path still calls it after a debounce. `num` is for log correlation only.
-/// `qa_payload` carries the raw worker qa object so usage tokens can be
-/// persisted (None on the legacy PTY path which has no usage data).
 async fn flush_answer(
     db: &ChatDb,
     connection_id: &str,
     num: u32,
     final_text: String,
     answer_tx: &tokio::sync::mpsc::Sender<serde_json::Value>,
-    qa_payload: Option<&serde_json::Value>,
 ) {
     // Pop the oldest 'sent' row for this connection (FIFO via ORDER BY seq ASC).
     // Distinguish a DB error from a genuinely empty queue: a swallowed error
@@ -1987,16 +2015,6 @@ async fn flush_answer(
             error = %e,
             "mark_answered failed — row stays 'sent'; next answer may mispair"
         );
-    }
-    // Best-effort: persist token usage if the qa payload carried it.
-    // A failure here must NOT fail the answer — log and continue.
-    if let Some(qa) = qa_payload {
-        if let Some(usage) = UsageRow::from_qa(qa) {
-            if let Err(e) = db.record_usage(seq, &usage).await {
-                tracing::warn!(target: "manager::chat::qa", seq, error = %e,
-                    "record_usage failed — row keeps NULL usage");
-            }
-        }
     }
     let out = serde_json::json!({
         "type": "a",
@@ -2381,6 +2399,21 @@ async fn handle_chat(
                 serde_json::to_string(&saved_paths).ok()
             };
 
+            // Self-counted per-user usage (NOT claude's account-level usage):
+            // chars of the user's question, attachment count + decoded bytes.
+            let chars_in = q_text.chars().count() as i64;
+            let files = saved_paths.len() as i64;
+            let file_bytes: i64 = v
+                .get("attachments")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|att| att.get("data").and_then(|d| d.as_str()))
+                        .map(b64_decoded_len)
+                        .sum()
+                })
+                .unwrap_or(0);
+
             // INSERT into the FIFO with status='pending'. seq is the FIFO key
             // AND the server-assigned receipt id we return in `ack` and `a`.
             let seq = match db_for_in
@@ -2392,6 +2425,9 @@ async fn handle_chat(
                     &time_in,
                     attachment_paths_json.as_deref(),
                     Some(user_id_for_in.as_str()),
+                    chars_in,
+                    files,
+                    file_bytes,
                 )
                 .await
             {
@@ -2554,7 +2590,6 @@ async fn handle_chat(
                     num,
                     raw,
                     &answer_tx_for_qa,
-                    Some(&v),
                 )
                 .await;
                 continue;
@@ -2587,7 +2622,7 @@ async fn handle_chat(
                     Some(t) if !t.is_empty() => t,
                     _ => return,
                 };
-                flush_answer(&db, &connection_id, num, final_text, &answer_tx, None).await;
+                flush_answer(&db, &connection_id, num, final_text, &answer_tx).await;
             });
         }
     });
@@ -2929,7 +2964,7 @@ mod usage_row_tests {
         let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
         init_schema_sqlite(&pool).await.unwrap();
         let db = ChatDb::Sqlite(pool);
-        let seq = db.insert_pending("c", "s", "q", "t", "now", None, Some("u1")).await.unwrap();
+        let seq = db.insert_pending("c", "s", "q", "t", "now", None, Some("u1"), 0, 0, 0).await.unwrap();
         let u = UsageRow { input: 10, output: 5, cache_read: 100,
                            cache_creation: 20, cost: Some(0.5),
                            model: Some("claude-opus-4-8".into()) };
@@ -2972,7 +3007,7 @@ mod usage_agg_tests {
         let db = ChatDb::Sqlite(pool);
         // two answered rows for u1, one still pending (excluded)
         for (q, status, tin, tout) in [("q1","answered",10,5),("q2","confirmed",20,7),("q3","pending",99,99)] {
-            let seq = db.insert_pending("c","s",q,"t","now",None,Some("u1")).await.unwrap();
+            let seq = db.insert_pending("c","s",q,"t","now",None,Some("u1"), 0, 0, 0).await.unwrap();
             if status != "pending" {
                 db.update_status(seq, status).await.unwrap();
                 db.record_usage(seq, &UsageRow{input:tin,output:tout,cache_read:0,
@@ -2980,7 +3015,7 @@ mod usage_agg_tests {
             }
         }
         // Insert a NULL-user answered row — it must NOT appear in results or totals.
-        let null_seq = db.insert_pending("c","s","qnull","t","now",None,None).await.unwrap();
+        let null_seq = db.insert_pending("c","s","qnull","t","now",None,None, 0, 0, 0).await.unwrap();
         db.update_status(null_seq, "answered").await.unwrap();
         db.record_usage(null_seq, &UsageRow{input:999,output:999,cache_read:0,
             cache_creation:0,cost:Some(9.0),model:None}).await.unwrap();
@@ -3018,7 +3053,7 @@ mod usage_daily_tests {
         init_schema_sqlite(&pool).await.unwrap();
         let db = ChatDb::Sqlite(pool);
         async fn add(db: &ChatDb, q: &str, ti: &str, user: Option<&str>, tin: i64) {
-            let seq = db.insert_pending("c", "s", q, "t", ti, None, user).await.unwrap();
+            let seq = db.insert_pending("c", "s", q, "t", ti, None, user, 0, 0, 0).await.unwrap();
             db.update_status(seq, "answered").await.unwrap();
             db.record_usage(seq, &UsageRow { input: tin, output: 1, cache_read: 0,
                 cache_creation: 0, cost: Some(0.1), model: None }).await.unwrap();
@@ -3034,6 +3069,36 @@ mod usage_daily_tests {
         assert_eq!(d21.input, 30);
         assert!(rows.iter().all(|r| r.user_id.as_deref() == Some("u1")));
         assert!(rows.iter().all(|r| r.day != "2026-01-01"));
+    }
+}
+
+#[cfg(test)]
+mod self_count_tests {
+    use super::*;
+
+    #[test]
+    fn b64_decoded_len_is_exact() {
+        assert_eq!(b64_decoded_len(""), 0);
+        assert_eq!(b64_decoded_len("YWJj"), 3);        // "abc", no padding
+        assert_eq!(b64_decoded_len("YWJjZA=="), 4);    // "abcd", 2 pad
+        assert_eq!(b64_decoded_len("YWJjZGU="), 5);    // "abcde", 1 pad
+    }
+
+    #[tokio::test]
+    async fn insert_and_answer_record_self_counts_unicode() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        init_schema_sqlite(&pool).await.unwrap();
+        let db = ChatDb::Sqlite(pool);
+        // chars are Unicode scalars: "héllo" is 5 chars (6 bytes).
+        let seq = db.insert_pending("c","s","q","héllo","now",None,Some("u1"),
+                                    "héllo".chars().count() as i64, 2, 1500).await.unwrap();
+        db.mark_answered(seq, "wörld", "now2").await.unwrap();
+        let row: (Option<i64>, Option<i64>, Option<i64>, Option<i64>) = match &db {
+            ChatDb::Sqlite(p) => sqlx::query_as(
+                "SELECT chars_in, files, file_bytes, chars_out FROM chat_question WHERE seq=?")
+                .bind(seq).fetch_one(p).await.unwrap(), _ => unreachable!() };
+        assert_eq!(row, (Some(5), Some(2), Some(1500), Some(5))); // chars_out "wörld"=5
     }
 }
 
