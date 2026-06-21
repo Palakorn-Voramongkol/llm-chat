@@ -699,6 +699,29 @@ pub(crate) mod pty {
     }
 }
 
+/// PURE: pull the token usage out of a claude stream-json `result` event.
+/// Returns a flat JSON object the manager can store, or Null when the event
+/// carries no `usage` (e.g. the legacy PTY transport). Never panics on a
+/// missing field — counts default to 0, cost/model to null.
+fn parse_usage(result_event: &serde_json::Value) -> serde_json::Value {
+    let Some(u) = result_event.get("usage").and_then(|v| v.as_object()) else {
+        return serde_json::Value::Null;
+    };
+    let n = |k: &str| u.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let model = result_event
+        .get("modelUsage")
+        .and_then(|m| m.as_object())
+        .and_then(|m| m.keys().next().cloned());
+    serde_json::json!({
+        "inputTokens": n("input_tokens"),
+        "outputTokens": n("output_tokens"),
+        "cacheReadTokens": n("cache_read_input_tokens"),
+        "cacheCreationTokens": n("cache_creation_input_tokens"),
+        "costUsd": result_event.get("total_cost_usd").and_then(|v| v.as_f64()),
+        "model": model,
+    })
+}
+
 // ========== Claude stream-json session (source-of-truth transport) ==========
 // Drives `claude` over RAW PIPES in stream-json mode instead of a PTY, so we
 // read claude's ACTUAL answer text (real newlines, real markdown) from its
@@ -814,6 +837,7 @@ mod json_session {
                                 // The manager uses this to flush immediately
                                 // instead of debouncing for late PTY redraws.
                                 "final": true,
+                                "usage": crate::parse_usage(&v),
                             });
                             tracing::info!(
                                 target: "backend::qa",
@@ -3078,5 +3102,48 @@ mod clean_answer_tests {
     #[test]
     fn keeps_plain_answer() {
         assert_eq!(clean_answer("BANANA"), "BANANA");
+    }
+}
+
+#[cfg(test)]
+mod usage_parse_tests {
+    use super::parse_usage;
+    use serde_json::json;
+
+    #[test]
+    fn parses_usage_and_cost_and_model() {
+        let ev = json!({
+            "type": "result", "subtype": "success", "result": "hi",
+            "usage": { "input_tokens": 4335, "output_tokens": 4,
+                       "cache_read_input_tokens": 19447,
+                       "cache_creation_input_tokens": 7060 },
+            "total_cost_usd": 0.102,
+            "modelUsage": { "claude-opus-4-8": { "inputTokens": 4335 } }
+        });
+        let u = parse_usage(&ev);
+        assert_eq!(u["inputTokens"], 4335);
+        assert_eq!(u["outputTokens"], 4);
+        assert_eq!(u["cacheReadTokens"], 19447);
+        assert_eq!(u["cacheCreationTokens"], 7060);
+        assert_eq!(u["costUsd"], 0.102);
+        assert_eq!(u["model"], "claude-opus-4-8");
+    }
+
+    #[test]
+    fn no_usage_object_yields_null() {
+        let ev = json!({ "type": "result", "result": "hi" });
+        assert!(parse_usage(&ev).is_null());
+    }
+
+    #[test]
+    fn missing_fields_default_to_zero() {
+        let ev = json!({ "usage": { "input_tokens": 10 } });
+        let u = parse_usage(&ev);
+        assert_eq!(u["inputTokens"], 10);
+        assert_eq!(u["outputTokens"], 0);
+        assert_eq!(u["cacheReadTokens"], 0);
+        assert_eq!(u["cacheCreationTokens"], 0);
+        assert!(u["costUsd"].is_null());
+        assert!(u["model"].is_null());
     }
 }
