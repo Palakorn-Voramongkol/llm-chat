@@ -51,16 +51,25 @@ Browser ────┼── invite email (MailHog/SMTP) ─▶ /accept?userID&
 
 ## Phase 1 — Invitation + registration
 
-### SMTP (dev: MailHog)
+### SMTP (env-driven; dev uses MailHog)
 
-- Add a `mailhog` service (`mailhog/mailhog`), ports `127.0.0.1:8025` (web UI) +
-  internal `1025` (SMTP).
-- Provisioner configures Zitadel SMTP via `POST /admin/v1/smtp`
-  (`AddSMTPConfigRequest`): `host=mailhog:1025`, `tls=false`,
-  `sender_address=noreply@kabytech.local`, `sender_name=kabytech`. Idempotent
-  (a 409 / existing-config path treated as provisioned).
-- Production: the same call with real SMTP host/user/password (operator-supplied
-  env), no code change.
+- **All SMTP settings come from `.env` — no hardcoded values anywhere.** The
+  variables: `KABY_SMTP_HOST`, `KABY_SMTP_PORT`, `KABY_SMTP_TLS`,
+  `KABY_SMTP_USER`, `KABY_SMTP_PASSWORD`, `KABY_SMTP_SENDER_ADDRESS`,
+  `KABY_SMTP_SENDER_NAME`. `HOST`/`PORT`/`SENDER_ADDRESS` are required (fail-fast
+  if missing, naming the var); `USER`/`PASSWORD` may be empty (MailHog needs no
+  auth); `TLS` defaults secure-by-parse (`false`/`0`/`no` ⇒ off).
+- Local dev (`.env`): point them at MailHog — `KABY_SMTP_HOST=mailhog`,
+  `KABY_SMTP_PORT=1025`, `KABY_SMTP_TLS=false`, empty `KABY_SMTP_USER`/`PASSWORD`,
+  `KABY_SMTP_SENDER_ADDRESS=noreply@kabytech.local`, `KABY_SMTP_SENDER_NAME=kabytech`.
+- Add a `mailhog` compose service (`mailhog/mailhog`): web UI `127.0.0.1:8025`,
+  internal SMTP `1025`.
+- The provisioner **reads those env vars** and configures Zitadel SMTP via
+  `POST /admin/v1/smtp` (`AddSMTPConfigRequest` — `host` = `{HOST}:{PORT}`,
+  `tls`, `user`, `password`, `sender_address`, `sender_name`). Idempotent (a
+  409 / existing-config path treated as provisioned).
+- Production: set the same `KABY_SMTP_*` vars in `.env` to real SMTP
+  host/user/password — no code change.
 
 ### Invite (`/invite`, `chat.admin`)
 
