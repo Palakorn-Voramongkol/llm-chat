@@ -265,3 +265,23 @@ export interface SigninList {
   available: boolean;
   result: AuditEvent[];
 }
+
+// ---- Per-user token usage (GET /api/usage, Task 5) ----
+// One row per user in the response. userId is null for the anonymous/unknown
+// bucket (totals row); the console ignores that row.
+export interface UsageRow {
+  userId: string | null;
+  requests: number;
+  tokensIn: number;
+  tokensOut: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  lastUsed: string | null;
+}
+
+export interface UsageResponse {
+  ok: boolean;
+  users: UsageRow[];
+  totals: UsageRow;
+}

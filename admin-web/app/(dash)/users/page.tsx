@@ -20,7 +20,7 @@ import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
 import type {
   AppProjectList, ChatClient, ChatSessions, GrantList, Role, RoleList,
-  SigninList, User, UserList,
+  SigninList, User, UserList, UsageRow, UsageResponse,
 } from "@/lib/types";
 
 export default function UsersPage() {
@@ -48,6 +48,9 @@ export default function UsersPage() {
   const [grouping, setGrouping] = useState<GroupingState>([]);
   const [grantsFor, setGrantsFor] =
     useState<{ id: string; list: GrantList } | null>(null);
+  // Per-user token-usage stats keyed by userId. A failed /api/usage fetch
+  // leaves this map empty (columns show "—"), never blanks the page.
+  const [usageByUser, setUsageByUser] = useState<Map<string, UsageRow>>(new Map());
   // Per-user monitoring joins: last sign-in time + live chat sessions.
   const [lastSignIn, setLastSignIn] = useState<Map<string, string>>(new Map());
   const [liveByUser, setLiveByUser] = useState<Map<string, ChatClient[]>>(new Map());
@@ -162,6 +165,18 @@ export default function UsersPage() {
     } catch {
       setLiveByUser(new Map());
     }
+    // Per-user token-usage stats: best-effort, same pattern as holdersByKey.
+    // A failed fetch leaves the map empty; columns show "—", page never blanks.
+    try {
+      const u = await api.get<UsageResponse>("/api/usage");
+      const m = new Map<string, UsageRow>();
+      for (const row of u.users ?? []) {
+        if (row.userId) m.set(row.userId, row);
+      }
+      setUsageByUser(m);
+    } catch {
+      setUsageByUser(new Map());
+    }
   }, []);
 
   useEffect(() => {
@@ -201,6 +216,7 @@ export default function UsersPage() {
       onKeys: setKeysTarget,
     },
     rolesByUser,
+    usageByUser,
   );
 
   // Flat set of role keys per user, derived from the grouped access structure
@@ -362,6 +378,24 @@ export default function UsersPage() {
                           </PanelField>
                         </>
                       )}
+                    </>
+                  );
+                })()}
+              </PanelSection>
+              {/* Token-usage breakdown — per-user totals from /api/usage.
+                  If the fetch failed, usageByUser is empty and every field shows "—". */}
+              <PanelSection title="Token usage">
+                {(() => {
+                  const u = usageByUser.get(selected.id);
+                  return (
+                    <>
+                      <PanelField label="Requests">{u ? u.requests.toLocaleString("en-US") : "—"}</PanelField>
+                      <PanelField label="Tokens in">{u ? u.tokensIn.toLocaleString("en-US") : "—"}</PanelField>
+                      <PanelField label="Cache read">{u ? u.cacheReadTokens.toLocaleString("en-US") : "—"}</PanelField>
+                      <PanelField label="Cache creation">{u ? u.cacheCreationTokens.toLocaleString("en-US") : "—"}</PanelField>
+                      <PanelField label="Tokens out">{u ? u.tokensOut.toLocaleString("en-US") : "—"}</PanelField>
+                      <PanelField label="Cost">{u ? `$${u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2)}` : "—"}</PanelField>
+                      <PanelField label="Last used">{u?.lastUsed ? new Date(u.lastUsed).toLocaleString() : "—"}</PanelField>
                     </>
                   );
                 })()}

@@ -7,7 +7,21 @@ import {
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { avatarGradient, initials } from "@/lib/avatar";
-import type { User, UserState } from "@/lib/types";
+import type { User, UserState, UsageRow } from "@/lib/types";
+
+// ---- Token-usage formatters (exported for tests) ----
+
+/** Format a token count with thousands separators, or "—" when undefined/null. */
+export function fmtTokens(n: number | undefined | null): string {
+  if (n === undefined || n === null) return "—";
+  return n.toLocaleString("en-US");
+}
+
+/** Format a USD cost: 4 decimal places below $1, 2 above. "—" when undefined/null. */
+export function fmtCost(n: number | undefined | null): string {
+  if (n === undefined || n === null) return "—";
+  return `$${n.toFixed(n < 1 ? 4 : 2)}`;
+}
 
 export type Lifecycle =
   | "deactivate" | "reactivate" | "lock" | "unlock" | "resend-init";
@@ -64,6 +78,7 @@ export function roleChipFull(key: string): string {
 export function buildColumns(
   h: ColumnHandlers,
   rolesByUser?: Map<string, AppAccess[]>,
+  usageByUser?: Map<string, UsageRow>,
 ): ColumnDef<User>[] {
   return [
     {
@@ -146,6 +161,33 @@ export function buildColumns(
           </span>
         );
       },
+    },
+    {
+      id: "tokensIn", header: "Tokens in",
+      meta: { description: "Total **input** tokens (prompt + cache read + cache creation) across this user's answered questions." },
+      cell: ({ row }) => (
+        <span className="tabular-nums">
+          {fmtTokens(usageByUser?.get(row.original.id)?.tokensIn)}
+        </span>
+      ),
+    },
+    {
+      id: "tokensOut", header: "Tokens out",
+      meta: { description: "Total **output** tokens claude generated for this user." },
+      cell: ({ row }) => (
+        <span className="tabular-nums">
+          {fmtTokens(usageByUser?.get(row.original.id)?.tokensOut)}
+        </span>
+      ),
+    },
+    {
+      id: "cost", header: "Cost",
+      meta: { description: "claude's reported `total_cost_usd`, summed — informational, not billing-grade." },
+      cell: ({ row }) => (
+        <span className="tabular-nums">
+          {fmtCost(usageByUser?.get(row.original.id)?.costUsd)}
+        </span>
+      ),
     },
     {
       id: "actions",
