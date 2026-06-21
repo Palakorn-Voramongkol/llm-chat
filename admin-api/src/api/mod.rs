@@ -64,6 +64,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/org/policies/lockout", get(get_lockout_policy))
         .route("/api/status", get(status))
         .route("/api/chat-sessions", get(chat_sessions))
+        .route("/api/usage", get(usage))
         .route("/api/signins", get(list_signins))
         .with_state(state)
 }
@@ -241,6 +242,20 @@ async fn chat_sessions(_op: Operator, State(st): State<AppState>) -> Result<Json
         .await
         .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
     Ok(Json(crate::manager::combine_control_replies(list, instances, clients)))
+}
+
+/// Per-user token usage from the manager's /control "usage" (chat.admin-gated).
+/// Capability-gated on MANAGER_CONTROL_URL, exactly like chat_sessions.
+async fn usage(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let Some(url) = st.cfg.manager_control_url.clone() else {
+        return Ok(Json(json!({ "configured": false, "users": [], "totals": {} })));
+    };
+    let token = st.zitadel.mint_chat_token().await?;
+    Ok(Json(
+        crate::manager::control_query(&url, &token, "usage")
+            .await
+            .unwrap_or_else(|e| json!({ "ok": false, "error": e })),
+    ))
 }
 
 /// Recent sign-ins derived from the audit event log (the honest source on this
@@ -691,5 +706,56 @@ mod contract_tests {
             token_healthy: false,
         }).unwrap();
         assert!(degraded.get("humans").unwrap().is_null(), "null count: {degraded}");
+    }
+
+    /// Build a test router with the session layer attached but NO session cookie.
+    /// The Operator extractor finds no "operator" key in the session and returns
+    /// 401. Used to gate-test every /api/* route without spinning up Zitadel.
+    fn test_router_no_session() -> axum::Router {
+        use std::sync::Arc;
+        use tower_sessions::{MemoryStore, SessionManagerLayer};
+        use zitadel_auth::{JwksCache, ZitadelConfig};
+
+        let cfg = crate::config::AdminConfig::from_map(&|k| match k {
+            "ZITADEL_ISSUER" => Some("http://localhost:8080".into()),
+            "ZITADEL_PROJECT_ID" => Some("test-project".into()),
+            "ZITADEL_AUDIENCE" => Some("test-audience".into()),
+            "ADMIN_SA_KEY_PATH" => Some("/tmp/nonexistent.json".into()),
+            "ADMIN_OIDC_CLIENT_ID" => Some("test-client-id".into()),
+            "ADMIN_OIDC_CLIENT_SECRET" => Some("test-client-secret".into()),
+            "ADMIN_BIND_ADDR" => Some("0.0.0.0:0".into()),
+            "ADMIN_PUBLIC_ORIGIN" => Some("http://localhost:0".into()),
+            "ADMIN_ALLOWED_ORIGIN" => Some("http://localhost:3000".into()),
+            "ADMIN_SESSION_KEY" => Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into()),
+            _ => None,
+        }).expect("test AdminConfig");
+
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let zitadel = Arc::new(crate::zitadel::ZitadelClient::new(cfg.clone(), http.clone()));
+        let jwks = JwksCache::new(ZitadelConfig {
+            issuer: cfg.issuer.clone(),
+            audience: vec![cfg.audience.clone()],
+            jwks_uri: format!("{}/oauth/v2/keys", cfg.issuer),
+            project_id: cfg.project_id.clone(),
+        });
+        let state = crate::AppState { cfg, jwks, zitadel, http };
+        let session_layer = SessionManagerLayer::new(MemoryStore::default())
+            .with_name("id");
+        crate::api::router(state).layer(session_layer)
+    }
+
+    #[tokio::test]
+    async fn usage_route_requires_operator() {
+        use tower::ServiceExt;
+        // building the router and calling GET /api/usage without a session cookie
+        // returns 401 (same harness the other gated routes use).
+        let app = test_router_no_session();
+        let res = app.oneshot(
+            axum::http::Request::builder().uri("/api/usage").body(axum::body::Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 }
