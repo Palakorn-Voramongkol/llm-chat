@@ -530,6 +530,59 @@ def create_admin_oidc_app(token: str, headers: dict, project_id: str):
         f"create_admin_oidc_app unexpected status {resp.status_code}")
 
 
+# ---- kabytech gateway OIDC web client (design 2026-06-22) ----
+# Confidential WEB app (BASIC + PKCE, code + refresh). kabytech's gateway runs
+# the browser login through this client and forwards the resulting per-user
+# access token to the manager. Redirect URIs are kabytech's, supplied by env;
+# they default to a documented placeholder the operator overrides.
+KABYTECH_OIDC_APP_NAME = "kabytech-gateway"
+KABYTECH_OIDC_REDIRECT_URI = os.environ.get(
+    "KABYTECH_OIDC_REDIRECT_URI", "https://gateway.kabytech.example/callback")
+KABYTECH_OIDC_POST_LOGOUT_URI = os.environ.get(
+    "KABYTECH_OIDC_POST_LOGOUT_URI", "https://gateway.kabytech.example/")
+
+
+def build_kabytech_oidc_app_body(redirect_uris: list, post_logout_uris: list) -> dict:
+    return {
+        "name": KABYTECH_OIDC_APP_NAME,
+        "redirectUris": redirect_uris,
+        "postLogoutRedirectUris": post_logout_uris,
+        "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
+        "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE",
+                       "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
+        "appType": "OIDC_APP_TYPE_WEB",
+        "authMethodType": "OIDC_AUTH_METHOD_TYPE_BASIC",
+        "accessTokenType": "OIDC_TOKEN_TYPE_JWT",
+        # Force chat.user into the ACCESS-token JWT (the chat project has
+        # projectRoleAssertion=false); without this the manager 403s end-users.
+        "accessTokenRoleAssertion": True,
+        "idTokenRoleAssertion": True,
+        "devMode": False,
+    }
+
+
+def create_kabytech_oidc_app(token: str, headers: dict, project_id: str):
+    """Register the kabytech gateway's confidential OIDC web client. Returns
+    (clientId, clientSecret); the secret is shown ONCE (clean-boot contract).
+    Mirrors create_admin_oidc_app's status handling: 200 returns creds, 409 is
+    the clean-boot contract (is_success() conflates 200/409, so check 200
+    explicitly)."""
+    body = build_kabytech_oidc_app_body(
+        [KABYTECH_OIDC_REDIRECT_URI], [KABYTECH_OIDC_POST_LOGOUT_URI])
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/projects/{project_id}/apps/oidc",
+        headers=headers, json_body=body)
+    if resp.status_code == 200:
+        b = resp.json()
+        return b["clientId"], b["clientSecret"]
+    if resp.status_code == 409:
+        raise SystemExit(
+            "kabytech OIDC app already exists (409): clean-boot contract — run "
+            "`docker compose down -v` AND delete ./secrets.")
+    resp.raise_for_status()
+    raise RuntimeError(f"create_kabytech_oidc_app unexpected status {resp.status_code}")
+
+
 def assign_admin_member(token: str, headers: dict, sa_user_id: str) -> None:
     """Add the admin SA as an ORG member with ORG_USER_MANAGER — users + grants
     only, NOT org ownership (least privilege; spec §3/§5). MUST be called with
@@ -729,6 +782,13 @@ def main() -> int:
     write_secret("admin_api_user_id", admin_sa_id)
     write_secret("admin_oidc_client_id", admin_cid)
     write_secret("admin_oidc_client_secret", admin_secret)
+    # kabytech gateway OIDC client — its client_id/secret let kabytech run the
+    # browser login and forward per-user tokens. Written to ./secrets for the
+    # operator to hand to kabytech's gateway config.
+    kaby_cid, kaby_secret = create_kabytech_oidc_app(token, headers, project_id)
+    write_secret("kabytech_oidc_client_id", kaby_cid)
+    write_secret("kabytech_oidc_client_secret", kaby_secret)
+    print(f"[provision] kabytech gateway OIDC client_id={kaby_cid}")
     print(f"[provision] admin: sa_user_id={admin_sa_id} "
           f"admin_oidc_client_id={admin_cid} "
           f"org_roles={ADMIN_SA_ORG_ROLES} project_role={ADMIN_SA_PROJECT_ROLE}")

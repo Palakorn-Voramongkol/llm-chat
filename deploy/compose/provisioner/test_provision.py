@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import json
 import time
 from unittest import mock
@@ -356,43 +357,37 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
     def fake_write_secret(name, content):
         written[name] = content
 
-    with mock.patch.object(provision, "load_admin_key",
-                           return_value={"userId": "boot", "keyId": "k",
-                                         "key": "PEM"}), \
-         mock.patch.object(provision, "mint_management_token",
-                           return_value="boot-tok"), \
-         mock.patch.object(provision, "fetch_org_id", return_value="org-1"), \
-         mock.patch.object(provision, "create_project", return_value="proj-1"), \
-         mock.patch.object(provision, "add_role"), \
-         mock.patch.object(provision, "create_machine_user",
-                           return_value="kaby-1"), \
-         mock.patch.object(provision, "read_existing_user_id",
-                           return_value=None), \
-         mock.patch.object(provision, "generate_json_key",
-                           return_value={"userId": "kaby-1"}), \
-         mock.patch.object(provision, "grant_role"), \
-         mock.patch.object(provision, "create_grant_action",
-                           return_value="act-1"), \
-         mock.patch.object(provision, "bind_post_creation_trigger",
-                           side_effect=lambda t, h, aid: calls.append(("trigger", aid))), \
-         mock.patch.object(provision, "create_oidc_app",
-                           return_value="cli-cid"), \
-         mock.patch.object(provision, "create_human_user",
-                           return_value="demo-1"), \
-         mock.patch.object(provision, "create_admin_role",
-                           side_effect=lambda *a, **k: calls.append("role")), \
-         mock.patch.object(provision, "create_admin_sa",
-                           return_value="sa-9"), \
-         mock.patch.object(provision, "generate_admin_key",
-                           return_value={"userId": "sa-9", "keyId": "ak"}), \
-         mock.patch.object(provision, "create_admin_oidc_app",
-                           return_value=("admin-cid", "admin-secret")), \
-         mock.patch.object(provision, "assign_admin_member",
-                           side_effect=lambda t, h, uid: calls.append(("member", uid))), \
-         mock.patch.object(provision, "assign_admin_project_member",
-                           side_effect=lambda t, h, pid, uid: calls.append(("proj-member", pid, uid))), \
-         mock.patch.object(provision, "write_secret", fake_write_secret), \
-         mock.patch.object(provision, "write_generated_env"):
+    # ExitStack (flat) instead of a deeply-nested `with A, B, C, ...:` — the
+    # latter exceeds CPython's 20-statically-nested-block limit once every
+    # create_* is mocked.
+    with contextlib.ExitStack() as es:
+        def p(name, new=mock.DEFAULT, **kw):
+            es.enter_context(mock.patch.object(provision, name, new, **kw))
+        p("load_admin_key", return_value={"userId": "boot", "keyId": "k", "key": "PEM"})
+        p("mint_management_token", return_value="boot-tok")
+        p("fetch_org_id", return_value="org-1")
+        p("create_project", return_value="proj-1")
+        p("add_role")
+        p("create_machine_user", return_value="kaby-1")
+        p("read_existing_user_id", return_value=None)
+        p("generate_json_key", return_value={"userId": "kaby-1"})
+        p("grant_role")
+        p("create_grant_action", return_value="act-1")
+        p("bind_post_creation_trigger",
+          side_effect=lambda t, h, aid: calls.append(("trigger", aid)))
+        p("create_oidc_app", return_value="cli-cid")
+        p("create_human_user", return_value="demo-1")
+        p("create_admin_role", side_effect=lambda *a, **k: calls.append("role"))
+        p("create_admin_sa", return_value="sa-9")
+        p("generate_admin_key", return_value={"userId": "sa-9", "keyId": "ak"})
+        p("create_admin_oidc_app", return_value=("admin-cid", "admin-secret"))
+        p("create_kabytech_oidc_app", return_value=("kaby-cid", "kaby-secret"))
+        p("assign_admin_member",
+          side_effect=lambda t, h, uid: calls.append(("member", uid)))
+        p("assign_admin_project_member",
+          side_effect=lambda t, h, pid, uid: calls.append(("proj-member", pid, uid)))
+        p("write_secret", fake_write_secret)
+        p("write_generated_env")
         rc = provision.main()
 
     assert rc == 0
@@ -404,6 +399,8 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
     assert "role" in calls
     # gateway pass-through (design 2026-06-22): auto-grant action bound to trigger
     assert ("trigger", "act-1") in calls
+    assert written["kabytech_oidc_client_id"] == "kaby-cid"
+    assert written["kabytech_oidc_client_secret"] == "kaby-secret"
 
 
 # ---------- Gateway identity pass-through: auto-grant action + trigger (Task 1) ----------
@@ -478,3 +475,55 @@ def test_bind_post_creation_trigger_sets_actionids_on_external_auth_flow():
         "/management/v1/flows/FLOW_TYPE_EXTERNAL_AUTHENTICATION"
         "/trigger/TRIGGER_TYPE_POST_CREATION")
     assert captured["body"] == {"actionIds": ["act-77"]}
+
+
+# ---------- Gateway identity pass-through: kabytech OIDC web client (Task 2) ----------
+
+def test_kabytech_oidc_app_body_is_confidential_web_with_pkce_and_refresh():
+    b = provision.build_kabytech_oidc_app_body(
+        ["https://gw.example/callback"], ["https://gw.example/"])
+    assert b["name"] == provision.KABYTECH_OIDC_APP_NAME
+    assert b["appType"] == "OIDC_APP_TYPE_WEB"
+    assert b["authMethodType"] == "OIDC_AUTH_METHOD_TYPE_BASIC"
+    assert b["responseTypes"] == ["OIDC_RESPONSE_TYPE_CODE"]
+    assert "OIDC_GRANT_TYPE_AUTHORIZATION_CODE" in b["grantTypes"]
+    assert "OIDC_GRANT_TYPE_REFRESH_TOKEN" in b["grantTypes"]
+    assert b["redirectUris"] == ["https://gw.example/callback"]
+
+
+def test_kabytech_oidc_app_body_token_type_is_jwt():
+    b = provision.build_kabytech_oidc_app_body(["https://gw.example/callback"], [])
+    # JWT access tokens so the manager validates them via JWKS (not opaque).
+    assert b["accessTokenType"] == "OIDC_TOKEN_TYPE_JWT"
+
+
+def test_kabytech_oidc_app_asserts_roles_in_access_token():
+    # The manager reads chat.user from the ACCESS token, and the chat project
+    # has projectRoleAssertion=false, so the app must force role assertion or
+    # chat.user never rides in the token and the manager 403s every end-user.
+    b = provision.build_kabytech_oidc_app_body(["https://gw.example/callback"], [])
+    assert b["accessTokenRoleAssertion"] is True
+
+
+def test_create_kabytech_oidc_app_posts_web_basic_with_role_assertion():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"clientId": "kc-1", "clientSecret": "ks-1"})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        cid, secret = provision.create_kabytech_oidc_app("tok", {"h": "1"}, "proj-1")
+    assert (cid, secret) == ("kc-1", "ks-1")
+    assert captured["url"].endswith("/management/v1/projects/proj-1/apps/oidc")
+    b = captured["body"]
+    assert b["appType"] == "OIDC_APP_TYPE_WEB"
+    assert b["accessTokenRoleAssertion"] is True
+
+
+def test_create_kabytech_oidc_app_409_is_systemexit():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        with pytest.raises(SystemExit):
+            provision.create_kabytech_oidc_app("tok", {}, "p")
