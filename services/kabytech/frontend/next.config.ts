@@ -17,7 +17,8 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       { source: "/api/:path*", destination: `${KABY_BACKEND_ORIGIN}/api/:path*` },
-      { source: "/login", destination: `${KABY_BACKEND_ORIGIN}/login` },
+      // /login is now a Next page (custom login UI); the authorize start is
+      // /api/login/start (proxied via /api/:path*). Do NOT proxy /login.
       { source: "/callback", destination: `${KABY_BACKEND_ORIGIN}/callback` },
       { source: "/logout", destination: `${KABY_BACKEND_ORIGIN}/logout` },
     ];
