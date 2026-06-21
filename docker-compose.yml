@@ -198,6 +198,9 @@ services:
       KABY_PUBLIC_ORIGIN: http://localhost:3001
       KABY_ALLOWED_ORIGIN: http://localhost:3001
       KABY_SESSION_KEY: ${KABY_SESSION_KEY}
+      # The kabytech-login SA key (ORG_USER_MANAGER + IAM_LOGIN_CLIENT) the
+      # backend mints invite/accept Management tokens from. Mounted read-only.
+      KABY_SA_KEY_PATH: /secrets/kabytech-login-key.json
       # Local stack is plain HTTP — the session cookie must NOT be Secure.
       KABY_COOKIE_SECURE: "false"
       RUST_LOG: ${RUST_LOG:-info}
