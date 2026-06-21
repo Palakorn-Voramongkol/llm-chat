@@ -17,14 +17,17 @@ export function UsageTrend({ rows, endDate }: { rows: DailyRow[] | undefined; en
     return <p className="text-muted-foreground text-sm">No usage in the last 30 days.</p>;
   }
   const mmdd = (day: string) => day.slice(5); // "MM-DD"
+  // Compact token-axis labels so 5-digit counts don't clip: 34564 -> "35k".
+  const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`);
   return (
     <div className="space-y-3">
       <ResponsiveContainer width="100%" height={200}>
-        <ComposedChart data={series} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
+        <ComposedChart data={series} margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" vertical={false} />
           <XAxis dataKey="day" tickFormatter={mmdd} tick={{ fontSize: 11 }}
             tickLine={false} axisLine={false} minTickGap={24} />
-          <YAxis yAxisId="tok" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={48} />
+          <YAxis yAxisId="tok" tickFormatter={kfmt} tick={{ fontSize: 11 }}
+            tickLine={false} axisLine={false} width={44} />
           <YAxis yAxisId="cost" orientation="right" tick={{ fontSize: 11 }} tickLine={false}
             axisLine={false} width={48} tickFormatter={(v: number) => `$${v.toFixed(2)}`} />
           <Tooltip
