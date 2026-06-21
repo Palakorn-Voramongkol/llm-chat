@@ -6,7 +6,7 @@ import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, T
 import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { Boxes } from "lucide-react";
-import { buildColumns, roleChipFull, type Lifecycle, type AppAccess } from "@/components/users/columns";
+import { buildColumns, roleChipFull, fmtTokens, fmtCost, type Lifecycle, type AppAccess } from "@/components/users/columns";
 import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
@@ -389,12 +389,12 @@ export default function UsersPage() {
                   const u = usageByUser.get(selected.id);
                   return (
                     <>
-                      <PanelField label="Requests">{u ? u.requests.toLocaleString("en-US") : "—"}</PanelField>
-                      <PanelField label="Tokens in">{u ? u.tokensIn.toLocaleString("en-US") : "—"}</PanelField>
-                      <PanelField label="Cache read">{u ? u.cacheReadTokens.toLocaleString("en-US") : "—"}</PanelField>
-                      <PanelField label="Cache creation">{u ? u.cacheCreationTokens.toLocaleString("en-US") : "—"}</PanelField>
-                      <PanelField label="Tokens out">{u ? u.tokensOut.toLocaleString("en-US") : "—"}</PanelField>
-                      <PanelField label="Cost">{u ? `$${u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2)}` : "—"}</PanelField>
+                      <PanelField label="Requests">{u ? fmtTokens(u.requests) : "—"}</PanelField>
+                      <PanelField label="Tokens in">{u ? fmtTokens(u.tokensIn) : "—"}</PanelField>
+                      <PanelField label="Cache read">{u ? fmtTokens(u.cacheReadTokens) : "—"}</PanelField>
+                      <PanelField label="Cache creation">{u ? fmtTokens(u.cacheCreationTokens) : "—"}</PanelField>
+                      <PanelField label="Tokens out">{u ? fmtTokens(u.tokensOut) : "—"}</PanelField>
+                      <PanelField label="Cost">{u ? fmtCost(u.costUsd) : "—"}</PanelField>
                       <PanelField label="Last used">{u?.lastUsed ? new Date(u.lastUsed).toLocaleString() : "—"}</PanelField>
                     </>
                   );

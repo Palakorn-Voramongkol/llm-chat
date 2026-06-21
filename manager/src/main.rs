@@ -346,6 +346,8 @@ impl ChatDb {
 
     /// Aggregate token usage per user, excluding rows still in pending/sent/error status.
     async fn usage_by_user(&self) -> Result<Vec<UserUsage>, sqlx::Error> {
+        // Pre-feature (historical) rows have NULL user_id and are unattributable,
+        // so they are excluded from both the per-user rows and the totals.
         let sql = "SELECT user_id,
                      COUNT(*) AS requests,
                      COALESCE(SUM(tokens_in),0) AS input,
@@ -355,7 +357,7 @@ impl ChatDb {
                      COALESCE(SUM(cost_usd),0) AS cost,
                      MAX(time_out) AS last_used
                    FROM chat_question
-                   WHERE status IN ('answered','confirmed')
+                   WHERE status IN ('answered','confirmed') AND user_id IS NOT NULL
                    GROUP BY user_id";
         match self {
             ChatDb::Sqlite(p) => sqlx::query_as::<_, UserUsage>(sql).fetch_all(p).await,
@@ -2874,11 +2876,11 @@ mod usage_row_tests {
                            cache_creation: 20, cost: Some(0.5),
                            model: Some("claude-opus-4-8".into()) };
         db.record_usage(seq, &u).await.unwrap();
-        let got: (Option<String>, Option<i64>, Option<i64>, Option<f64>) =
+        let got: (Option<String>, Option<i64>, Option<i64>, Option<f64>, Option<i64>, Option<i64>) =
             match &db { ChatDb::Sqlite(p) => sqlx::query_as(
-                "SELECT user_id, tokens_in, tokens_out, cost_usd FROM chat_question WHERE seq=?")
+                "SELECT user_id, tokens_in, tokens_out, cost_usd, cache_read_tokens, cache_creation_tokens FROM chat_question WHERE seq=?")
                 .bind(seq).fetch_one(p).await.unwrap(), _ => unreachable!() };
-        assert_eq!(got, (Some("u1".into()), Some(10), Some(5), Some(0.5)));
+        assert_eq!(got, (Some("u1".into()), Some(10), Some(5), Some(0.5), Some(100), Some(20)));
     }
 }
 
@@ -2919,8 +2921,14 @@ mod usage_agg_tests {
                     cache_creation:0,cost:Some(0.1),model:None}).await.unwrap();
             }
         }
+        // Insert a NULL-user answered row — it must NOT appear in results or totals.
+        let null_seq = db.insert_pending("c","s","qnull","t","now",None,None).await.unwrap();
+        db.update_status(null_seq, "answered").await.unwrap();
+        db.record_usage(null_seq, &UsageRow{input:999,output:999,cache_read:0,
+            cache_creation:0,cost:Some(9.0),model:None}).await.unwrap();
+
         let rows = db.usage_by_user().await.unwrap();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 1, "null-user bucket must not appear as a row");
         assert_eq!(rows[0].requests, 2);
         assert_eq!(rows[0].input, 30);
         assert_eq!(rows[0].output, 12);
