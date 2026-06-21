@@ -145,6 +145,38 @@ impl Zitadel {
             Err(format!("set password returned {status}: {body}"))
         }
     }
+
+    /// Create a Zitadel session checking the user's password. Returns
+    /// (sessionId, sessionToken). A wrong password yields an Err.
+    pub async fn create_session(&self, token: &str, login_name: &str, password: &str)
+        -> Result<(String, String), String> {
+        let resp = self.http.post(format!("{}/v2/sessions", self.issuer))
+            .bearer_auth(token).json(&session_check_body(login_name, password))
+            .send().await.map_err(|e| format!("create session: {e}"))?;
+        if !resp.status().is_success() {
+            return Err("invalid credentials".into());
+        }
+        let j: Value = resp.json().await.map_err(|e| format!("session json: {e}"))?;
+        let sid = j["sessionId"].as_str().ok_or("no sessionId")?.to_string();
+        let stok = j["sessionToken"].as_str().ok_or("no sessionToken")?.to_string();
+        Ok((sid, stok))
+    }
+
+    /// Finalize the OIDC auth request with the session; returns the callback URL
+    /// the browser must follow to complete the code flow (needs IAM_LOGIN_CLIENT).
+    pub async fn finalize_auth_request(&self, token: &str, auth_request_id: &str,
+        session_id: &str, session_token: &str) -> Result<String, String> {
+        let resp = self.http.post(format!("{}/v2/oidc/auth_requests/{}", self.issuer, auth_request_id))
+            .bearer_auth(token).json(&finalize_body(session_id, session_token))
+            .send().await.map_err(|e| format!("finalize: {e}"))?;
+        if !resp.status().is_success() {
+            let s = resp.status();
+            let b = resp.text().await.unwrap_or_default();
+            return Err(format!("finalize returned {s}: {b}"));
+        }
+        let j: Value = resp.json().await.map_err(|e| format!("finalize json: {e}"))?;
+        j["callbackUrl"].as_str().map(String::from).ok_or_else(|| "no callbackUrl".into())
+    }
 }
 
 /// PURE: the v2 create-human body for an INVITE — email with a sendCode
@@ -163,6 +195,16 @@ pub fn invite_user_body(email: &str, given: &str, family: &str, accept_base: &st
 /// PURE: the v1 set-password body (no forced change).
 pub fn set_password_body(password: &str) -> Value {
     json!({ "newPassword": { "password": password, "changeRequired": false } })
+}
+
+/// PURE: a v2 session create with a username + password check.
+pub fn session_check_body(login_name: &str, password: &str) -> Value {
+    json!({ "checks": { "user": { "loginName": login_name }, "password": { "password": password } } })
+}
+
+/// PURE: the auth-request finalize body (resolve the request with a session).
+pub fn finalize_body(session_id: &str, session_token: &str) -> Value {
+    json!({ "session": { "sessionId": session_id, "sessionToken": session_token } })
 }
 
 #[cfg(test)]
@@ -192,5 +234,19 @@ mod tests {
         let b = set_password_body("hunter2");
         assert_eq!(b["newPassword"]["password"], "hunter2");
         assert_eq!(b["newPassword"]["changeRequired"], false);
+    }
+
+    #[test]
+    fn session_check_body_has_user_and_password() {
+        let b = session_check_body("alice@x.test", "pw");
+        assert_eq!(b["checks"]["user"]["loginName"], "alice@x.test");
+        assert_eq!(b["checks"]["password"]["password"], "pw");
+    }
+
+    #[test]
+    fn finalize_body_carries_session() {
+        let b = finalize_body("sid-1", "stok-1");
+        assert_eq!(b["session"]["sessionId"], "sid-1");
+        assert_eq!(b["session"]["sessionToken"], "stok-1");
     }
 }
