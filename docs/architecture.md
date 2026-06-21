@@ -158,10 +158,15 @@ Decided at manager startup (`manager/src/main.rs`):
   compares the presented token against its own per-process token
   (constant-time). The **fully-offline local path** — no Zitadel needed.
 
-The reference **Python client only implements the Zitadel JWT-bearer flow** — it
-signs an assertion with a machine-user key and exchanges it for an access token.
-Running it requires real Zitadel credentials (issuer + project + a machine key
-such as `kabytech-key.json`).
+The reference clients implement **two Zitadel flows**: a **machine** flow (the
+`ask` subcommand signs a JWT assertion with a machine-user key — e.g.
+`kabytech-key.json` — and exchanges it for an access token) and an **interactive
+human** flow (`login`/`chat` run OIDC Authorization Code + PKCE via the system
+browser on loopback and cache the session). Either way the manager verifies the
+resulting access token and requires `chat.user`. Both a **Python** client
+(`clients/python`) and a **Rust** port (`clients/rust`, binary `llm-chat`) exist;
+the machine flow requires real Zitadel credentials (issuer + project + a machine
+key).
 
 ### Ops surface: manager `/control` requires `chat.admin`
 

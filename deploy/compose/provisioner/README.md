@@ -42,7 +42,7 @@ curl -s -X POST "$PROVISION_ISSUER/management/v1/projects/$PROJECT_ID/members/_s
 ## Create a new application (multi-app authorization)
 
 Each "application" is a Zitadel **project** with its own roles; users get
-per-app role grants (design `2026-06-18-multi-project-authorization-design.md`).
+per-app role grants (see [`multi-app-authz.md`](../../../docs/superpowers/specs/multi-app-authz.md)).
 The Console fully **manages** any application the runtime SA owns (roles, login
 clients, user grants), but it does **not** create new ones — the SA is kept
 least-privilege (creating + owning arbitrary projects would need org-wide
