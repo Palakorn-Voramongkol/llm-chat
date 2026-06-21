@@ -266,26 +266,27 @@ export interface SigninList {
   result: AuditEvent[];
 }
 
-// ---- Per-user token usage (GET /api/usage, Task 5) ----
+// ---- Per-user self-counted usage (GET /api/usage) ----
 // One row per user in the response. userId is null for the anonymous/unknown
-// bucket (totals row); the console ignores that row.
+// bucket (totals row); the console ignores that row. These are the platform's
+// OWN per-user counts (request/answer text + attachment bytes), NOT claude's
+// account-level token usage (which is shared across all users and unattributable).
 export interface UsageRow {
   userId: string | null;
   requests: number;
-  tokensIn: number;
-  tokensOut: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  costUsd: number;
+  charsIn: number;
+  charsOut: number;
+  files: number;
+  fileBytes: number;
   lastUsed: string | null;
 }
 
 export interface DailyRow {
   userId: string | null;
   day: string; // "YYYY-MM-DD"
-  tokensIn: number;
-  tokensOut: number;
-  costUsd: number;
+  charsIn: number;
+  charsOut: number;
+  fileBytes: number;
 }
 
 export interface UsageDailyResponse {

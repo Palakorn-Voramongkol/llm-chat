@@ -2,9 +2,9 @@ import type { DailyRow } from "@/lib/types";
 
 export interface DaySeries {
   day: string;
-  tokensIn: number;
-  tokensOut: number;
-  costUsd: number;
+  charsIn: number;
+  charsOut: number;
+  fileBytes: number;
 }
 
 /** UTC "YYYY-MM-DD" for a Date. */
@@ -28,9 +28,9 @@ export function buildDailySeries(rows: DailyRow[] | undefined, endDate: Date): D
     const r = byDay.get(key);
     out.push({
       day: key,
-      tokensIn: r?.tokensIn ?? 0,
-      tokensOut: r?.tokensOut ?? 0,
-      costUsd: r?.costUsd ?? 0,
+      charsIn: r?.charsIn ?? 0,
+      charsOut: r?.charsOut ?? 0,
+      fileBytes: r?.fileBytes ?? 0,
     });
   }
   return out;

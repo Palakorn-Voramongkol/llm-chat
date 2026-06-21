@@ -1,18 +1,18 @@
 import { describe, it, expect } from "vitest";
-import { fmtTokens, fmtCost } from "@/components/users/columns";
+import { fmtCount, fmtBytes } from "@/components/users/columns";
 
-describe("token usage formatting", () => {
+describe("usage formatting", () => {
   it("formats thousands and dashes missing", () => {
-    expect(fmtTokens(123456)).toBe("123,456");
-    expect(fmtTokens(undefined)).toBe("—");
-    expect(fmtTokens(0)).toBe("0");
+    expect(fmtCount(123456)).toBe("123,456");
+    expect(fmtCount(undefined)).toBe("—");
+    expect(fmtCount(0)).toBe("0");
   });
 
-  it("fmtCost formats dollars", () => {
-    expect(fmtCost(undefined)).toBe("—");
-    expect(fmtCost(0)).toBe("$0.0000");
-    expect(fmtCost(0.5)).toBe("$0.5000");
-    expect(fmtCost(1.5)).toBe("$1.50");
-    expect(fmtCost(10.123)).toBe("$10.12");
+  it("fmtBytes formats B/KB/MB and dashes missing", () => {
+    expect(fmtBytes(undefined)).toBe("—");
+    expect(fmtBytes(null)).toBe("—");
+    expect(fmtBytes(512)).toBe("512 B");
+    expect(fmtBytes(1536)).toBe("1.5 KB");
+    expect(fmtBytes(3 * 1024 * 1024 + 512 * 1024)).toBe("3.5 MB");
   });
 });

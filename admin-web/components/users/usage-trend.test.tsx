@@ -13,10 +13,11 @@ describe("UsageTrend", () => {
 
   it("renders a per-day table row for an active day", () => {
     const rows: DailyRow[] = [
-      { userId: "u1", day: "2026-06-21", tokensIn: 34505, tokensOut: 10, costUsd: 0.1154 },
+      { userId: "u1", day: "2026-06-21", charsIn: 34505, charsOut: 10, fileBytes: 1536 },
     ];
     render(<UsageTrend rows={rows} endDate={end} />);
     expect(screen.getByText("2026-06-21")).toBeInTheDocument();
     expect(screen.getByText("34,505")).toBeInTheDocument();
+    expect(screen.getByText("1.5 KB")).toBeInTheDocument();
   });
 });

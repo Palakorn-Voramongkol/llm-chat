@@ -14,18 +14,19 @@ describe("buildDailySeries", () => {
 
   it("zero-fills missing days and places rows on the right day", () => {
     const rows: DailyRow[] = [
-      { userId: "u1", day: "2026-06-21", tokensIn: 130, tokensOut: 5, costUsd: 0.5 },
-      { userId: "u1", day: "2026-06-19", tokensIn: 40, tokensOut: 2, costUsd: 0.1 },
+      { userId: "u1", day: "2026-06-21", charsIn: 130, charsOut: 5, fileBytes: 2048 },
+      { userId: "u1", day: "2026-06-19", charsIn: 40, charsOut: 2, fileBytes: 0 },
     ];
     const s = buildDailySeries(rows, end);
     const byDay = Object.fromEntries(s.map((d) => [d.day, d]));
-    expect(byDay["2026-06-21"].tokensIn).toBe(130);
-    expect(byDay["2026-06-19"].tokensOut).toBe(2);
-    expect(byDay["2026-06-20"]).toEqual({ day: "2026-06-20", tokensIn: 0, tokensOut: 0, costUsd: 0 });
+    expect(byDay["2026-06-21"].charsIn).toBe(130);
+    expect(byDay["2026-06-21"].fileBytes).toBe(2048);
+    expect(byDay["2026-06-19"].charsOut).toBe(2);
+    expect(byDay["2026-06-20"]).toEqual({ day: "2026-06-20", charsIn: 0, charsOut: 0, fileBytes: 0 });
   });
 
   it("undefined rows -> all zeros", () => {
     const s = buildDailySeries(undefined, end);
-    expect(s.every((d) => d.tokensIn === 0 && d.tokensOut === 0 && d.costUsd === 0)).toBe(true);
+    expect(s.every((d) => d.charsIn === 0 && d.charsOut === 0 && d.fileBytes === 0)).toBe(true);
   });
 });

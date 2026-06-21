@@ -6,7 +6,7 @@ import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, T
 import { useTableDensity } from "@/lib/use-table-density";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { Boxes } from "lucide-react";
-import { buildColumns, roleChipFull, fmtTokens, fmtCost, type Lifecycle, type AppAccess } from "@/components/users/columns";
+import { buildColumns, roleChipFull, fmtCount, fmtBytes, type Lifecycle, type AppAccess } from "@/components/users/columns";
 import { CreateUserDialog } from "@/components/users/create-user-dialog";
 import { EditUserDialog } from "@/components/users/edit-user-dialog";
 import { ConfirmDialog } from "@/components/users/confirm-dialog";
@@ -400,19 +400,20 @@ export default function UsersPage() {
                   );
                 })()}
               </PanelSection>
-              {/* Token-usage breakdown — per-user totals from /api/usage.
-                  If the fetch failed, usageByUser is empty and every field shows "—". */}
-              <PanelSection title="Token usage">
+              {/* Self-counted usage breakdown — the platform's OWN per-user
+                  counts from /api/usage (request/answer text + attachment bytes),
+                  not claude's shared account-level tokens. If the fetch failed,
+                  usageByUser is empty and every field shows "—". */}
+              <PanelSection title="Usage">
                 {(() => {
                   const u = usageByUser.get(selected.id);
                   return (
                     <>
-                      <PanelField label="Requests">{u ? fmtTokens(u.requests) : "—"}</PanelField>
-                      <PanelField label="Tokens in">{u ? fmtTokens(u.tokensIn) : "—"}</PanelField>
-                      <PanelField label="Cache read">{u ? fmtTokens(u.cacheReadTokens) : "—"}</PanelField>
-                      <PanelField label="Cache creation">{u ? fmtTokens(u.cacheCreationTokens) : "—"}</PanelField>
-                      <PanelField label="Tokens out">{u ? fmtTokens(u.tokensOut) : "—"}</PanelField>
-                      <PanelField label="Cost">{u ? fmtCost(u.costUsd) : "—"}</PanelField>
+                      <PanelField label="Requests">{u ? fmtCount(u.requests) : "—"}</PanelField>
+                      <PanelField label="Chars in">{u ? fmtCount(u.charsIn) : "—"}</PanelField>
+                      <PanelField label="Files">{u ? fmtCount(u.files) : "—"}</PanelField>
+                      <PanelField label="File bytes">{u ? fmtBytes(u.fileBytes) : "—"}</PanelField>
+                      <PanelField label="Chars out">{u ? fmtCount(u.charsOut) : "—"}</PanelField>
                       <PanelField label="Last used">{u?.lastUsed ? new Date(u.lastUsed).toLocaleString() : "—"}</PanelField>
                     </>
                   );

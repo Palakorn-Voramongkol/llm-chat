@@ -9,18 +9,21 @@ import {
 import { avatarGradient, initials } from "@/lib/avatar";
 import type { User, UserState, UsageRow } from "@/lib/types";
 
-// ---- Token-usage formatters (exported for tests) ----
+// ---- Usage formatters (exported for tests) ----
 
-/** Format a token count with thousands separators, or "—" when undefined/null. */
-export function fmtTokens(n: number | undefined | null): string {
+/** Format a count with thousands separators, or "—" when undefined/null. */
+export function fmtCount(n: number | undefined | null): string {
   if (n === undefined || n === null) return "—";
   return n.toLocaleString("en-US");
 }
 
-/** Format a USD cost: 4 decimal places below $1, 2 above. "—" when undefined/null. */
-export function fmtCost(n: number | undefined | null): string {
+/** Format a byte size as KB/MB (1024-based), or "—" when undefined/null. Bytes
+ * under 1 KB render as "N B"; KB/MB show one decimal (e.g. "1.2 KB", "3.4 MB"). */
+export function fmtBytes(n: number | undefined | null): string {
   if (n === undefined || n === null) return "—";
-  return `$${n.toFixed(n < 1 ? 4 : 2)}`;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export type Lifecycle =
@@ -163,29 +166,20 @@ export function buildColumns(
       },
     },
     {
-      id: "tokensIn", header: "Tokens in",
-      meta: { description: "Total **input** tokens (prompt + cache read + cache creation) across this user's answered questions." },
+      id: "charsIn", header: "Chars in",
+      meta: { description: "The platform's **own** count of characters this user **sent** — their request text, not claude's tokens. Not the shared claude account's accounting." },
       cell: ({ row }) => (
         <span className="tabular-nums">
-          {fmtTokens(usageByUser?.get(row.original.id)?.tokensIn)}
+          {fmtCount(usageByUser?.get(row.original.id)?.charsIn)}
         </span>
       ),
     },
     {
-      id: "tokensOut", header: "Tokens out",
-      meta: { description: "Total **output** tokens claude generated for this user." },
+      id: "charsOut", header: "Chars out",
+      meta: { description: "The platform's **own** count of characters this user **received** — the answer text returned to them, not claude's tokens." },
       cell: ({ row }) => (
         <span className="tabular-nums">
-          {fmtTokens(usageByUser?.get(row.original.id)?.tokensOut)}
-        </span>
-      ),
-    },
-    {
-      id: "cost", header: "Cost",
-      meta: { description: "claude's reported `total_cost_usd`, summed — informational, not billing-grade." },
-      cell: ({ row }) => (
-        <span className="tabular-nums">
-          {fmtCost(usageByUser?.get(row.original.id)?.costUsd)}
+          {fmtCount(usageByUser?.get(row.original.id)?.charsOut)}
         </span>
       ),
     },
