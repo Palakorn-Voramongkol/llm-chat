@@ -65,6 +65,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/status", get(status))
         .route("/api/chat-sessions", get(chat_sessions))
         .route("/api/usage", get(usage))
+        .route("/api/usage-daily", get(usage_daily))
         .route("/api/signins", get(list_signins))
         .with_state(state)
 }
@@ -253,6 +254,20 @@ async fn usage(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>,
     let token = st.zitadel.mint_chat_token().await?;
     Ok(Json(
         crate::manager::control_query(&url, &token, "usage")
+            .await
+            .unwrap_or_else(|e| json!({ "ok": false, "error": e })),
+    ))
+}
+
+/// Per-user per-day token usage (last 30 days) from /control "usage-daily".
+/// chat.admin-gated, capability-gated on MANAGER_CONTROL_URL — mirrors usage().
+async fn usage_daily(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let Some(url) = st.cfg.manager_control_url.clone() else {
+        return Ok(Json(json!({ "configured": false, "days": [] })));
+    };
+    let token = st.zitadel.mint_chat_token().await?;
+    Ok(Json(
+        crate::manager::control_query(&url, &token, "usage-daily")
             .await
             .unwrap_or_else(|e| json!({ "ok": false, "error": e })),
     ))
@@ -755,6 +770,16 @@ mod contract_tests {
         let app = test_router_no_session();
         let res = app.oneshot(
             axum::http::Request::builder().uri("/api/usage").body(axum::body::Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn usage_daily_route_requires_operator() {
+        use tower::ServiceExt;
+        let app = test_router_no_session();
+        let res = app.oneshot(
+            axum::http::Request::builder().uri("/api/usage-daily").body(axum::body::Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
