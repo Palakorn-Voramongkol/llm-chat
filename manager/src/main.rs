@@ -56,6 +56,37 @@ use tokio_tungstenite::{
 //   pending → sent → answered (happy path)
 //   pending → sent → error    (PTY died, parser timeout, etc.)
 
+/// One answer's token usage, parsed from the worker's qa `usage` object.
+#[derive(Debug, Clone, PartialEq)]
+struct UsageRow {
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_creation: i64,
+    cost: Option<f64>,
+    model: Option<String>,
+}
+
+impl UsageRow {
+    /// PURE: read the worker's `usage` object off a qa payload. None when the
+    /// payload has no usage (Null/absent — e.g. the PTY transport).
+    fn from_qa(payload: &serde_json::Value) -> Option<UsageRow> {
+        let u = payload.get("usage")?;
+        if u.is_null() {
+            return None;
+        }
+        let n = |k: &str| u.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+        Some(UsageRow {
+            input: n("inputTokens"),
+            output: n("outputTokens"),
+            cache_read: n("cacheReadTokens"),
+            cache_creation: n("cacheCreationTokens"),
+            cost: u.get("costUsd").and_then(|v| v.as_f64()),
+            model: u.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        })
+    }
+}
+
 /// Runtime-dispatched chat queue backend. Each variant holds an open pool;
 /// every operation matches and uses the dialect-appropriate query string.
 #[derive(Clone)]
@@ -75,6 +106,8 @@ impl ChatDb {
     /// INSERT a 'pending' question. Returns the autoincrement seq.
     /// `attachment_paths_json` is an optional JSON array string of absolute
     /// file paths the backend saved for this question (e.g. `["/path/a.png"]`).
+    /// `user_id` is the authenticated JWT `sub` of the asking user (None in
+    /// shared-token / dev mode where there is no per-user identity).
     async fn insert_pending(
         &self,
         connection_id: &str,
@@ -83,13 +116,14 @@ impl ChatDb {
         text: &str,
         time_in: &str,
         attachment_paths_json: Option<&str>,
+        user_id: Option<&str>,
     ) -> Result<i64, sqlx::Error> {
         match self {
             ChatDb::Sqlite(p) => {
                 let r = sqlx::query(
                     "INSERT INTO chat_question
-                     (connection_id, sid, q_id, text, time_in, status, attachment_paths)
-                     VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                     (connection_id, sid, q_id, text, time_in, status, attachment_paths, user_id)
+                     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
                 )
                 .bind(connection_id)
                 .bind(sid)
@@ -97,6 +131,7 @@ impl ChatDb {
                 .bind(text)
                 .bind(time_in)
                 .bind(attachment_paths_json)
+                .bind(user_id)
                 .execute(p)
                 .await?;
                 Ok(r.last_insert_rowid())
@@ -104,8 +139,8 @@ impl ChatDb {
             ChatDb::Postgres(p) => {
                 let row: (i64,) = sqlx::query_as(
                     "INSERT INTO chat_question
-                     (connection_id, sid, q_id, text, time_in, status, attachment_paths)
-                     VALUES ($1, $2, $3, $4, $5, 'pending', $6) RETURNING seq",
+                     (connection_id, sid, q_id, text, time_in, status, attachment_paths, user_id)
+                     VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7) RETURNING seq",
                 )
                 .bind(connection_id)
                 .bind(sid)
@@ -113,6 +148,7 @@ impl ChatDb {
                 .bind(text)
                 .bind(time_in)
                 .bind(attachment_paths_json)
+                .bind(user_id)
                 .fetch_one(p)
                 .await?;
                 Ok(row.0)
@@ -226,6 +262,46 @@ impl ChatDb {
                 )
                 .bind(answer_text)
                 .bind(time_out)
+                .bind(seq)
+                .execute(p)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// UPDATE the token-usage columns for an answered row. Best-effort: a
+    /// failure here must not fail the answer (caller logs and continues).
+    async fn record_usage(&self, seq: i64, u: &UsageRow) -> Result<(), sqlx::Error> {
+        match self {
+            ChatDb::Sqlite(p) => {
+                sqlx::query(
+                    "UPDATE chat_question SET tokens_in=?, tokens_out=?,
+                     cache_read_tokens=?, cache_creation_tokens=?, cost_usd=?, model=?
+                     WHERE seq=?",
+                )
+                .bind(u.input)
+                .bind(u.output)
+                .bind(u.cache_read)
+                .bind(u.cache_creation)
+                .bind(u.cost)
+                .bind(&u.model)
+                .bind(seq)
+                .execute(p)
+                .await?;
+            }
+            ChatDb::Postgres(p) => {
+                sqlx::query(
+                    "UPDATE chat_question SET tokens_in=$1, tokens_out=$2,
+                     cache_read_tokens=$3, cache_creation_tokens=$4, cost_usd=$5, model=$6
+                     WHERE seq=$7",
+                )
+                .bind(u.input)
+                .bind(u.output)
+                .bind(u.cache_read)
+                .bind(u.cache_creation)
+                .bind(u.cost)
+                .bind(&u.model)
                 .bind(seq)
                 .execute(p)
                 .await?;
@@ -1729,12 +1805,15 @@ fn latency_ms(time_in: &str, time_out: &str) -> i64 {
 /// SELECT-then-UPDATE in pop_sent/mark_answered is not atomic, so two
 /// concurrent flushes could otherwise pop the same oldest row). The legacy PTY
 /// path still calls it after a debounce. `num` is for log correlation only.
+/// `qa_payload` carries the raw worker qa object so usage tokens can be
+/// persisted (None on the legacy PTY path which has no usage data).
 async fn flush_answer(
     db: &ChatDb,
     connection_id: &str,
     num: u32,
     final_text: String,
     answer_tx: &tokio::sync::mpsc::Sender<serde_json::Value>,
+    qa_payload: Option<&serde_json::Value>,
 ) {
     // Pop the oldest 'sent' row for this connection (FIFO via ORDER BY seq ASC).
     // Distinguish a DB error from a genuinely empty queue: a swallowed error
@@ -1788,6 +1867,16 @@ async fn flush_answer(
             error = %e,
             "mark_answered failed — row stays 'sent'; next answer may mispair"
         );
+    }
+    // Best-effort: persist token usage if the qa payload carried it.
+    // A failure here must NOT fail the answer — log and continue.
+    if let Some(qa) = qa_payload {
+        if let Some(usage) = UsageRow::from_qa(qa) {
+            if let Err(e) = db.record_usage(seq, &usage).await {
+                tracing::warn!(target: "manager::chat::qa", seq, error = %e,
+                    "record_usage failed — row keeps NULL usage");
+            }
+        }
     }
     let out = serde_json::json!({
         "type": "a",
@@ -1989,6 +2078,7 @@ async fn handle_chat(
     let sid_for_in = sid.clone();
     let answer_tx_for_in = answer_tx.clone();
     let state_for_in = state.clone();
+    let user_id_for_in = user_id.clone();
     let reader = tokio::spawn(async move {
         while let Some(msg) = ws_stream.next().await {
             let text = match msg {
@@ -2181,6 +2271,7 @@ async fn handle_chat(
                     &final_text,
                     &time_in,
                     attachment_paths_json.as_deref(),
+                    Some(user_id_for_in.as_str()),
                 )
                 .await
             {
@@ -2343,6 +2434,7 @@ async fn handle_chat(
                     num,
                     raw,
                     &answer_tx_for_qa,
+                    Some(&v),
                 )
                 .await;
                 continue;
@@ -2375,7 +2467,7 @@ async fn handle_chat(
                     Some(t) if !t.is_empty() => t,
                     _ => return,
                 };
-                flush_answer(&db, &connection_id, num, final_text, &answer_tx).await;
+                flush_answer(&db, &connection_id, num, final_text, &answer_tx, None).await;
             });
         }
     });
@@ -2685,6 +2777,48 @@ mod tests {
         let b = open_request_body("u1", None);
         assert_eq!(b["userId"], "u1");
         assert!(b.get("cwd").is_none());
+    }
+}
+
+#[cfg(test)]
+mod usage_row_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn from_qa_reads_worker_usage() {
+        let qa = json!({ "num": 1, "answer": "hi", "final": true,
+            "usage": { "inputTokens": 10, "outputTokens": 5,
+                       "cacheReadTokens": 100, "cacheCreationTokens": 20,
+                       "costUsd": 0.5, "model": "claude-opus-4-8" } });
+        let u = UsageRow::from_qa(&qa).expect("usage present");
+        assert_eq!((u.input, u.output, u.cache_read, u.cache_creation), (10, 5, 100, 20));
+        assert_eq!(u.cost, Some(0.5));
+        assert_eq!(u.model.as_deref(), Some("claude-opus-4-8"));
+    }
+
+    #[test]
+    fn from_qa_none_when_usage_absent_or_null() {
+        assert!(UsageRow::from_qa(&json!({ "num": 1 })).is_none());
+        assert!(UsageRow::from_qa(&json!({ "usage": null })).is_none());
+    }
+
+    #[tokio::test]
+    async fn record_usage_writes_columns() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        init_schema_sqlite(&pool).await.unwrap();
+        let db = ChatDb::Sqlite(pool);
+        let seq = db.insert_pending("c", "s", "q", "t", "now", None, Some("u1")).await.unwrap();
+        let u = UsageRow { input: 10, output: 5, cache_read: 100,
+                           cache_creation: 20, cost: Some(0.5),
+                           model: Some("claude-opus-4-8".into()) };
+        db.record_usage(seq, &u).await.unwrap();
+        let got: (Option<String>, Option<i64>, Option<i64>, Option<f64>) =
+            match &db { ChatDb::Sqlite(p) => sqlx::query_as(
+                "SELECT user_id, tokens_in, tokens_out, cost_usd FROM chat_question WHERE seq=?")
+                .bind(seq).fetch_one(p).await.unwrap(), _ => unreachable!() };
+        assert_eq!(got, (Some("u1".into()), Some(10), Some(5), Some(0.5)));
     }
 }
 
