@@ -53,6 +53,18 @@ services:
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINE_NAME: Admin
       ZITADEL_FIRSTINSTANCE_ORG_MACHINE_MACHINEKEY_TYPE: 1
       ZITADEL_FIRSTINSTANCE_MACHINEKEYPATH: /machinekey/zitadel-admin-sa.json
+      # SMTP baked into the instance AT CREATION (env-driven from KABY_SMTP_*).
+      # Zitadel v3.4.10 does NOT reliably use a runtime Admin-API SMTP config for
+      # notifications (SMTPConfig.NotFound); the DefaultInstance config does.
+      ZITADEL_DEFAULTINSTANCE_SMTPCONFIGURATION_SMTP_HOST: ${KABY_SMTP_HOST:-mailhog}:${KABY_SMTP_PORT:-1025}
+      ZITADEL_DEFAULTINSTANCE_SMTPCONFIGURATION_SMTP_USER: ${KABY_SMTP_USER:-}
+      ZITADEL_DEFAULTINSTANCE_SMTPCONFIGURATION_SMTP_PASSWORD: ${KABY_SMTP_PASSWORD:-}
+      ZITADEL_DEFAULTINSTANCE_SMTPCONFIGURATION_TLS: ${KABY_SMTP_TLS:-false}
+      ZITADEL_DEFAULTINSTANCE_SMTPCONFIGURATION_FROM: ${KABY_SMTP_SENDER_ADDRESS:-noreply@kabytech.local}
+      ZITADEL_DEFAULTINSTANCE_SMTPCONFIGURATION_FROMNAME: ${KABY_SMTP_SENDER_NAME:-kabytech}
+      # The sender domain (kabytech.local) differs from ExternalDomain
+      # (host.docker.internal), so this MUST be false or Zitadel rejects the From.
+      ZITADEL_DEFAULTINSTANCE_DOMAINPOLICY_SMTPSENDERADDRESSMATCHESINSTANCEDOMAIN: "false"
     ports:
       - "127.0.0.1:8080:8080"   # loopback-only: local-dev stack must not be internet-facing
     depends_on:
@@ -83,14 +95,10 @@ services:
       # Console's Audit page works and survives a clean reset. Off by default
       # (least privilege). Read-only viewer role.
       PROVISION_ENABLE_AUDIT: ${PROVISION_ENABLE_AUDIT:-0}
-      # kabytech invite SMTP — env-driven (dev defaults point at MailHog).
-      KABY_SMTP_HOST: ${KABY_SMTP_HOST:-mailhog}
-      KABY_SMTP_PORT: ${KABY_SMTP_PORT:-1025}
-      KABY_SMTP_TLS: ${KABY_SMTP_TLS:-false}
-      KABY_SMTP_USER: ${KABY_SMTP_USER:-}
-      KABY_SMTP_PASSWORD: ${KABY_SMTP_PASSWORD:-}
-      KABY_SMTP_SENDER_ADDRESS: ${KABY_SMTP_SENDER_ADDRESS:-noreply@kabytech.local}
-      KABY_SMTP_SENDER_NAME: ${KABY_SMTP_SENDER_NAME:-kabytech}
+      # kabytech gateway OIDC client redirect URIs — default to the local-dev
+      # frontend origin so login works out of the box; override for prod.
+      KABYTECH_OIDC_REDIRECT_URI: ${KABYTECH_OIDC_REDIRECT_URI:-http://localhost:3001/callback}
+      KABYTECH_OIDC_POST_LOGOUT_URI: ${KABYTECH_OIDC_POST_LOGOUT_URI:-http://localhost:3001/}
     depends_on:
       zitadel:
         condition: service_healthy

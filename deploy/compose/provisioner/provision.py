@@ -656,50 +656,6 @@ def assign_kaby_login_client(token: str, uid: str) -> None:
         resp.raise_for_status()
 
 
-# ---- Zitadel SMTP config (env-driven; design 2026-06-22) ----
-def require_smtp_env(env: dict) -> dict:
-    """Fail-fast: HOST/PORT/SENDER_ADDRESS are required (name the first missing)."""
-    for k in ("KABY_SMTP_HOST", "KABY_SMTP_PORT", "KABY_SMTP_SENDER_ADDRESS"):
-        if not (env.get(k) or "").strip():
-            raise SystemExit(f"{k} must be set for SMTP config (no default)")
-    return env
-
-
-def build_smtp_body(env: dict) -> dict:
-    """AddSMTPConfigRequest body from KABY_SMTP_* env. host = HOST:PORT; TLS is
-    off unless an explicit truthy value."""
-    tls = (env.get("KABY_SMTP_TLS") or "").strip().lower() not in ("", "false", "0", "no")
-    return {
-        "host": f"{env['KABY_SMTP_HOST'].strip()}:{env['KABY_SMTP_PORT'].strip()}",
-        "tls": tls,
-        "senderAddress": env["KABY_SMTP_SENDER_ADDRESS"].strip(),
-        "senderName": (env.get("KABY_SMTP_SENDER_NAME") or "kabytech").strip(),
-        "user": (env.get("KABY_SMTP_USER") or "").strip(),
-        "password": (env.get("KABY_SMTP_PASSWORD") or "").strip(),
-    }
-
-
-def configure_smtp(token: str, env: dict) -> None:
-    """Add the SMTP provider AND activate it. Zitadel v3 is multi-provider: a
-    config that is merely added is NotFound when sending — it must be activated
-    (POST /admin/v1/smtp/{id}/_activate). Instance-scoped (no org header).
-    Idempotent: an already-present config is found via _search and activated."""
-    require_smtp_env(env)
-    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    resp = request_with_retry(
-        "POST", f"{ISSUER}/admin/v1/smtp", headers=h, json_body=build_smtp_body(env))
-    smtp_id = resp.json().get("id") if resp.status_code == 200 else None
-    if not (smtp_id or is_success(resp.status_code)):
-        resp.raise_for_status()
-    if not smtp_id:
-        s = request_with_retry("POST", f"{ISSUER}/admin/v1/smtp/_search", headers=h, json_body={})
-        result = (s.json().get("result") or []) if s.status_code == 200 else []
-        smtp_id = result[0].get("id") if result else None
-    if smtp_id:
-        request_with_retry(
-            "POST", f"{ISSUER}/admin/v1/smtp/{smtp_id}/_activate", headers=h, json_body={})
-
-
 def assign_admin_project_member(token: str, headers: dict, project_id: str,
                                 sa_user_id: str) -> None:
     """Add the admin SA as a PROJECT member with PROJECT_OWNER on the llm-chat
@@ -885,9 +841,9 @@ def main() -> int:
     write_secret("kabytech_login_user_id", kaby_sa_id)
     print(f"[provision] kabytech-login SA id={kaby_sa_id} "
           f"roles=ORG_USER_MANAGER+IAM_LOGIN_CLIENT")
-    # Env-driven SMTP so invite emails send (MailHog in dev, real SMTP in prod).
-    configure_smtp(token, os.environ)
-    print(f"[provision] SMTP configured host={os.environ.get('KABY_SMTP_HOST')}")
+    # SMTP is configured at instance creation via the zitadel container's
+    # ZITADEL_DEFAULTINSTANCE_SMTPCONFIGURATION_* env (a runtime Admin-API SMTP
+    # config is not reliably used by v3.4.10 notifications) — nothing to do here.
     print(f"[provision] admin: sa_user_id={admin_sa_id} "
           f"admin_oidc_client_id={admin_cid} "
           f"org_roles={ADMIN_SA_ORG_ROLES} project_role={ADMIN_SA_PROJECT_ROLE}")

@@ -385,7 +385,6 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
         p("create_kaby_sa", return_value="kaby-sa-1")
         p("assign_kaby_org_member")
         p("assign_kaby_login_client")
-        p("configure_smtp")
         p("assign_admin_member",
           side_effect=lambda t, h, uid: calls.append(("member", uid)))
         p("assign_admin_project_member",
@@ -460,32 +459,6 @@ def test_assign_kaby_login_client_409_is_success():
     with mock.patch.object(provision, "request_with_retry",
                            lambda *a, **k: _FakeResp(409)):
         provision.assign_kaby_login_client("tok", "kaby-sa-1")  # must NOT raise
-
-
-def test_build_smtp_body_from_env():
-    env = {"KABY_SMTP_HOST": "mailhog", "KABY_SMTP_PORT": "1025",
-           "KABY_SMTP_TLS": "false", "KABY_SMTP_USER": "", "KABY_SMTP_PASSWORD": "",
-           "KABY_SMTP_SENDER_ADDRESS": "noreply@kabytech.local",
-           "KABY_SMTP_SENDER_NAME": "kabytech"}
-    b = provision.build_smtp_body(env)
-    assert b["host"] == "mailhog:1025"
-    assert b["tls"] is False
-    assert b["senderAddress"] == "noreply@kabytech.local"
-    assert b["senderName"] == "kabytech"
-    assert b["user"] == "" and b["password"] == ""
-
-
-def test_require_smtp_env_rejects_missing_host():
-    with pytest.raises(SystemExit):
-        provision.require_smtp_env({"KABY_SMTP_PORT": "1025",
-                                    "KABY_SMTP_SENDER_ADDRESS": "a@b.c"})
-
-
-def test_build_smtp_tls_true_when_truthy():
-    env = {"KABY_SMTP_HOST": "smtp.example.com", "KABY_SMTP_PORT": "587",
-           "KABY_SMTP_TLS": "true", "KABY_SMTP_SENDER_ADDRESS": "a@b.c",
-           "KABY_SMTP_SENDER_NAME": "x"}
-    assert provision.build_smtp_body(env)["tls"] is True
 
 
 # ---------- Gateway identity pass-through: auto-grant action + trigger (Task 1) ----------
