@@ -56,92 +56,54 @@ use tokio_tungstenite::{
 //   pending → sent → answered (happy path)
 //   pending → sent → error    (PTY died, parser timeout, etc.)
 
-/// One answer's token usage, parsed from the worker's qa `usage` object.
-#[derive(Debug, Clone, PartialEq)]
-struct UsageRow {
-    input: i64,
-    output: i64,
-    cache_read: i64,
-    cache_creation: i64,
-    cost: Option<f64>,
-    model: Option<String>,
-}
-
-impl UsageRow {
-    /// PURE: read the worker's `usage` object off a qa payload. None when the
-    /// payload has no usage (Null/absent — e.g. the PTY transport).
-    fn from_qa(payload: &serde_json::Value) -> Option<UsageRow> {
-        let u = payload.get("usage")?;
-        if u.is_null() {
-            return None;
-        }
-        let n = |k: &str| u.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
-        Some(UsageRow {
-            input: n("inputTokens"),
-            output: n("outputTokens"),
-            cache_read: n("cacheReadTokens"),
-            cache_creation: n("cacheCreationTokens"),
-            cost: u.get("costUsd").and_then(|v| v.as_f64()),
-            model: u.get("model").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        })
-    }
-}
-
-/// Per-user token-usage aggregate, returned by `ChatDb::usage_by_user`.
+/// Per-user self-counted usage aggregate, returned by `ChatDb::usage_by_user`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct UserUsage {
     user_id: Option<String>,
     requests: i64,
-    input: i64,
-    output: i64,
-    cache_read: i64,
-    cache_creation: i64,
-    cost: f64,
+    chars_in: i64,
+    chars_out: i64,
+    files: i64,
+    file_bytes: i64,
     last_used: Option<String>,
 }
 
-/// PURE: build the /control "usage" reply. tokensIn folds the cache components
-/// into the input footprint; totals sum across users.
+/// PURE: build the /control "usage" reply from the self-counted per-user rows.
 fn compose_usage_reply(rows: &[UserUsage]) -> serde_json::Value {
     let mut users = Vec::with_capacity(rows.len());
-    let (mut treq, mut tin, mut tout, mut tcost) = (0i64, 0i64, 0i64, 0f64);
+    let (mut treq, mut tin, mut tout, mut tf, mut tb) = (0i64, 0i64, 0i64, 0i64, 0i64);
     for r in rows {
-        let tokens_in = r.input + r.cache_read + r.cache_creation;
-        treq += r.requests; tin += tokens_in; tout += r.output; tcost += r.cost;
+        treq += r.requests; tin += r.chars_in; tout += r.chars_out; tf += r.files; tb += r.file_bytes;
         users.push(serde_json::json!({
             "userId": r.user_id, "requests": r.requests,
-            "tokensIn": tokens_in, "tokensOut": r.output,
-            "cacheReadTokens": r.cache_read, "cacheCreationTokens": r.cache_creation,
-            "costUsd": r.cost, "lastUsed": r.last_used,
+            "charsIn": r.chars_in, "charsOut": r.chars_out,
+            "files": r.files, "fileBytes": r.file_bytes, "lastUsed": r.last_used,
         }));
     }
     serde_json::json!({
         "ok": true, "users": users,
-        "totals": { "requests": treq, "tokensIn": tin, "tokensOut": tout, "costUsd": tcost },
+        "totals": { "requests": treq, "charsIn": tin, "charsOut": tout, "files": tf, "fileBytes": tb },
     })
 }
 
-/// One (user, day) token-usage bucket, returned by `ChatDb::usage_daily`.
+/// One (user, day) self-counted usage bucket, returned by `ChatDb::usage_daily`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 struct DailyRow {
     user_id: Option<String>,
     day: String,
-    input: i64,
-    cache_read: i64,
-    cache_creation: i64,
-    output: i64,
-    cost: f64,
+    chars_in: i64,
+    chars_out: i64,
+    file_bytes: i64,
 }
 
-/// PURE: build the /control "usage-daily" reply. tokensIn folds the cache
-/// components into the input footprint, per (user, day).
+/// PURE: build the /control "usage-daily" reply, per (user, day).
 fn compose_daily_reply(rows: &[DailyRow]) -> serde_json::Value {
     let days: Vec<serde_json::Value> = rows.iter().map(|r| serde_json::json!({
         "userId": r.user_id,
         "day": r.day,
-        "tokensIn": r.input + r.cache_read + r.cache_creation,
-        "tokensOut": r.output,
-        "costUsd": r.cost,
+        "charsIn": r.chars_in,
+        "charsOut": r.chars_out,
+        "fileBytes": r.file_bytes,
     })).collect();
     serde_json::json!({ "ok": true, "days": days })
 }
@@ -342,57 +304,16 @@ impl ChatDb {
         Ok(())
     }
 
-    /// UPDATE the token-usage columns for an answered row. Best-effort: a
-    /// failure here must not fail the answer (caller logs and continues).
-    async fn record_usage(&self, seq: i64, u: &UsageRow) -> Result<(), sqlx::Error> {
-        match self {
-            ChatDb::Sqlite(p) => {
-                sqlx::query(
-                    "UPDATE chat_question SET tokens_in=?, tokens_out=?,
-                     cache_read_tokens=?, cache_creation_tokens=?, cost_usd=?, model=?
-                     WHERE seq=?",
-                )
-                .bind(u.input)
-                .bind(u.output)
-                .bind(u.cache_read)
-                .bind(u.cache_creation)
-                .bind(u.cost)
-                .bind(&u.model)
-                .bind(seq)
-                .execute(p)
-                .await?;
-            }
-            ChatDb::Postgres(p) => {
-                sqlx::query(
-                    "UPDATE chat_question SET tokens_in=$1, tokens_out=$2,
-                     cache_read_tokens=$3, cache_creation_tokens=$4, cost_usd=$5, model=$6
-                     WHERE seq=$7",
-                )
-                .bind(u.input)
-                .bind(u.output)
-                .bind(u.cache_read)
-                .bind(u.cache_creation)
-                .bind(u.cost)
-                .bind(&u.model)
-                .bind(seq)
-                .execute(p)
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Aggregate token usage per user, excluding rows still in pending/sent/error status.
+    /// Aggregate self-counted usage per user, excluding non-answered + null-user rows.
     async fn usage_by_user(&self) -> Result<Vec<UserUsage>, sqlx::Error> {
         // Pre-feature (historical) rows have NULL user_id and are unattributable,
         // so they are excluded from both the per-user rows and the totals.
         let sql = "SELECT user_id,
                      COUNT(*) AS requests,
-                     COALESCE(SUM(tokens_in),0) AS input,
-                     COALESCE(SUM(tokens_out),0) AS output,
-                     COALESCE(SUM(cache_read_tokens),0) AS cache_read,
-                     COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
-                     COALESCE(SUM(cost_usd),0) AS cost,
+                     COALESCE(SUM(chars_in),0) AS chars_in,
+                     COALESCE(SUM(chars_out),0) AS chars_out,
+                     COALESCE(SUM(files),0) AS files,
+                     COALESCE(SUM(file_bytes),0) AS file_bytes,
                      MAX(time_out) AS last_used
                    FROM chat_question
                    WHERE status IN ('answered','confirmed') AND user_id IS NOT NULL
@@ -403,16 +324,14 @@ impl ChatDb {
         }
     }
 
-    /// Per-user per-day token aggregate since `cutoff` (an ISO-8601 string;
-    /// `time_in` is also ISO-8601, so the string comparison is correct and
-    /// dialect-portable). `substr(time_in,1,10)` is the YYYY-MM-DD day.
+    /// Per-user per-day self-counted aggregate since `cutoff` (an ISO-8601
+    /// string; `time_in` is also ISO-8601, so the string comparison is correct
+    /// and dialect-portable). `substr(time_in,1,10)` is the YYYY-MM-DD day.
     async fn usage_daily(&self, cutoff: &str) -> Result<Vec<DailyRow>, sqlx::Error> {
         let sql = "SELECT user_id, substr(time_in,1,10) AS day,
-                     COALESCE(SUM(tokens_in),0) AS input,
-                     COALESCE(SUM(cache_read_tokens),0) AS cache_read,
-                     COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
-                     COALESCE(SUM(tokens_out),0) AS output,
-                     COALESCE(SUM(cost_usd),0) AS cost
+                     COALESCE(SUM(chars_in),0) AS chars_in,
+                     COALESCE(SUM(chars_out),0) AS chars_out,
+                     COALESCE(SUM(file_bytes),0) AS file_bytes
                    FROM chat_question
                    WHERE status IN ('answered','confirmed')
                      AND user_id IS NOT NULL AND time_in >= ?
@@ -2936,67 +2855,29 @@ mod tests {
 }
 
 #[cfg(test)]
-mod usage_row_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn from_qa_reads_worker_usage() {
-        let qa = json!({ "num": 1, "answer": "hi", "final": true,
-            "usage": { "inputTokens": 10, "outputTokens": 5,
-                       "cacheReadTokens": 100, "cacheCreationTokens": 20,
-                       "costUsd": 0.5, "model": "claude-opus-4-8" } });
-        let u = UsageRow::from_qa(&qa).expect("usage present");
-        assert_eq!((u.input, u.output, u.cache_read, u.cache_creation), (10, 5, 100, 20));
-        assert_eq!(u.cost, Some(0.5));
-        assert_eq!(u.model.as_deref(), Some("claude-opus-4-8"));
-    }
-
-    #[test]
-    fn from_qa_none_when_usage_absent_or_null() {
-        assert!(UsageRow::from_qa(&json!({ "num": 1 })).is_none());
-        assert!(UsageRow::from_qa(&json!({ "usage": null })).is_none());
-    }
-
-    #[tokio::test]
-    async fn record_usage_writes_columns() {
-        use sqlx::sqlite::SqlitePoolOptions;
-        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
-        init_schema_sqlite(&pool).await.unwrap();
-        let db = ChatDb::Sqlite(pool);
-        let seq = db.insert_pending("c", "s", "q", "t", "now", None, Some("u1"), 0, 0, 0).await.unwrap();
-        let u = UsageRow { input: 10, output: 5, cache_read: 100,
-                           cache_creation: 20, cost: Some(0.5),
-                           model: Some("claude-opus-4-8".into()) };
-        db.record_usage(seq, &u).await.unwrap();
-        let got: (Option<String>, Option<i64>, Option<i64>, Option<f64>, Option<i64>, Option<i64>) =
-            match &db { ChatDb::Sqlite(p) => sqlx::query_as(
-                "SELECT user_id, tokens_in, tokens_out, cost_usd, cache_read_tokens, cache_creation_tokens FROM chat_question WHERE seq=?")
-                .bind(seq).fetch_one(p).await.unwrap(), _ => unreachable!() };
-        assert_eq!(got, (Some("u1".into()), Some(10), Some(5), Some(0.5), Some(100), Some(20)));
-    }
-}
-
-#[cfg(test)]
 mod usage_agg_tests {
     use super::*;
 
     #[test]
-    fn compose_sums_components_and_totals() {
+    fn compose_usage_sums_chars_files_bytes_and_totals() {
         let rows = vec![
-            UserUsage { user_id: Some("u1".into()), requests: 2, input: 10, output: 5,
-                        cache_read: 100, cache_creation: 20, cost: 0.5, last_used: Some("t2".into()) },
-            UserUsage { user_id: Some("u2".into()), requests: 1, input: 1, output: 1,
-                        cache_read: 0, cache_creation: 0, cost: 0.1, last_used: Some("t1".into()) },
+            UserUsage { user_id: Some("u1".into()), requests: 2, chars_in: 30, chars_out: 12,
+                        files: 3, file_bytes: 4096, last_used: Some("t2".into()) },
+            UserUsage { user_id: Some("u2".into()), requests: 1, chars_in: 5, chars_out: 1,
+                        files: 0, file_bytes: 0, last_used: Some("t1".into()) },
         ];
         let v = compose_usage_reply(&rows);
         assert_eq!(v["ok"], true);
         assert_eq!(v["users"][0]["userId"], "u1");
-        assert_eq!(v["users"][0]["tokensIn"], 130);   // 10 + 100 + 20
-        assert_eq!(v["users"][0]["tokensOut"], 5);
+        assert_eq!(v["users"][0]["charsIn"], 30);
+        assert_eq!(v["users"][0]["charsOut"], 12);
+        assert_eq!(v["users"][0]["files"], 3);
+        assert_eq!(v["users"][0]["fileBytes"], 4096);
         assert_eq!(v["totals"]["requests"], 3);
-        assert_eq!(v["totals"]["tokensIn"], 131);      // 130 + 1  (u2: input=1 + cache_read=0 + cache_creation=0)
-        assert_eq!(v["totals"]["tokensOut"], 6);
+        assert_eq!(v["totals"]["charsIn"], 35);
+        assert_eq!(v["totals"]["charsOut"], 13);
+        assert_eq!(v["totals"]["files"], 3);
+        assert_eq!(v["totals"]["fileBytes"], 4096);
     }
 
     #[tokio::test]
@@ -3006,25 +2887,25 @@ mod usage_agg_tests {
         init_schema_sqlite(&pool).await.unwrap();
         let db = ChatDb::Sqlite(pool);
         // two answered rows for u1, one still pending (excluded)
-        for (q, status, tin, tout) in [("q1","answered",10,5),("q2","confirmed",20,7),("q3","pending",99,99)] {
-            let seq = db.insert_pending("c","s",q,"t","now",None,Some("u1"), 0, 0, 0).await.unwrap();
+        for (q, status, cin, files, fbytes) in
+            [("q1","answered",10,1,100),("q2","confirmed",20,2,200),("q3","pending",99,9,900)] {
+            let seq = db.insert_pending("c","s",q,"t","now",None,Some("u1"), cin, files, fbytes).await.unwrap();
             if status != "pending" {
+                db.mark_answered(seq, "ans", "now2").await.unwrap(); // sets status='answered', chars_out=3
                 db.update_status(seq, status).await.unwrap();
-                db.record_usage(seq, &UsageRow{input:tin,output:tout,cache_read:0,
-                    cache_creation:0,cost:Some(0.1),model:None}).await.unwrap();
             }
         }
         // Insert a NULL-user answered row — it must NOT appear in results or totals.
-        let null_seq = db.insert_pending("c","s","qnull","t","now",None,None, 0, 0, 0).await.unwrap();
-        db.update_status(null_seq, "answered").await.unwrap();
-        db.record_usage(null_seq, &UsageRow{input:999,output:999,cache_read:0,
-            cache_creation:0,cost:Some(9.0),model:None}).await.unwrap();
+        let null_seq = db.insert_pending("c","s","qnull","t","now",None,None, 999, 9, 999).await.unwrap();
+        db.mark_answered(null_seq, "ans", "now2").await.unwrap();
 
         let rows = db.usage_by_user().await.unwrap();
         assert_eq!(rows.len(), 1, "null-user bucket must not appear as a row");
         assert_eq!(rows[0].requests, 2);
-        assert_eq!(rows[0].input, 30);
-        assert_eq!(rows[0].output, 12);
+        assert_eq!(rows[0].chars_in, 30);
+        assert_eq!(rows[0].chars_out, 6);   // "ans" = 3 chars × 2 answered rows
+        assert_eq!(rows[0].files, 3);
+        assert_eq!(rows[0].file_bytes, 300);
     }
 }
 
@@ -3033,17 +2914,18 @@ mod usage_daily_tests {
     use super::*;
 
     #[test]
-    fn compose_daily_folds_tokens_in() {
+    fn compose_daily_emits_chars_and_bytes() {
         let rows = vec![
             DailyRow { user_id: Some("u1".into()), day: "2026-06-21".into(),
-                       input: 10, cache_read: 100, cache_creation: 20, output: 5, cost: 0.5 },
+                       chars_in: 30, chars_out: 5, file_bytes: 2048 },
         ];
         let v = compose_daily_reply(&rows);
         assert_eq!(v["ok"], true);
         assert_eq!(v["days"][0]["userId"], "u1");
         assert_eq!(v["days"][0]["day"], "2026-06-21");
-        assert_eq!(v["days"][0]["tokensIn"], 130);   // 10 + 100 + 20
-        assert_eq!(v["days"][0]["tokensOut"], 5);
+        assert_eq!(v["days"][0]["charsIn"], 30);
+        assert_eq!(v["days"][0]["charsOut"], 5);
+        assert_eq!(v["days"][0]["fileBytes"], 2048);
     }
 
     #[tokio::test]
@@ -3052,11 +2934,9 @@ mod usage_daily_tests {
         let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
         init_schema_sqlite(&pool).await.unwrap();
         let db = ChatDb::Sqlite(pool);
-        async fn add(db: &ChatDb, q: &str, ti: &str, user: Option<&str>, tin: i64) {
-            let seq = db.insert_pending("c", "s", q, "t", ti, None, user, 0, 0, 0).await.unwrap();
-            db.update_status(seq, "answered").await.unwrap();
-            db.record_usage(seq, &UsageRow { input: tin, output: 1, cache_read: 0,
-                cache_creation: 0, cost: Some(0.1), model: None }).await.unwrap();
+        async fn add(db: &ChatDb, q: &str, ti: &str, user: Option<&str>, cin: i64) {
+            let seq = db.insert_pending("c", "s", q, "t", ti, None, user, cin, 0, 0).await.unwrap();
+            db.mark_answered(seq, "a", "now2").await.unwrap();
         }
         add(&db, "q1", "2026-06-21T10:00:00.000Z", Some("u1"), 10).await;
         add(&db, "q2", "2026-06-21T12:00:00.000Z", Some("u1"), 20).await;
@@ -3066,7 +2946,7 @@ mod usage_daily_tests {
         let rows = db.usage_daily("2026-06-15T00:00:00.000Z").await.unwrap();
         assert_eq!(rows.len(), 2);
         let d21 = rows.iter().find(|r| r.day == "2026-06-21").unwrap();
-        assert_eq!(d21.input, 30);
+        assert_eq!(d21.chars_in, 30);
         assert!(rows.iter().all(|r| r.user_id.as_deref() == Some("u1")));
         assert!(rows.iter().all(|r| r.day != "2026-01-01"));
     }
