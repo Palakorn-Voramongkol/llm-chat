@@ -1,0 +1,30 @@
+[package]
+name = "kabytech-backend"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "kabytech_backend"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kabytech-backend"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+zitadel-auth = { path = "../../crates/zitadel-auth" }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "set-header"] }
+tower-sessions = "0.15"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+url = "2"
+time = "0.3"
