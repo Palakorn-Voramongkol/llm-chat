@@ -680,14 +680,24 @@ def build_smtp_body(env: dict) -> dict:
 
 
 def configure_smtp(token: str, env: dict) -> None:
-    """POST /admin/v1/smtp (instance-scoped, no org header). 409 == already set."""
+    """Add the SMTP provider AND activate it. Zitadel v3 is multi-provider: a
+    config that is merely added is NotFound when sending — it must be activated
+    (POST /admin/v1/smtp/{id}/_activate). Instance-scoped (no org header).
+    Idempotent: an already-present config is found via _search and activated."""
     require_smtp_env(env)
+    h = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     resp = request_with_retry(
-        "POST", f"{ISSUER}/admin/v1/smtp",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json_body=build_smtp_body(env))
-    if not is_success(resp.status_code):
+        "POST", f"{ISSUER}/admin/v1/smtp", headers=h, json_body=build_smtp_body(env))
+    smtp_id = resp.json().get("id") if resp.status_code == 200 else None
+    if not (smtp_id or is_success(resp.status_code)):
         resp.raise_for_status()
+    if not smtp_id:
+        s = request_with_retry("POST", f"{ISSUER}/admin/v1/smtp/_search", headers=h, json_body={})
+        result = (s.json().get("result") or []) if s.status_code == 200 else []
+        smtp_id = result[0].get("id") if result else None
+    if smtp_id:
+        request_with_retry(
+            "POST", f"{ISSUER}/admin/v1/smtp/{smtp_id}/_activate", headers=h, json_body={})
 
 
 def assign_admin_project_member(token: str, headers: dict, project_id: str,

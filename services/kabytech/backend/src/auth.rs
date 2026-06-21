@@ -202,8 +202,12 @@ pub async fn api_invite(_op: Operator, State(st): State<AppState>, Json(req): Js
         Ok(t) => t,
         Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
     };
-    let given = req.given.as_deref().unwrap_or("");
-    let family = req.family.as_deref().unwrap_or("");
+    // Zitadel requires non-empty given/family (1–200 runes). When the operator
+    // leaves them blank, fall back to the email local-part (the user can edit
+    // their profile later).
+    let local = email.split('@').next().filter(|s| !s.is_empty()).unwrap_or("user");
+    let given = req.given.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(local);
+    let family = req.family.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(local);
     let uid = match st
         .zitadel
         .create_invited_user(&token, email, given, family, &st.cfg.public_origin)

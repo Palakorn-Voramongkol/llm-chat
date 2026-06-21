@@ -127,10 +127,11 @@ impl Zitadel {
     }
 
     /// Set the user's password (SA-authorized; valid while the user is Initial).
+    /// v2: POST /v2/users/{id}/password (the v1 management PUT is gone in v3).
     pub async fn set_password(&self, token: &str, user_id: &str, password: &str) -> Result<(), String> {
         let resp = self
             .http
-            .put(format!("{}/management/v1/users/{}/password", self.issuer, user_id))
+            .post(format!("{}/v2/users/{}/password", self.issuer, user_id))
             .bearer_auth(token)
             .json(&set_password_body(password))
             .send()
@@ -139,7 +140,9 @@ impl Zitadel {
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(format!("set password returned {}", resp.status()))
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(format!("set password returned {status}: {body}"))
         }
     }
 }
