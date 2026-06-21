@@ -20,8 +20,6 @@ from .errors import AuthError, CredentialError
 
 log = logging.getLogger("llm_chat.auth")
 
-DEFAULT_ISSUER = "http://host.docker.internal:8080"
-
 # This file lives at <repo>/clients/python/llm_chat/auth.py, so the compose
 # stack's secrets are three levels up.
 _SECRETS_DIR = os.path.abspath(
@@ -64,7 +62,12 @@ def resolve_credentials(
         CredentialError: if a credential can't be resolved, or the key file is
             absent — with a message that names what to do about it.
     """
-    issuer = issuer or os.environ.get("ZITADEL_ISSUER") or DEFAULT_ISSUER
+    issuer = issuer or os.environ.get("ZITADEL_ISSUER") or _read_secret_file("issuer")
+    if not issuer:
+        raise CredentialError(
+            "no issuer: pass --issuer, set ZITADEL_ISSUER, or run the compose "
+            f"stack so {os.path.join(secrets_dir(), 'issuer')} exists"
+        )
 
     project = project or os.environ.get("PROJECT_ID") or _read_secret_file("project_id")
     if not project:

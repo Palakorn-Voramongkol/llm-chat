@@ -31,6 +31,7 @@ def _write_machine_key(path: str) -> dict:
 @pytest.fixture
 def secrets(tmp_path, monkeypatch):
     """A populated secrets dir wired in via LLM_CHAT_SECRETS_DIR."""
+    (tmp_path / "issuer").write_text("http://host.docker.internal:8080", encoding="utf-8")
     (tmp_path / "project_id").write_text("376349317130092547", encoding="utf-8")
     _write_machine_key(str(tmp_path / "kabytech-key.json"))
     monkeypatch.setenv("LLM_CHAT_SECRETS_DIR", str(tmp_path))
@@ -39,11 +40,19 @@ def secrets(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_resolve_defaults_from_secrets_dir(secrets):
+def test_resolve_reads_from_secrets_dir(secrets):
     creds = resolve_credentials()
-    assert creds.issuer == auth.DEFAULT_ISSUER
+    assert creds.issuer == "http://host.docker.internal:8080"
     assert creds.project == "376349317130092547"
     assert creds.key_file == os.path.join(str(secrets), "kabytech-key.json")
+
+
+def test_resolve_fails_closed_when_issuer_absent(secrets):
+    # No --issuer, no $ZITADEL_ISSUER, and no secrets/issuer file -> reject,
+    # never fall back to a hardcoded default (fail-closed config policy).
+    (secrets / "issuer").unlink()
+    with pytest.raises(CredentialError, match="no issuer"):
+        resolve_credentials()
 
 
 def test_explicit_args_win(secrets, tmp_path):
@@ -55,6 +64,7 @@ def test_explicit_args_win(secrets, tmp_path):
 
 def test_missing_project_raises(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_CHAT_SECRETS_DIR", str(tmp_path))  # empty dir
+    monkeypatch.setenv("ZITADEL_ISSUER", "http://x:8080")  # issuer present
     for var in ("PROJECT_ID", "KABYTECH_KEY"):
         monkeypatch.delenv(var, raising=False)
     with pytest.raises(CredentialError, match="project id"):
@@ -64,6 +74,7 @@ def test_missing_project_raises(tmp_path, monkeypatch):
 def test_missing_key_file_raises(tmp_path, monkeypatch):
     (tmp_path / "project_id").write_text("p1", encoding="utf-8")
     monkeypatch.setenv("LLM_CHAT_SECRETS_DIR", str(tmp_path))
+    monkeypatch.setenv("ZITADEL_ISSUER", "http://x:8080")  # issuer present
     monkeypatch.delenv("KABYTECH_KEY", raising=False)
     with pytest.raises(CredentialError, match="machine-user key"):
         resolve_credentials()

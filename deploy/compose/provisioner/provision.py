@@ -35,8 +35,21 @@ ADMIN_SA_USERNAME = "chat-admin-api"
 # Interactive human-login path (OIDC Auth Code + PKCE). The OIDC public app the
 # CLI logs in through, plus a ready demo human user with the same chat.user role.
 OIDC_APP_NAME = "llm-chat-cli"
-OIDC_REDIRECT_URI = os.environ.get("OIDC_REDIRECT_URI", "http://localhost:8477/callback")
-OIDC_POST_LOGOUT_URI = os.environ.get("OIDC_POST_LOGOUT_URI", "http://localhost:8477/")
+# RFC 8252 prefers the 127.0.0.1 loopback literal over "localhost" (which a
+# hosts-file entry on a shared box could hijack). Default to 127.0.0.1 and
+# register BOTH spellings (see _both_loopback_hosts) so either client form works.
+OIDC_REDIRECT_URI = os.environ.get("OIDC_REDIRECT_URI", "http://127.0.0.1:8477/callback")
+OIDC_POST_LOGOUT_URI = os.environ.get("OIDC_POST_LOGOUT_URI", "http://127.0.0.1:8477/")
+
+
+def _both_loopback_hosts(uri: str) -> list:
+    """Both 127.0.0.1 and localhost spellings of a loopback redirect URI, so a
+    client using either host matches a registered redirect."""
+    if "127.0.0.1" in uri:
+        return [uri, uri.replace("127.0.0.1", "localhost")]
+    if "localhost" in uri:
+        return [uri, uri.replace("localhost", "127.0.0.1")]
+    return [uri]
 # loginName == username: the org has userLoginMustBeDomain=false (verified against
 # the running instance — the demo user's loginNames were ["demo"]), so the login
 # name is just "demo". The email is a separate field and is never itself a login
@@ -377,8 +390,8 @@ def create_oidc_app(token: str, headers: dict, project_id: str) -> str:
         headers=headers,
         json_body={
             "name": OIDC_APP_NAME,
-            "redirectUris": [OIDC_REDIRECT_URI],
-            "postLogoutRedirectUris": [OIDC_POST_LOGOUT_URI],
+            "redirectUris": _both_loopback_hosts(OIDC_REDIRECT_URI),
+            "postLogoutRedirectUris": _both_loopback_hosts(OIDC_POST_LOGOUT_URI),
             "responseTypes": ["OIDC_RESPONSE_TYPE_CODE"],
             "grantTypes": ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE",
                            "OIDC_GRANT_TYPE_REFRESH_TOKEN"],
@@ -649,6 +662,7 @@ def main() -> int:
     else:
         print("[provision] audit disabled (default) — set PROVISION_ENABLE_AUDIT=1 to enable")
 
+    write_secret("issuer", ISSUER)
     write_secret("project_id", project_id)
     write_secret("kabytech_user_id", user_id)
     write_generated_env(project_id)

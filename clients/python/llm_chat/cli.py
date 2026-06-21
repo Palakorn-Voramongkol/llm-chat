@@ -22,7 +22,7 @@ import os
 import sys
 
 from . import __version__, oidc
-from .auth import DEFAULT_ISSUER, _read_secret_file, fetch_access_token, resolve_credentials
+from .auth import _read_secret_file, fetch_access_token, resolve_credentials
 from .config import add_common_args, configure_logging, resolve_manager
 from .errors import (
     AnswerTimeout,
@@ -57,7 +57,12 @@ def _auth_mode(args: argparse.Namespace) -> str:
 
 
 def _resolve_issuer(args) -> str:
-    return args.issuer or os.environ.get("ZITADEL_ISSUER") or DEFAULT_ISSUER
+    issuer = args.issuer or os.environ.get("ZITADEL_ISSUER") or _read_secret_file("issuer")
+    if not issuer:
+        raise CredentialError(
+            "no issuer: pass --issuer, set ZITADEL_ISSUER, or run the compose stack"
+        )
+    return issuer
 
 
 def _resolve_project(args) -> str:

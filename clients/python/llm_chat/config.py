@@ -5,24 +5,23 @@ from __future__ import annotations
 import argparse
 import logging
 
-from .auth import DEFAULT_ISSUER
-
 
 def add_common_args(p: argparse.ArgumentParser) -> None:
     """Add the connection/auth flags shared by the `ask` and `chat` subcommands.
 
-    All default to None so `resolve_credentials()` can apply the env / secrets
-    precedence; only --issuer and --manager get literal fallbacks.
+    All default to None so `resolve_credentials()`/`resolve_manager()` can apply
+    the flag > env > secrets-file precedence. There are no hardcoded fallbacks:
+    a value absent from all three sources fails fast (fail-closed).
     """
     g = p.add_argument_group("connection")
     g.add_argument("--issuer", default=None,
-                   help=f"Zitadel issuer URL (default: $ZITADEL_ISSUER or {DEFAULT_ISSUER})")
+                   help="Zitadel issuer URL (required: pass --issuer or set $ZITADEL_ISSUER)")
     g.add_argument("--project", default=None,
                    help="Zitadel project_id (default: $PROJECT_ID or secrets/project_id)")
     g.add_argument("--key-file", default=None,
                    help="machine-user JSON key (default: $KABYTECH_KEY or secrets/kabytech-key.json)")
     g.add_argument("--manager", default=None,
-                   help="manager /chat WebSocket URL (default: $MANAGER_WS or ws://127.0.0.1:7777/chat)")
+                   help="manager /chat WebSocket URL (required: pass --manager or set $MANAGER_WS)")
     g.add_argument("--timeout", type=float, default=120.0,
                    help="per-answer timeout in seconds (default: 120; high effort is slow)")
     g.add_argument("--auth", choices=["user", "machine"], default=None,
@@ -45,7 +44,16 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
 
 def resolve_manager(manager: str | None) -> str:
     import os
-    return manager or os.environ.get("MANAGER_WS", "ws://127.0.0.1:7777/chat")
+
+    from .errors import CredentialError
+
+    resolved = manager or os.environ.get("MANAGER_WS")
+    if not resolved:
+        raise CredentialError(
+            "no manager URL: pass --manager or set MANAGER_WS "
+            "(e.g. ws://127.0.0.1:7777/chat)"
+        )
+    return resolved
 
 
 def configure_logging(verbosity: int) -> None:
