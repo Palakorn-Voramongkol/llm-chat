@@ -13,6 +13,7 @@ import { ConfirmDialog } from "@/components/users/confirm-dialog";
 import { GrantsDialog } from "@/components/users/grants-dialog";
 import { AccessDialog } from "@/components/users/access-dialog";
 import { KeysDialog } from "@/components/users/keys-dialog";
+import { UsageTrend } from "@/components/users/usage-trend";
 import { UsersFilterPanel, type UsersCategory } from "@/components/users/UsersFilterPanel";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +21,7 @@ import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
 import type {
   AppProjectList, ChatClient, ChatSessions, GrantList, Role, RoleList,
-  SigninList, User, UserList, UsageRow, UsageResponse,
+  SigninList, User, UserList, UsageRow, UsageResponse, DailyRow, UsageDailyResponse,
 } from "@/lib/types";
 
 export default function UsersPage() {
@@ -51,6 +52,8 @@ export default function UsersPage() {
   // Per-user token-usage stats keyed by userId. A failed /api/usage fetch
   // leaves this map empty (columns show "—"), never blanks the page.
   const [usageByUser, setUsageByUser] = useState<Map<string, UsageRow>>(new Map());
+  // Per-user daily token buckets (last 30 days) for the detail-panel trend.
+  const [dailyByUser, setDailyByUser] = useState<Map<string, DailyRow[]>>(new Map());
   // Per-user monitoring joins: last sign-in time + live chat sessions.
   const [lastSignIn, setLastSignIn] = useState<Map<string, string>>(new Map());
   const [liveByUser, setLiveByUser] = useState<Map<string, ChatClient[]>>(new Map());
@@ -176,6 +179,21 @@ export default function UsersPage() {
       setUsageByUser(m);
     } catch {
       setUsageByUser(new Map());
+    }
+    // Per-user daily buckets (last 30 days): best-effort, same pattern. A failed
+    // fetch leaves the map empty; the trend shows its empty state.
+    try {
+      const r = await api.get<UsageDailyResponse>("/api/usage-daily");
+      const m = new Map<string, DailyRow[]>();
+      for (const row of r.days ?? []) {
+        if (!row.userId) continue;
+        const list = m.get(row.userId) ?? [];
+        list.push(row);
+        m.set(row.userId, list);
+      }
+      setDailyByUser(m);
+    } catch {
+      setDailyByUser(new Map());
     }
   }, []);
 
@@ -399,6 +417,9 @@ export default function UsersPage() {
                     </>
                   );
                 })()}
+                <div className="pt-3">
+                  <UsageTrend rows={dailyByUser.get(selected.id)} endDate={new Date()} />
+                </div>
               </PanelSection>
               {/* App access & roles — what applications this user can use and
                   the roles they hold in each (read view; edit via "App access"). */}
