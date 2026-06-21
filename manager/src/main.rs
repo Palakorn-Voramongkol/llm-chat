@@ -313,6 +313,17 @@ async fn init_schema_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("ALTER TABLE chat_question ADD COLUMN attachment_paths TEXT;")
         .execute(pool)
         .await;
+    for col in [
+        "ALTER TABLE chat_question ADD COLUMN user_id TEXT;",
+        "ALTER TABLE chat_question ADD COLUMN tokens_in INTEGER;",
+        "ALTER TABLE chat_question ADD COLUMN tokens_out INTEGER;",
+        "ALTER TABLE chat_question ADD COLUMN cache_read_tokens INTEGER;",
+        "ALTER TABLE chat_question ADD COLUMN cache_creation_tokens INTEGER;",
+        "ALTER TABLE chat_question ADD COLUMN cost_usd REAL;",
+        "ALTER TABLE chat_question ADD COLUMN model TEXT;",
+    ] {
+        let _ = sqlx::query(col).execute(pool).await;
+    }
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);",
     )
@@ -347,6 +358,17 @@ async fn init_schema_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
     sqlx::query("ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS attachment_paths TEXT;")
         .execute(pool)
         .await?;
+    for col in [
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS user_id TEXT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS tokens_in BIGINT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS tokens_out BIGINT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS cache_creation_tokens BIGINT;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION;",
+        "ALTER TABLE chat_question ADD COLUMN IF NOT EXISTS model TEXT;",
+    ] {
+        sqlx::query(col).execute(pool).await?;
+    }
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);",
     )
@@ -2663,5 +2685,34 @@ mod tests {
         let b = open_request_body("u1", None);
         assert_eq!(b["userId"], "u1");
         assert!(b.get("cwd").is_none());
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn chat_question_has_usage_columns() {
+        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        init_schema_sqlite(&pool).await.unwrap();
+        // Inserting the new columns must succeed.
+        sqlx::query(
+            "INSERT INTO chat_question
+             (connection_id, sid, q_id, text, time_in, status,
+              user_id, tokens_in, tokens_out, cache_read_tokens,
+              cache_creation_tokens, cost_usd, model)
+             VALUES ('c','s','q','t','now','answered',
+                     'u1', 10, 5, 100, 20, 0.5, 'claude-opus-4-8')",
+        )
+        .execute(&pool).await.unwrap();
+        let row: (Option<String>, Option<i64>, Option<f64>) = sqlx::query_as(
+            "SELECT user_id, tokens_out, cost_usd FROM chat_question WHERE q_id='q'",
+        )
+        .fetch_one(&pool).await.unwrap();
+        assert_eq!(row.0.as_deref(), Some("u1"));
+        assert_eq!(row.1, Some(5));
+        assert_eq!(row.2, Some(0.5));
     }
 }
