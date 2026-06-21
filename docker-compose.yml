@@ -83,6 +83,14 @@ services:
       # Console's Audit page works and survives a clean reset. Off by default
       # (least privilege). Read-only viewer role.
       PROVISION_ENABLE_AUDIT: ${PROVISION_ENABLE_AUDIT:-0}
+      # kabytech invite SMTP — env-driven (dev defaults point at MailHog).
+      KABY_SMTP_HOST: ${KABY_SMTP_HOST:-mailhog}
+      KABY_SMTP_PORT: ${KABY_SMTP_PORT:-1025}
+      KABY_SMTP_TLS: ${KABY_SMTP_TLS:-false}
+      KABY_SMTP_USER: ${KABY_SMTP_USER:-}
+      KABY_SMTP_PASSWORD: ${KABY_SMTP_PASSWORD:-}
+      KABY_SMTP_SENDER_ADDRESS: ${KABY_SMTP_SENDER_ADDRESS:-noreply@kabytech.local}
+      KABY_SMTP_SENDER_NAME: ${KABY_SMTP_SENDER_NAME:-kabytech}
     depends_on:
       zitadel:
         condition: service_healthy
@@ -215,6 +223,13 @@ services:
     depends_on:
       kabytech-backend:
         condition: service_started
+    restart: unless-stopped
+
+  # ---- dev SMTP sink for kabytech invite emails (web inbox at :8025) ----
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - "127.0.0.1:8025:8025"   # web inbox (loopback-only)
     restart: unless-stopped
 
 volumes:
