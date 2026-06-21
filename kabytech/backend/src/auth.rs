@@ -44,6 +44,142 @@ pub fn build_authorize_url(cfg: &KabyConfig, challenge: &str, state: &str, nonce
     format!("{}/oauth/v2/authorize?{}", cfg.issuer, q)
 }
 
+// ---------------- handlers (network; verified by the Task 6 gated smoke) ----------------
+
+use axum::{
+    extract::{Query, State},
+    http::{header, StatusCode},
+    response::{IntoResponse, Json, Redirect, Response},
+};
+use serde::Deserialize;
+use tower_sessions::Session;
+
+use crate::session::EndUser;
+use crate::AppState;
+
+pub async fn login(State(st): State<AppState>, session: Session) -> Response {
+    let seed = b64url(&rand::random::<[u8; 16]>());
+    let (verifier, challenge) = pkce_pair(&seed);
+    let state = b64url(&rand::random::<[u8; 16]>());
+    let nonce = b64url(&rand::random::<[u8; 16]>());
+    let _ = session.insert("pkce_verifier", &verifier).await;
+    let _ = session.insert("oauth_state", &state).await;
+    let _ = session.insert("oidc_nonce", &nonce).await;
+    Redirect::to(&build_authorize_url(&st.cfg, &challenge, &state, &nonce)).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+pub async fn callback(
+    State(st): State<AppState>,
+    session: Session,
+    Query(q): Query<CallbackQuery>,
+) -> Response {
+    if let Some(err) = q.error {
+        return (StatusCode::FORBIDDEN, format!("login failed: {err}")).into_response();
+    }
+    let want_state: Option<String> = session.get("oauth_state").await.ok().flatten();
+    if want_state.is_none() || q.state != want_state {
+        return (StatusCode::FORBIDDEN, "state mismatch (possible CSRF)").into_response();
+    }
+    let verifier: String = match session.get("pkce_verifier").await.ok().flatten() {
+        Some(v) => v,
+        None => return (StatusCode::BAD_REQUEST, "no PKCE verifier in session").into_response(),
+    };
+    let code = match q.code {
+        Some(c) => c,
+        None => return (StatusCode::BAD_REQUEST, "no authorization code").into_response(),
+    };
+    let token = match exchange_code(&st, &code, &verifier).await {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    let principal = match st.jwks.verify_sync(&token) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::UNAUTHORIZED, e.to_string()).into_response(),
+    };
+    if !principal.has("chat.user") {
+        return (StatusCode::FORBIDDEN, "not a chat.user").into_response();
+    }
+    let display_name = fetch_display_name(&st, &token).await;
+    let user = EndUser {
+        user_id: principal.user_id.clone(),
+        name: display_name
+            .or_else(|| principal.email.clone())
+            .unwrap_or_else(|| principal.user_id.clone()),
+        roles: principal.roles.clone(),
+    };
+    let _ = session.remove::<String>("pkce_verifier").await;
+    // Fixation defense across the unauth -> authed elevation.
+    let _ = session.cycle_id().await;
+    if session.insert("end_user", &user).await.is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "session write failed").into_response();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = session.insert("login_at", now).await;
+    Redirect::to(&format!("{}/", st.cfg.allowed_origin)).into_response()
+}
+
+pub async fn logout(State(st): State<AppState>, session: Session) -> Response {
+    let _ = session.delete().await;
+    let url = format!(
+        "{}/oidc/v1/end_session?post_logout_redirect_uri={}/",
+        st.cfg.issuer, st.cfg.allowed_origin
+    );
+    Redirect::to(&url).into_response()
+}
+
+/// Authenticated identity for the frontend. 401 when no valid chat.user session
+/// (the EndUser extractor enforces the gate + absolute-lifetime).
+pub async fn api_me(user: EndUser) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "userId": user.user_id, "name": user.name, "roles": user.roles
+    }))
+}
+
+async fn fetch_display_name(st: &AppState, access_token: &str) -> Option<String> {
+    let url = format!("{}/oidc/v1/userinfo", st.cfg.issuer);
+    let v: serde_json::Value = st.http.get(&url).bearer_auth(access_token)
+        .send().await.ok()?.json().await.ok()?;
+    v.get("name").and_then(|x| x.as_str())
+        .or_else(|| v.get("preferred_username").and_then(|x| x.as_str()))
+        .map(|s| s.to_string())
+}
+
+async fn exchange_code(st: &AppState, code: &str, verifier: &str) -> Result<String, String> {
+    let redirect_uri = format!("{}/callback", st.cfg.public_origin);
+    let basic = b64_basic(&st.cfg.oidc_client_id, &st.cfg.oidc_client_secret);
+    let resp = st.http
+        .post(format!("{}/oauth/v2/token", st.cfg.issuer))
+        .header(header::AUTHORIZATION, format!("Basic {basic}"))
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", &redirect_uri),
+            ("code_verifier", verifier),
+        ])
+        .send().await.map_err(|e| format!("token endpoint unreachable: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("token endpoint returned {}", resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| format!("token not JSON: {e}"))?;
+    body.get("access_token").and_then(|v| v.as_str()).map(String::from)
+        .ok_or_else(|| "no access_token in token response".into())
+}
+
+fn b64_basic(id: &str, secret: &str) -> String {
+    let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
+    base64::engine::general_purpose::STANDARD.encode(format!("{}:{}", enc(id), enc(secret)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
