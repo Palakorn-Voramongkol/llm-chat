@@ -15,6 +15,7 @@ COPY manager ./manager
 COPY worker ./worker
 COPY admin-api ./admin-api
 COPY clients/rust ./clients/rust
+COPY services/kabytech/backend ./services/kabytech/backend
 RUN cargo build --release --locked -p llm-chat-manager
 
 FROM debian:bookworm-slim

@@ -18,6 +18,8 @@ COPY admin-api/src ./admin-api/src
 # package (and its deps) compile here.
 COPY clients/rust/Cargo.toml ./clients/rust/Cargo.toml
 COPY clients/rust/src ./clients/rust/src
+COPY services/kabytech/backend/Cargo.toml ./services/kabytech/backend/Cargo.toml
+COPY services/kabytech/backend/src ./services/kabytech/backend/src
 RUN cargo build --release --locked -p llm-chat-admin-api
 
 FROM debian:bookworm-slim
