@@ -563,6 +563,13 @@ def test_kabytech_oidc_app_asserts_roles_in_access_token():
     assert b["accessTokenRoleAssertion"] is True
 
 
+def test_kabytech_oidc_app_uses_login_v2_with_base_uri():
+    # Login V2 delegates the login UI to kabytech (custom /login page).
+    b = provision.build_kabytech_oidc_app_body(["https://gw.example/callback"], [])
+    assert b["loginVersion"]["loginV2"]["baseUri"] == provision.KABYTECH_LOGIN_BASE_URI
+    assert provision.KABYTECH_LOGIN_BASE_URI == "http://localhost:3001"
+
+
 def test_create_kabytech_oidc_app_posts_web_basic_with_role_assertion():
     captured = {}
 

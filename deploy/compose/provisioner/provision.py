@@ -540,6 +540,9 @@ KABYTECH_OIDC_REDIRECT_URI = os.environ.get(
     "KABYTECH_OIDC_REDIRECT_URI", "https://gateway.kabytech.example/callback")
 KABYTECH_OIDC_POST_LOGOUT_URI = os.environ.get(
     "KABYTECH_OIDC_POST_LOGOUT_URI", "https://gateway.kabytech.example/")
+# Login V2 base URI = the kabytech frontend origin. Zitadel redirects authorize
+# requests to {baseUri}/login?authRequest=<id> (custom login UI delegation).
+KABYTECH_LOGIN_BASE_URI = os.environ.get("KABYTECH_LOGIN_BASE_URI", "http://localhost:3001")
 
 
 def build_kabytech_oidc_app_body(redirect_uris: list, post_logout_uris: list) -> dict:
@@ -557,6 +560,10 @@ def build_kabytech_oidc_app_body(redirect_uris: list, post_logout_uris: list) ->
         # projectRoleAssertion=false); without this the manager 403s end-users.
         "accessTokenRoleAssertion": True,
         "idTokenRoleAssertion": True,
+        # Login V2: delegate the login UI to kabytech. Zitadel redirects an
+        # authorize request to {baseUri}/login?authRequest=<id> (the /login path
+        # is fixed/appended by Zitadel) instead of rendering its hosted page.
+        "loginVersion": {"loginV2": {"baseUri": KABYTECH_LOGIN_BASE_URI}},
         "devMode": False,
     }
 
