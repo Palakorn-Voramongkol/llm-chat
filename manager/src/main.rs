@@ -87,6 +87,40 @@ impl UsageRow {
     }
 }
 
+/// Per-user token-usage aggregate, returned by `ChatDb::usage_by_user`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct UserUsage {
+    user_id: Option<String>,
+    requests: i64,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_creation: i64,
+    cost: f64,
+    last_used: Option<String>,
+}
+
+/// PURE: build the /control "usage" reply. tokensIn folds the cache components
+/// into the input footprint; totals sum across users.
+fn compose_usage_reply(rows: &[UserUsage]) -> serde_json::Value {
+    let mut users = Vec::with_capacity(rows.len());
+    let (mut treq, mut tin, mut tout, mut tcost) = (0i64, 0i64, 0i64, 0f64);
+    for r in rows {
+        let tokens_in = r.input + r.cache_read + r.cache_creation;
+        treq += r.requests; tin += tokens_in; tout += r.output; tcost += r.cost;
+        users.push(serde_json::json!({
+            "userId": r.user_id, "requests": r.requests,
+            "tokensIn": tokens_in, "tokensOut": r.output,
+            "cacheReadTokens": r.cache_read, "cacheCreationTokens": r.cache_creation,
+            "costUsd": r.cost, "lastUsed": r.last_used,
+        }));
+    }
+    serde_json::json!({
+        "ok": true, "users": users,
+        "totals": { "requests": treq, "tokensIn": tin, "tokensOut": tout, "costUsd": tcost },
+    })
+}
+
 /// Runtime-dispatched chat queue backend. Each variant holds an open pool;
 /// every operation matches and uses the dialect-appropriate query string.
 #[derive(Clone)]
@@ -308,6 +342,25 @@ impl ChatDb {
             }
         }
         Ok(())
+    }
+
+    /// Aggregate token usage per user, excluding rows still in pending/sent/error status.
+    async fn usage_by_user(&self) -> Result<Vec<UserUsage>, sqlx::Error> {
+        let sql = "SELECT user_id,
+                     COUNT(*) AS requests,
+                     COALESCE(SUM(tokens_in),0) AS input,
+                     COALESCE(SUM(tokens_out),0) AS output,
+                     COALESCE(SUM(cache_read_tokens),0) AS cache_read,
+                     COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
+                     COALESCE(SUM(cost_usd),0) AS cost,
+                     MAX(time_out) AS last_used
+                   FROM chat_question
+                   WHERE status IN ('answered','confirmed')
+                   GROUP BY user_id";
+        match self {
+            ChatDb::Sqlite(p) => sqlx::query_as::<_, UserUsage>(sql).fetch_all(p).await,
+            ChatDb::Postgres(p) => sqlx::query_as::<_, UserUsage>(sql).fetch_all(p).await,
+        }
     }
 }
 
@@ -1454,6 +1507,13 @@ async fn handle_control(
                 {
                     Ok(rows) => serde_json::json!({"ok":true,"count":rows.len(),"rows":rows}),
                     Err(e) => serde_json::json!({"ok":false,"error":format!("queue query: {}", e)}),
+                }
+            }
+            "usage" => {
+                let db = state.lock().await.chat_db.clone();
+                match db.usage_by_user().await {
+                    Ok(rows) => compose_usage_reply(&rows),
+                    Err(e) => serde_json::json!({"ok": false, "error": format!("usage query: {e}")}),
                 }
             }
             "fifo" => {
@@ -2819,6 +2879,51 @@ mod usage_row_tests {
                 "SELECT user_id, tokens_in, tokens_out, cost_usd FROM chat_question WHERE seq=?")
                 .bind(seq).fetch_one(p).await.unwrap(), _ => unreachable!() };
         assert_eq!(got, (Some("u1".into()), Some(10), Some(5), Some(0.5)));
+    }
+}
+
+#[cfg(test)]
+mod usage_agg_tests {
+    use super::*;
+
+    #[test]
+    fn compose_sums_components_and_totals() {
+        let rows = vec![
+            UserUsage { user_id: Some("u1".into()), requests: 2, input: 10, output: 5,
+                        cache_read: 100, cache_creation: 20, cost: 0.5, last_used: Some("t2".into()) },
+            UserUsage { user_id: Some("u2".into()), requests: 1, input: 1, output: 1,
+                        cache_read: 0, cache_creation: 0, cost: 0.1, last_used: Some("t1".into()) },
+        ];
+        let v = compose_usage_reply(&rows);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["users"][0]["userId"], "u1");
+        assert_eq!(v["users"][0]["tokensIn"], 130);   // 10 + 100 + 20
+        assert_eq!(v["users"][0]["tokensOut"], 5);
+        assert_eq!(v["totals"]["requests"], 3);
+        assert_eq!(v["totals"]["tokensIn"], 131);      // 130 + 1  (u2: input=1 + cache_read=0 + cache_creation=0)
+        assert_eq!(v["totals"]["tokensOut"], 6);
+    }
+
+    #[tokio::test]
+    async fn usage_by_user_groups_and_excludes_pending() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        init_schema_sqlite(&pool).await.unwrap();
+        let db = ChatDb::Sqlite(pool);
+        // two answered rows for u1, one still pending (excluded)
+        for (q, status, tin, tout) in [("q1","answered",10,5),("q2","confirmed",20,7),("q3","pending",99,99)] {
+            let seq = db.insert_pending("c","s",q,"t","now",None,Some("u1")).await.unwrap();
+            if status != "pending" {
+                db.update_status(seq, status).await.unwrap();
+                db.record_usage(seq, &UsageRow{input:tin,output:tout,cache_read:0,
+                    cache_creation:0,cost:Some(0.1),model:None}).await.unwrap();
+            }
+        }
+        let rows = db.usage_by_user().await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].requests, 2);
+        assert_eq!(rows[0].input, 30);
+        assert_eq!(rows[0].output, 12);
     }
 }
 
