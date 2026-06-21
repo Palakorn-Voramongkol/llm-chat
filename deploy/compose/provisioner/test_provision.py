@@ -382,6 +382,10 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
         p("generate_admin_key", return_value={"userId": "sa-9", "keyId": "ak"})
         p("create_admin_oidc_app", return_value=("admin-cid", "admin-secret"))
         p("create_kabytech_oidc_app", return_value=("kaby-cid", "kaby-secret"))
+        p("create_kaby_sa", return_value="kaby-sa-1")
+        p("assign_kaby_org_member")
+        p("assign_kaby_login_client")
+        p("configure_smtp")
         p("assign_admin_member",
           side_effect=lambda t, h, uid: calls.append(("member", uid)))
         p("assign_admin_project_member",
@@ -401,6 +405,87 @@ def test_main_provisions_admin_role_sa_app_and_writes_secrets(tmp_path):
     assert ("trigger", "act-1") in calls
     assert written["kabytech_oidc_client_id"] == "kaby-cid"
     assert written["kabytech_oidc_client_secret"] == "kaby-secret"
+    # identity UX Phase 1: kabytech-login SA key + id written
+    assert json.loads(written["kabytech-login-key.json"]) == {"userId": "kaby-1"}
+    assert written["kabytech_login_user_id"] == "kaby-sa-1"
+
+
+# ---------- kabytech login SA + env SMTP (identity UX Phase 1) ----------
+
+def test_create_kaby_sa_posts_machine_jwt():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"userId": "kaby-sa-1"})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        uid = provision.create_kaby_sa("tok", {"h": "1"})
+    assert uid == "kaby-sa-1"
+    assert captured["url"].endswith("/management/v1/users/machine")
+    assert captured["body"]["userName"] == provision.KABY_SA_USERNAME
+    assert captured["body"]["accessTokenType"] == "ACCESS_TOKEN_TYPE_JWT"
+
+
+def test_assign_kaby_org_member_posts_user_manager():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured["url"] = url
+        captured["body"] = json_body
+        return _FakeResp(200, {"details": {}})
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.assign_kaby_org_member("tok", {"h": "1"}, "kaby-sa-1")
+    assert captured["url"].endswith("/management/v1/orgs/me/members")
+    assert captured["body"] == {"userId": "kaby-sa-1", "roles": ["ORG_USER_MANAGER"]}
+
+
+def test_assign_kaby_login_client_posts_instance_member_no_org_header():
+    captured = {}
+
+    def fake_rwr(method, url, *, headers=None, json_body=None, **kw):
+        captured.update(url=url, headers=headers, body=json_body)
+        return _FakeResp(200)
+
+    with mock.patch.object(provision, "request_with_retry", fake_rwr):
+        provision.assign_kaby_login_client("tok", "kaby-sa-1")
+    assert captured["url"].endswith("/admin/v1/members")
+    assert "x-zitadel-orgid" not in captured["headers"]
+    assert captured["body"] == {"userId": "kaby-sa-1", "roles": ["IAM_LOGIN_CLIENT"]}
+
+
+def test_assign_kaby_login_client_409_is_success():
+    with mock.patch.object(provision, "request_with_retry",
+                           lambda *a, **k: _FakeResp(409)):
+        provision.assign_kaby_login_client("tok", "kaby-sa-1")  # must NOT raise
+
+
+def test_build_smtp_body_from_env():
+    env = {"KABY_SMTP_HOST": "mailhog", "KABY_SMTP_PORT": "1025",
+           "KABY_SMTP_TLS": "false", "KABY_SMTP_USER": "", "KABY_SMTP_PASSWORD": "",
+           "KABY_SMTP_SENDER_ADDRESS": "noreply@kabytech.local",
+           "KABY_SMTP_SENDER_NAME": "kabytech"}
+    b = provision.build_smtp_body(env)
+    assert b["host"] == "mailhog:1025"
+    assert b["tls"] is False
+    assert b["senderAddress"] == "noreply@kabytech.local"
+    assert b["senderName"] == "kabytech"
+    assert b["user"] == "" and b["password"] == ""
+
+
+def test_require_smtp_env_rejects_missing_host():
+    with pytest.raises(SystemExit):
+        provision.require_smtp_env({"KABY_SMTP_PORT": "1025",
+                                    "KABY_SMTP_SENDER_ADDRESS": "a@b.c"})
+
+
+def test_build_smtp_tls_true_when_truthy():
+    env = {"KABY_SMTP_HOST": "smtp.example.com", "KABY_SMTP_PORT": "587",
+           "KABY_SMTP_TLS": "true", "KABY_SMTP_SENDER_ADDRESS": "a@b.c",
+           "KABY_SMTP_SENDER_NAME": "x"}
+    assert provision.build_smtp_body(env)["tls"] is True
 
 
 # ---------- Gateway identity pass-through: auto-grant action + trigger (Task 1) ----------

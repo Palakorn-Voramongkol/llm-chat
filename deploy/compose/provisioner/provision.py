@@ -614,6 +614,82 @@ def grant_iam_viewer(token: str, sa_user_id: str) -> None:
         resp.raise_for_status()
 
 
+# ---- kabytech login SA (design 2026-06-22, identity UX) ----
+# The backend authenticates as this machine user to create/invite users and
+# (Phase 2) drive the Session API. Least privilege: ORG_USER_MANAGER (users +
+# grants) + IAM_LOGIN_CLIENT (Session API / auth-request finalize). No ORG_OWNER.
+KABY_SA_USERNAME = "kabytech-login"
+
+
+def create_kaby_sa(token: str, headers: dict) -> str:
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/users/machine", headers=headers,
+        json_body={"userName": KABY_SA_USERNAME, "name": KABY_SA_USERNAME,
+                   "accessTokenType": "ACCESS_TOKEN_TYPE_JWT"})
+    if resp.status_code == 200:
+        return resp.json()["userId"]
+    if resp.status_code == 409:
+        raise SystemExit(
+            "kabytech-login SA already exists (409): clean-boot contract — run "
+            "`docker compose down -v` AND delete ./secrets.")
+    resp.raise_for_status()
+    raise RuntimeError(f"create_kaby_sa unexpected status {resp.status_code}")
+
+
+def assign_kaby_org_member(token: str, headers: dict, uid: str) -> None:
+    """Org member with ORG_USER_MANAGER (create users + grants). Idempotent."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/management/v1/orgs/me/members", headers=headers,
+        json_body={"userId": uid, "roles": ["ORG_USER_MANAGER"]})
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
+
+
+def assign_kaby_login_client(token: str, uid: str) -> None:
+    """Instance member with IAM_LOGIN_CLIENT (Session API). Instance-scoped:
+    NO x-zitadel-orgid header (mirrors grant_iam_viewer). Idempotent (409 ok)."""
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/admin/v1/members",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json_body={"userId": uid, "roles": ["IAM_LOGIN_CLIENT"]})
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
+
+
+# ---- Zitadel SMTP config (env-driven; design 2026-06-22) ----
+def require_smtp_env(env: dict) -> dict:
+    """Fail-fast: HOST/PORT/SENDER_ADDRESS are required (name the first missing)."""
+    for k in ("KABY_SMTP_HOST", "KABY_SMTP_PORT", "KABY_SMTP_SENDER_ADDRESS"):
+        if not (env.get(k) or "").strip():
+            raise SystemExit(f"{k} must be set for SMTP config (no default)")
+    return env
+
+
+def build_smtp_body(env: dict) -> dict:
+    """AddSMTPConfigRequest body from KABY_SMTP_* env. host = HOST:PORT; TLS is
+    off unless an explicit truthy value."""
+    tls = (env.get("KABY_SMTP_TLS") or "").strip().lower() not in ("", "false", "0", "no")
+    return {
+        "host": f"{env['KABY_SMTP_HOST'].strip()}:{env['KABY_SMTP_PORT'].strip()}",
+        "tls": tls,
+        "senderAddress": env["KABY_SMTP_SENDER_ADDRESS"].strip(),
+        "senderName": (env.get("KABY_SMTP_SENDER_NAME") or "kabytech").strip(),
+        "user": (env.get("KABY_SMTP_USER") or "").strip(),
+        "password": (env.get("KABY_SMTP_PASSWORD") or "").strip(),
+    }
+
+
+def configure_smtp(token: str, env: dict) -> None:
+    """POST /admin/v1/smtp (instance-scoped, no org header). 409 == already set."""
+    require_smtp_env(env)
+    resp = request_with_retry(
+        "POST", f"{ISSUER}/admin/v1/smtp",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json_body=build_smtp_body(env))
+    if not is_success(resp.status_code):
+        resp.raise_for_status()
+
+
 def assign_admin_project_member(token: str, headers: dict, project_id: str,
                                 sa_user_id: str) -> None:
     """Add the admin SA as a PROJECT member with PROJECT_OWNER on the llm-chat
@@ -789,6 +865,19 @@ def main() -> int:
     write_secret("kabytech_oidc_client_id", kaby_cid)
     write_secret("kabytech_oidc_client_secret", kaby_secret)
     print(f"[provision] kabytech gateway OIDC client_id={kaby_cid}")
+    # kabytech login SA: the backend authenticates as this user to invite/create
+    # users and (Phase 2) drive the Session API.
+    kaby_sa_id = create_kaby_sa(token, headers)
+    kaby_sa_key = generate_json_key(token, headers, kaby_sa_id)
+    assign_kaby_org_member(token, headers, kaby_sa_id)
+    assign_kaby_login_client(token, kaby_sa_id)
+    write_secret("kabytech-login-key.json", json.dumps(kaby_sa_key))
+    write_secret("kabytech_login_user_id", kaby_sa_id)
+    print(f"[provision] kabytech-login SA id={kaby_sa_id} "
+          f"roles=ORG_USER_MANAGER+IAM_LOGIN_CLIENT")
+    # Env-driven SMTP so invite emails send (MailHog in dev, real SMTP in prod).
+    configure_smtp(token, os.environ)
+    print(f"[provision] SMTP configured host={os.environ.get('KABY_SMTP_HOST')}")
     print(f"[provision] admin: sa_user_id={admin_sa_id} "
           f"admin_oidc_client_id={admin_cid} "
           f"org_roles={ADMIN_SA_ORG_ROLES} project_role={ADMIN_SA_PROJECT_ROLE}")
