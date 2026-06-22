@@ -28,6 +28,20 @@ def test_should_regenerate_when_no_existing_key():
     assert provision.should_skip_keygen(existing_user_id=None, current_user_id="u1") is False
 
 
+def test_build_app_codes_entry_maps_code_to_app():
+    # The human-readable code is the key; the Zitadel-generated clientId/projectId
+    # (opaque numbers) are the resolvable values the platform stores.
+    entry = provision.build_app_codes_entry(
+        "kabytech", "kabytech-gateway", "3338@kabytech", "300999")
+    assert entry == {
+        "kabytech": {
+            "name": "kabytech-gateway",
+            "clientId": "3338@kabytech",
+            "projectId": "300999",
+        }
+    }
+
+
 @pytest.mark.parametrize("status", [500, 502, 503, 401, 403])
 def test_retry_predicate_retries_on_transient(status):
     assert provision.should_retry(status=status, attempt=0) is True

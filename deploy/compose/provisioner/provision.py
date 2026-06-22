@@ -543,6 +543,16 @@ KABYTECH_OIDC_POST_LOGOUT_URI = os.environ.get(
 # Login V2 base URI = the kabytech frontend origin. Zitadel redirects authorize
 # requests to {baseUri}/login?authRequest=<id> (custom login UI delegation).
 KABYTECH_LOGIN_BASE_URI = os.environ.get("KABYTECH_LOGIN_BASE_URI", "http://localhost:3001")
+# Human-readable application "code" for the kabytech-gateway OIDC app. Zitadel
+# auto-generates the clientId (not settable to text), so the platform keeps this
+# code -> app mapping itself (written to secrets/app_codes.json).
+KABYTECH_APP_CODE = os.environ.get("KABYTECH_APP_CODE", "kabytech")
+
+
+def build_app_codes_entry(code: str, name: str, client_id: str, project_id: str) -> dict:
+    """A code -> app mapping the platform can resolve (the code is a short text
+    alias for the Zitadel app whose clientId/projectId are generated numbers)."""
+    return {code: {"name": name, "clientId": client_id, "projectId": project_id}}
 
 
 def build_kabytech_oidc_app_body(redirect_uris: list, post_logout_uris: list) -> dict:
@@ -838,6 +848,12 @@ def main() -> int:
     write_secret("kabytech_oidc_client_id", kaby_cid)
     write_secret("kabytech_oidc_client_secret", kaby_secret)
     print(f"[provision] kabytech gateway OIDC client_id={kaby_cid}")
+    # Record the human-readable app code -> app mapping (Zitadel clientIds are
+    # generated numbers; this lets the platform reference the app as 'kabytech').
+    write_secret("app_codes.json", json.dumps(
+        build_app_codes_entry(KABYTECH_APP_CODE, KABYTECH_OIDC_APP_NAME, kaby_cid, project_id),
+        indent=2))
+    print(f"[provision] app code '{KABYTECH_APP_CODE}' -> {KABYTECH_OIDC_APP_NAME} clientId={kaby_cid}")
     # kabytech login SA: the backend authenticates as this user to invite/create
     # users and (Phase 2) drive the Session API.
     kaby_sa_id = create_kaby_sa(token, headers)
