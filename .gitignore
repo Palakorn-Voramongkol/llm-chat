@@ -18,3 +18,8 @@ dist/
 # Tooling/build artifacts (Playwright MCP traces; stray root Tauri scaffold).
 .playwright-mcp/
 /src-tauri/
+# Local verification screenshots at the repo root (not source).
+/*.png
+# pnpm 10/11 drops an allowBuilds-only placeholder; this repo has no pnpm
+# workspace, so never track it (also in admin-web/.dockerignore).
+pnpm-workspace.yaml
