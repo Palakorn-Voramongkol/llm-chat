@@ -62,11 +62,19 @@ role. The machine (kabytech) and human paths hit the same manager check
 (JWKS-validated JWT + `chat.user`); only the principal differs.
 
 ### Clean reset
-Wipe Zitadel state AND host secrets together, or the stale kabytech key won't
-match the fresh instance:
+Use the repo-root reset script — it wipes Zitadel state AND host secrets
+together (a stale kabytech key won't match a fresh instance), rebuilds the seed
+image from the current `provision.py`, and brings the stack back up:
+```powershell
+.\reset.ps1            # or:  ./reset.sh   (-Force / --force skips the prompt)
+```
+Equivalent manual steps (note the rebuild — `up` alone reseeds from a stale
+image if `provision.py` changed):
 ```powershell
 docker compose down -v
 Remove-Item -Recurse -Force .\secrets
+docker compose build zitadel-init
+docker compose up -d
 ```
 
 ## Client env-var names (footgun)
