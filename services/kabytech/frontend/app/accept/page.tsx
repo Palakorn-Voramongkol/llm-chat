@@ -1,16 +1,22 @@
 "use client";
 import { useState } from "react";
-import { AuthCard, inputCls, btnCls } from "@/components/Card";
+import { AuthCard, btnCls } from "@/components/Card";
+import { Field, PasswordStrength } from "@/components/Field";
+
+const vPw = (v: string) => (v.length < 8 ? "Password must be at least 8 characters" : undefined);
 
 export default function Page() {
   const [pw, setPw] = useState(""); const [confirm, setConfirm] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const [err, setErr] = useState<string | null>(null); const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  // closes over pw so the confirm field re-validates live as the password changes
+  const vConfirm = (v: string) => (v !== pw ? "Passwords do not match" : undefined);
+
   async function submit(e: React.FormEvent) {
-    e.preventDefault(); setErr(null);
-    if (pw.length < 8) return setErr("Password must be at least 8 characters.");
-    if (pw !== confirm) return setErr("Passwords do not match.");
+    e.preventDefault(); setErr(null); setSubmitted(true);
+    if (vPw(pw) || vConfirm(confirm)) return;
     const q = new URLSearchParams(location.search);
     setBusy(true);
     const r = await fetch("/api/accept", { method: "POST",
@@ -26,10 +32,15 @@ export default function Page() {
     </AuthCard>
   );
   return (
-    <AuthCard title="Set your password" subtitle="Finish joining kabytech.">
-      <form onSubmit={submit} className="space-y-3">
-        <input className={inputCls} type="password" placeholder="Password" value={pw} onChange={(e) => setPw(e.target.value)} />
-        <input className={inputCls} type="password" placeholder="Confirm password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+    <AuthCard title="Set your password" subtitle="Finish joining KabyTech.">
+      <form onSubmit={submit} className="space-y-3" noValidate>
+        <div>
+          <Field placeholder="Password" type="password" value={pw}
+            onChange={setPw} validate={vPw} submitted={submitted} />
+          <PasswordStrength value={pw} />
+        </div>
+        <Field placeholder="Confirm password" type="password" value={confirm}
+          onChange={setConfirm} validate={vConfirm} submitted={submitted} />
         {err && <p className="text-sm text-rose-600">{err}</p>}
         <button className={btnCls} disabled={busy}>{busy ? "Saving…" : "Set password"}</button>
       </form>

@@ -21,4 +21,15 @@ describe("custom login page", () => {
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/login", expect.objectContaining({ method: "POST" })));
   });
+
+  it("blocks submit and shows field errors when empty", async () => {
+    vi.stubGlobal("location", { search: "?authRequest=AR_1", set href(_v: string) {} } as unknown as Location);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Page />);
+    fireEvent.click(await screen.findByRole("button", { name: /sign in/i }));
+    await waitFor(() => expect(screen.getByText(/enter your email or username/i)).toBeInTheDocument());
+    expect(screen.getByText(/enter your password/i)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

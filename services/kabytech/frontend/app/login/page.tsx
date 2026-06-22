@@ -1,10 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
-import { AuthCard, inputCls, btnCls } from "@/components/Card";
+import { AuthCard, btnCls } from "@/components/Card";
+import { Field } from "@/components/Field";
+
+const vLogin = (v: string) => (!v.trim() ? "Enter your email or username" : undefined);
+const vPassword = (v: string) => (!v ? "Enter your password" : undefined);
 
 export default function Page() {
   const [authRequest, setAuthRequest] = useState<string | null>(null);
   const [loginName, setLoginName] = useState(""); const [password, setPassword] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const [err, setErr] = useState<string | null>(null); const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -14,7 +19,9 @@ export default function Page() {
   }, []);
 
   async function submit(e: React.FormEvent) {
-    e.preventDefault(); setErr(null); setBusy(true);
+    e.preventDefault(); setErr(null); setSubmitted(true);
+    if (vLogin(loginName) || vPassword(password)) return;
+    setBusy(true);
     const r = await fetch("/api/login", { method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ auth_request: authRequest, login_name: loginName, password }) });
@@ -25,12 +32,12 @@ export default function Page() {
 
   if (!authRequest) return <AuthCard title="Signing in…"><p className="text-slate-500">Redirecting…</p></AuthCard>;
   return (
-    <AuthCard title="Sign in to kabytech" subtitle="Welcome back.">
-      <form onSubmit={submit} className="space-y-3">
-        <input className={inputCls} placeholder="Email or username" autoComplete="username"
-          value={loginName} onChange={(e) => setLoginName(e.target.value)} />
-        <input className={inputCls} type="password" placeholder="Password" autoComplete="current-password"
-          value={password} onChange={(e) => setPassword(e.target.value)} />
+    <AuthCard title="Sign in to KabyTech" subtitle="Welcome back.">
+      <form onSubmit={submit} className="space-y-3" noValidate>
+        <Field placeholder="Email or username" autoComplete="username" value={loginName}
+          onChange={setLoginName} validate={vLogin} submitted={submitted} />
+        <Field placeholder="Password" type="password" autoComplete="current-password" value={password}
+          onChange={setPassword} validate={vPassword} submitted={submitted} />
         {err && <p className="text-sm text-rose-600">{err}</p>}
         <button className={btnCls} disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
       </form>
