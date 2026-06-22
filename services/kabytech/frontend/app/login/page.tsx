@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { AuthCard, btnCls } from "@/components/Card";
-import { Field } from "@/components/Field";
+import { Field, PasswordStrength } from "@/components/Field";
 
 const vLogin = (v: string) => (!v.trim() ? "Enter your email or username" : undefined);
 const vPassword = (v: string) => (!v ? "Enter your password" : undefined);
@@ -36,8 +36,11 @@ export default function Page() {
       <form onSubmit={submit} className="space-y-3" noValidate>
         <Field placeholder="Email or username" autoComplete="username" value={loginName}
           onChange={setLoginName} validate={vLogin} submitted={submitted} />
-        <Field placeholder="Password" type="password" autoComplete="current-password" value={password}
-          onChange={setPassword} validate={vPassword} submitted={submitted} />
+        <div>
+          <Field placeholder="Password" type="password" autoComplete="current-password" value={password}
+            onChange={setPassword} validate={vPassword} submitted={submitted} />
+          <PasswordStrength value={password} />
+        </div>
         {err && <p className="text-sm text-rose-600">{err}</p>}
         <button className={btnCls} disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
       </form>

@@ -1,9 +1,14 @@
 "use client";
 import { useState } from "react";
 import { AuthCard, btnCls } from "@/components/Card";
-import { Field, PasswordStrength } from "@/components/Field";
+import { Field, PasswordStrength, passwordStrength } from "@/components/Field";
 
-const vPw = (v: string) => (v.length < 8 ? "Password must be at least 8 characters" : undefined);
+const vPw = (v: string) =>
+  v.length < 8
+    ? "Password must be at least 8 characters"
+    : passwordStrength(v).score < 2
+      ? "Add a capital, number, or symbol for a stronger password"
+      : undefined;
 
 export default function Page() {
   const [pw, setPw] = useState(""); const [confirm, setConfirm] = useState("");
@@ -13,6 +18,8 @@ export default function Page() {
 
   // closes over pw so the confirm field re-validates live as the password changes
   const vConfirm = (v: string) => (v !== pw ? "Passwords do not match" : undefined);
+  // gate the button: enabled only once the password is strong enough and matches
+  const blocked = busy || !!vPw(pw) || !!vConfirm(confirm);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setErr(null); setSubmitted(true);
@@ -42,7 +49,7 @@ export default function Page() {
         <Field placeholder="Confirm password" type="password" value={confirm}
           onChange={setConfirm} validate={vConfirm} submitted={submitted} />
         {err && <p className="text-sm text-rose-600">{err}</p>}
-        <button className={btnCls} disabled={busy}>{busy ? "Saving…" : "Set password"}</button>
+        <button className={btnCls} disabled={blocked}>{busy ? "Saving…" : "Set password"}</button>
       </form>
     </AuthCard>
   );
