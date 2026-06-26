@@ -599,6 +599,7 @@ async fn regenerate_project_app_secret(_op: Operator, State(st): State<AppState>
     -> Result<Json<Value>, ApiError> {
     Ok(Json(st.zitadel.regenerate_app_secret_in(&pid, &app_id).await?))
 }
+
 async fn list_project_grants(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
     -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "result": st.zitadel.list_project_grants(&pid).await? })))
