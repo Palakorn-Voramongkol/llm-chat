@@ -17,6 +17,8 @@ dist/
 .user-envs/
 # Tooling/build artifacts (Playwright MCP traces; stray root Tauri scaffold).
 .playwright-mcp/
+# Visual brainstorming companion (mockups + session state) — local only.
+.superpowers/
 /src-tauri/
 # Local verification screenshots at the repo root (not source).
 /*.png
