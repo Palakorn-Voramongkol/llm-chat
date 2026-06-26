@@ -300,3 +300,14 @@ export interface UsageResponse {
   users: UsageRow[];
   totals: UsageRow;
 }
+
+// ---- Per-user sandbox listing (GET /api/users/{id}/files) ----
+// The worker's confined box listing: flat, '/'-separated, sorted entries.
+export interface SandboxEntry { path: string; dir: boolean; size: number }
+export interface SandboxFiles {
+  configured: boolean;        // false when MANAGER_CONTROL_URL is unset
+  ok?: boolean;               // false on a manager/worker error
+  entries?: SandboxEntry[];
+  truncated?: boolean;        // depth/entry cap hit
+  error?: string;
+}
