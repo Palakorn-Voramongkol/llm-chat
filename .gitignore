@@ -5,6 +5,9 @@ worker/node_modules/
 manager/target/
 *.log
 *.env
+# Connection config — generated per-environment from .env.local.example + secrets/
+# by the reset scripts. Local only; the committed template is .env.local.example.
+.env.local
 .claude/
 secrets/
 .venv/
