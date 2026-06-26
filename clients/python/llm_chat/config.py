@@ -73,6 +73,16 @@ def resolve_manager(manager: str | None) -> str:
     return resolved
 
 
+def identity_url(manager_ws: str) -> str:
+    """Derive the `/identity` URL from the manager `/chat` URL: same scheme +
+    host:port, path replaced with `/identity` (the manager serves both)."""
+    scheme, sep, rest = manager_ws.partition("://")
+    if not sep:
+        return manager_ws
+    authority = rest.split("/", 1)[0]
+    return f"{scheme}://{authority}/identity"
+
+
 def configure_logging(verbosity: int) -> None:
     """Map -v/-vv to logging levels. Diagnostics go to stderr so they don't mix
     with the chat transcript on stdout."""

@@ -1,10 +1,10 @@
-"""Unit tests for REPL answer formatting + the /status block formatter."""
+"""Unit tests for REPL answer/usage/dir formatting + identity URL derivation."""
 
 from __future__ import annotations
 
+from llm_chat.config import identity_url
 from llm_chat.repl import (
-    ReplCtx, format_answer, format_dir, format_status, format_usage,
-    human_bytes, human_int,
+    format_answer, format_dir, format_usage, human_bytes, human_int,
 )
 
 
@@ -22,34 +22,10 @@ def test_blank_line_not_indented():
     assert out == "para one\n\n    para two"
 
 
-def _ctx() -> ReplCtx:
-    return ReplCtx(
-        kind="python", version="1.0.0", auth_label="machine (kabytech key)",
-        issuer="http://iss:8080", project="P123", manager_url="ws://m:7777/chat",
-    )
-
-
-def test_format_status_includes_all_fields():
-    s = format_status(_ctx(), "admin@example.com", "U9",
-                      ["chat.admin", "chat.user"], True, "s1", 2, "auto", 120.0)
-    assert "llm-chat · python · v1.0.0" in s
-    assert "machine (kabytech key)" in s
-    assert "user      admin@example.com" in s
-    assert "sub     U9" in s
-    assert "roles   chat.admin, chat.user" in s
-    assert "ws://m:7777/chat · connected" in s
-    assert "session   s1 · 2 msgs this session" in s
-    assert "issuer    http://iss:8080" in s
-    assert "project   P123" in s
-    assert "render=auto · timeout=120s" in s
-
-
-def test_format_status_empty_roles_and_no_session():
-    s = format_status(_ctx(), "who", "sub", [], False, None, 0, "raw", 60.0)
-    assert "roles   —" in s
-    assert "session   — · 0 msgs" in s
-    assert "ws://m:7777/chat · disconnected" in s
-    assert "render=raw · timeout=60s" in s
+def test_identity_url_swaps_path():
+    assert identity_url("ws://127.0.0.1:7777/chat") == "ws://127.0.0.1:7777/identity"
+    assert identity_url("wss://host.example:443/chat") == "wss://host.example:443/identity"
+    assert identity_url("ws://h:7777") == "ws://h:7777/identity"
 
 
 def test_human_int_groups_thousands():
