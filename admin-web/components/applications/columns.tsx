@@ -8,6 +8,7 @@ import type { AppProject } from "@/lib/types";
 export interface AppMeta {
   roleKeys: string[]; // the app's role keys (for the chips)
   userCount: number; // distinct users with a grant on the app
+  clientCount: number; // login clients registered under the app
 }
 
 export function buildApplicationColumns(
@@ -73,6 +74,15 @@ export function buildApplicationColumns(
         return (
           <span className="tabular-nums text-sm">{meta.userCount}</span>
         );
+      },
+    },
+    {
+      id: "clients", header: "Clients", enableSorting: false,
+      meta: { description: "How many OIDC login clients are registered under this application." },
+      cell: ({ row }) => {
+        const meta = metaById?.get(row.original.id);
+        if (!meta) return <span className="text-muted-foreground text-xs">…</span>;
+        return <span className="tabular-nums text-sm">{meta.clientCount}</span>;
       },
     },
   ];
