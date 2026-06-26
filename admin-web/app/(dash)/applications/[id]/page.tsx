@@ -13,7 +13,7 @@ import { RoleCreateDialog } from "@/components/applications/role-create-dialog";
 import { RoleEditDialog } from "@/components/roles/role-edit-dialog";
 import { AppFormDialog } from "@/components/apps/app-form-dialog";
 import { SecretRevealDialog } from "@/components/apps/secret-reveal-dialog";
-import { appTypeLabel, pretty } from "@/components/apps/columns";
+import { APP_TYPE_CHIP, appTypeLabel, pretty } from "@/components/apps/columns";
 import { avatarGradient, initials } from "@/lib/avatar";
 import { api, ApiError } from "@/lib/api";
 import { clientPath, clientSecretPath } from "@/lib/clients";
@@ -21,13 +21,6 @@ import type {
   AppProject, AppProjectList, OidcApp, OidcAppList,
   ProjectGrant, ProjectGrantList, Role, RoleList, AppSecret,
 } from "@/lib/types";
-
-const APP_TYPE_CHIP: Record<string, string> = {
-  NATIVE: "bg-emerald-500/10 text-emerald-700",
-  WEB: "bg-blue-500/10 text-blue-700",
-  API: "bg-violet-500/10 text-violet-700",
-  USER_AGENT: "bg-amber-500/10 text-amber-700",
-};
 
 export default function ApplicationDetailPage() {
   const params = useParams<{ id: string }>();
@@ -58,7 +51,7 @@ export default function ApplicationDetailPage() {
     try {
       const al = await api.get<OidcAppList>(`/api/projects/${id}/apps`);
       setClients(al.result ?? []);
-    } catch { setClients([]); }
+    } catch { /* keep the prior list on a refresh failure (e.g. after a mutation) */ }
   }, [id]);
 
   const load = useCallback(async () => {
@@ -125,6 +118,10 @@ export default function ApplicationDetailPage() {
     }
   }
 
+  // Render the detail panel from the LIVE list so it reflects edits immediately
+  // (the selection state would otherwise hold a stale pre-edit object reference).
+  const selectedClient = clients.find((c) => c.id === selected?.id) ?? null;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6 overflow-auto">
       <div className="space-y-2">
@@ -154,10 +151,10 @@ export default function ApplicationDetailPage() {
                 <ul className="space-y-2.5">
                   {clients.map((c) => {
                     const t = appTypeLabel(c);
-                    const isSel = selected?.id === c.id;
+                    const isSel = selectedClient?.id === c.id;
                     return (
                       <li key={c.id}>
-                        <button type="button" onClick={() => setSelected(c)}
+                        <button type="button" aria-pressed={isSel} onClick={() => setSelected(c)}
                           className={`flex w-full items-center gap-2.5 rounded-md border px-2.5 py-2 text-left transition-colors ${isSel ? "border-primary ring-1 ring-primary" : "hover:bg-muted/50"}`}>
                           <span aria-hidden
                             className="flex size-7 shrink-0 items-center justify-center rounded-md bg-violet-500/10 text-violet-600">
@@ -184,24 +181,24 @@ export default function ApplicationDetailPage() {
           </Card>
         </div>
 
-        <DetailPanel open={!!selected} title={selected?.name ?? ""}
+        <DetailPanel open={!!selectedClient} title={selectedClient?.name ?? ""}
           subtitle="Login client" onClose={() => setSelected(null)}>
-          {selected && (
+          {selectedClient && (
             <>
               <PanelSection title="OIDC config">
-                <PanelField label="Client ID" mono>{selected.oidcConfig?.clientId || "—"}</PanelField>
-                <PanelField label="App type">{appTypeLabel(selected) || "—"}</PanelField>
-                <PanelField label="Auth method">{pretty(selected.oidcConfig?.authMethodType) || "—"}</PanelField>
+                <PanelField label="Client ID" mono>{selectedClient.oidcConfig?.clientId || "—"}</PanelField>
+                <PanelField label="App type">{appTypeLabel(selectedClient) || "—"}</PanelField>
+                <PanelField label="Auth method">{pretty(selectedClient.oidcConfig?.authMethodType) || "—"}</PanelField>
                 <PanelField label="Grant types">
-                  {selected.oidcConfig?.grantTypes?.length
-                    ? selected.oidcConfig.grantTypes.map(pretty).join(", ")
+                  {selectedClient.oidcConfig?.grantTypes?.length
+                    ? selectedClient.oidcConfig.grantTypes.map(pretty).join(", ")
                     : "—"}
                 </PanelField>
               </PanelSection>
               <PanelSection title="Redirect URIs">
-                {selected.oidcConfig?.redirectUris?.length ? (
+                {selectedClient.oidcConfig?.redirectUris?.length ? (
                   <ul className="space-y-1">
-                    {selected.oidcConfig.redirectUris.map((uri) => (
+                    {selectedClient.oidcConfig.redirectUris.map((uri) => (
                       <li key={uri} className="font-mono text-xs break-all">{uri}</li>
                     ))}
                   </ul>
@@ -210,10 +207,10 @@ export default function ApplicationDetailPage() {
                 )}
               </PanelSection>
               <div className="flex flex-wrap gap-2 pt-2">
-                <Button variant="outline" size="sm" onClick={() => setEditTarget(selected)}>Edit</Button>
-                <Button variant="outline" size="sm" onClick={() => setRotateTarget(selected)}>Rotate secret</Button>
+                <Button variant="outline" size="sm" onClick={() => setEditTarget(selectedClient)}>Edit</Button>
+                <Button variant="outline" size="sm" onClick={() => setRotateTarget(selectedClient)}>Rotate secret</Button>
                 <Button variant="outline" size="sm" className="text-destructive"
-                  onClick={() => setDeleteTarget(selected)}>Delete</Button>
+                  onClick={() => setDeleteTarget(selectedClient)}>Delete</Button>
               </div>
             </>
           )}

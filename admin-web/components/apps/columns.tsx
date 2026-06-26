@@ -15,7 +15,7 @@ export const pretty = (s?: string) => (s ?? "").replace(/^[A-Z_]*?_(TYPE|STATE)_
 
 // Tinted chip per OIDC app type (design language): NATIVE=emerald, WEB=blue,
 // API=violet, USER_AGENT=amber; unknown=slate.
-const APP_TYPE_CHIP: Record<string, string> = {
+export const APP_TYPE_CHIP: Record<string, string> = {
   NATIVE: "bg-emerald-500/10 text-emerald-700",
   WEB: "bg-blue-500/10 text-blue-700",
   API: "bg-violet-500/10 text-violet-700",
