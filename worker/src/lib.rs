@@ -2571,13 +2571,20 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                 }
                             }
                             "dir" => {
-                                // List the caller's OWN box (recursive tree),
-                                // reusing the same fail-closed confinement as
-                                // `open`. user id is MANDATORY (no fallback).
+                                // List a user's box (recursive tree). user id is
+                                // MANDATORY (no fallback). `create` defaults true so
+                                // the /chat self-view creates the box on first open;
+                                // the admin read-only path sends create:false.
                                 let user_id = req.get("userId").and_then(|v| v.as_str());
-                                tracing::info!(target: "backend::dir", user_id = ?user_id, "dir command received");
+                                let create = req.get("create").and_then(|v| v.as_bool()).unwrap_or(true);
+                                tracing::info!(target: "backend::dir", user_id = ?user_id, create, "dir command received");
                                 let base = USER_ENV_BASE.get().expect("validated at startup");
-                                match crate::user_env::list_box_tree(base, user_id, 8, 2000) {
+                                let listed = if create {
+                                    crate::user_env::list_box_tree(base, user_id, 8, 2000)
+                                } else {
+                                    crate::user_env::list_box_readonly(base, user_id, 8, 2000)
+                                };
+                                match listed {
                                     Ok((entries, truncated)) => {
                                         let items: Vec<serde_json::Value> = entries.iter().map(|e| serde_json::json!({
                                             "path": e.path, "dir": e.dir, "size": e.size,
