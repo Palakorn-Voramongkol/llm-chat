@@ -99,6 +99,10 @@ export function AppFormDialog({
       }
       onOpenChange(false);
       onSaved();
+      // Reset the create form so reopening "Register login client" starts clean
+      // (the reset effect only re-runs when `app` changes, and create's app is
+      // permanently null).
+      if (!isEdit) form.reset();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Save failed");
     }
