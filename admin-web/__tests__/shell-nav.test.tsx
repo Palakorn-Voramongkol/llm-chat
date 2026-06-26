@@ -6,12 +6,12 @@ import { NavLink } from "../components/shell/NavLink";
 vi.mock("next/navigation", () => ({ usePathname: () => "/users" }));
 
 describe("NAV source of truth", () => {
-  it("lists the eight areas with hrefs in order", () => {
+  it("lists the seven areas with hrefs in order", () => {
     expect(NAV.map((n) => n.href)).toEqual([
-      "/dashboard", "/users", "/roles", "/applications", "/apps", "/sessions", "/settings", "/audit",
+      "/dashboard", "/users", "/roles", "/applications", "/sessions", "/settings", "/audit",
     ]);
     expect(NAV.map((n) => n.label)).toEqual([
-      "Dashboard", "Users", "Roles", "Applications", "OIDC Clients", "Sessions", "Project & Org", "Audit",
+      "Dashboard", "Users", "Roles", "Applications", "Sessions", "Project & Org", "Audit",
     ]);
   });
 
