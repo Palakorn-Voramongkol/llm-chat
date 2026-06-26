@@ -152,6 +152,106 @@ fn compose_own_usage_reply(user_id: &str, total: &OwnUsage, daily: &[OwnDaily]) 
     })
 }
 
+// ---------- /identity: pure renderers + label shaper ----------
+
+const STATUS_RULE: &str = "─────────────────────────────────────────────";
+
+/// The client-supplied half of a `/status` request: only facts the client alone
+/// knows (its flags + its `/chat` connection). The identity half (who/sub/roles/
+/// issuer/project) is server-resolved. Missing fields degrade to display-safe
+/// defaults — this is a display surface, not a security boundary.
+struct StatusClient {
+    kind: String,
+    version: String,
+    auth_label: String,
+    render_mode: String,
+    timeout_secs: u64,
+    manager_url: String,
+    connected: bool,
+    session_id: Option<String>,
+    msgs_this_session: u64,
+}
+
+/// PURE: parse the `client` object of a `status` request into `StatusClient`.
+fn parse_status_client(v: &serde_json::Value) -> StatusClient {
+    let c = v.get("client").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let s = |k: &str| c.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    let str_or = |k: &str, d: &str| {
+        let val = c.get(k).and_then(|x| x.as_str()).unwrap_or(d);
+        if val.is_empty() { d.to_string() } else { val.to_string() }
+    };
+    StatusClient {
+        kind: str_or("kind", "?"),
+        version: str_or("version", "?"),
+        auth_label: str_or("authLabel", "—"),
+        render_mode: str_or("renderMode", "auto"),
+        timeout_secs: c.get("timeoutSecs").and_then(|x| x.as_u64()).unwrap_or(0),
+        manager_url: s("managerUrl"),
+        connected: c.get("connected").and_then(|x| x.as_bool()).unwrap_or(false),
+        session_id: c.get("sessionId").and_then(|x| x.as_str()).map(String::from),
+        msgs_this_session: c.get("msgsThisSession").and_then(|x| x.as_u64()).unwrap_or(0),
+    }
+}
+
+/// PURE: render the full `/status` block. Identity args are server-resolved;
+/// `c` is the client-supplied context. Layout is byte-identical to the layout
+/// the clients used to render — keep it stable.
+fn format_status_block(
+    c: &StatusClient,
+    who: &str,
+    sub: &str,
+    roles: &[String],
+    issuer: &str,
+    project: &str,
+) -> String {
+    let roles_str = if roles.is_empty() { "—".to_string() } else { roles.join(", ") };
+    let conn = if c.connected { "connected" } else { "disconnected" };
+    let sid = c.session_id.as_deref().unwrap_or("—");
+    format!(
+        "─ status ───────────────────────────────────\n\
+         \x20client    llm-chat · {kind} · v{version}\n\
+         \x20auth      {auth}\n\
+         \x20user      {who}\n\
+         \x20  sub     {sub}\n\
+         \x20  roles   {roles}\n\
+         \x20manager   {manager} · {conn}\n\
+         \x20session   {sid} · {msgs} msgs this session\n\
+         \x20issuer    {issuer}\n\
+         \x20project   {project}\n\
+         \x20display   render={render} · timeout={timeout}s\n\
+         {rule}",
+        kind = c.kind, version = c.version, auth = c.auth_label,
+        who = who, sub = sub, roles = roles_str, manager = c.manager_url,
+        conn = conn, sid = sid, msgs = c.msgs_this_session, issuer = issuer,
+        project = project, render = c.render_mode, timeout = c.timeout_secs, rule = STATUS_RULE,
+    )
+}
+
+/// PURE: render the `whoami` line(s). Matches the old client `print_whoami`.
+fn format_whoami_line(who: &str, sub: &str, roles: &[String]) -> String {
+    let mut s = format!("logged in as {who} (sub={sub})");
+    if !roles.is_empty() {
+        s.push_str(&format!("\n  roles: {}", roles.join(", ")));
+    }
+    s
+}
+
+/// PURE: pick a DISPLAY label from a `/userinfo` body, falling back to the
+/// verified-JWT email then the `sub`. Never errors (never authz).
+fn user_label_from_userinfo(
+    v: &serde_json::Value,
+    email_fallback: Option<&str>,
+    sub: &str,
+) -> String {
+    v.get("name")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("preferred_username").and_then(|x| x.as_str()))
+        .or_else(|| v.get("email").and_then(|x| x.as_str()))
+        .map(|s| s.to_string())
+        .or_else(|| email_fallback.map(|s| s.to_string()))
+        .unwrap_or_else(|| sub.to_string())
+}
+
 /// Runtime-dispatched chat queue backend. Each variant holds an open pool;
 /// every operation matches and uses the dialect-appropriate query string.
 #[derive(Clone)]
@@ -3189,5 +3289,102 @@ mod schema_tests {
         assert_eq!(row.0.as_deref(), Some("u1"));
         assert_eq!(row.1, Some(5));
         assert_eq!(row.2, Some(0.5));
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn sample_client() -> serde_json::Value {
+        serde_json::json!({
+            "type": "status",
+            "client": {
+                "kind": "rust", "version": "1.0.0",
+                "authLabel": "human (browser login)",
+                "renderMode": "auto", "timeoutSecs": 120,
+                "managerUrl": "ws://m:7777/chat",
+                "connected": true, "sessionId": "s1", "msgsThisSession": 2
+            }
+        })
+    }
+
+    #[test]
+    fn parse_status_client_reads_all_fields() {
+        let c = parse_status_client(&sample_client());
+        assert_eq!(c.kind, "rust");
+        assert_eq!(c.version, "1.0.0");
+        assert_eq!(c.auth_label, "human (browser login)");
+        assert_eq!(c.render_mode, "auto");
+        assert_eq!(c.timeout_secs, 120);
+        assert_eq!(c.manager_url, "ws://m:7777/chat");
+        assert!(c.connected);
+        assert_eq!(c.session_id.as_deref(), Some("s1"));
+        assert_eq!(c.msgs_this_session, 2);
+    }
+
+    #[test]
+    fn parse_status_client_defaults_missing_fields() {
+        // Missing `client` object → display-safe defaults (not a security path).
+        let c = parse_status_client(&serde_json::json!({"type": "status"}));
+        assert_eq!(c.kind, "?");
+        assert_eq!(c.render_mode, "auto");
+        assert_eq!(c.timeout_secs, 0);
+        assert!(!c.connected);
+        assert_eq!(c.session_id, None);
+        assert_eq!(c.msgs_this_session, 0);
+    }
+
+    #[test]
+    fn format_status_block_matches_layout() {
+        let c = parse_status_client(&sample_client());
+        let roles = vec!["chat.admin".to_string(), "chat.user".to_string()];
+        let s = format_status_block(&c, "admin@example.com", "U9", &roles,
+                                    "http://iss:8080", "llm-chat");
+        assert!(s.contains("client    llm-chat · rust · v1.0.0"));
+        assert!(s.contains("auth      human (browser login)"));
+        assert!(s.contains("user      admin@example.com"));
+        assert!(s.contains("  sub     U9"));
+        assert!(s.contains("  roles   chat.admin, chat.user"));
+        assert!(s.contains("manager   ws://m:7777/chat · connected"));
+        assert!(s.contains("session   s1 · 2 msgs this session"));
+        assert!(s.contains("issuer    http://iss:8080"));
+        assert!(s.contains("project   llm-chat"));
+        assert!(s.contains("display   render=auto · timeout=120s"));
+    }
+
+    #[test]
+    fn format_status_block_empty_roles_and_no_session() {
+        let c = parse_status_client(&serde_json::json!({
+            "client": {"kind":"python","version":"1.0.0","authLabel":"machine (kabytech key)",
+                       "renderMode":"raw","timeoutSecs":60,"managerUrl":"ws://m:7777/chat",
+                       "connected": false, "sessionId": null, "msgsThisSession": 0}
+        }));
+        let s = format_status_block(&c, "who", "sub", &[], "http://iss", "P123");
+        assert!(s.contains("roles   —"));
+        assert!(s.contains("session   — · 0 msgs"));
+        assert!(s.contains("ws://m:7777/chat · disconnected"));
+        assert!(s.contains("render=raw · timeout=60s"));
+    }
+
+    #[test]
+    fn format_whoami_line_with_and_without_roles() {
+        let with = format_whoami_line("a@b.c", "U1", &["chat.user".to_string()]);
+        assert_eq!(with, "logged in as a@b.c (sub=U1)\n  roles: chat.user");
+        let without = format_whoami_line("a@b.c", "U1", &[]);
+        assert_eq!(without, "logged in as a@b.c (sub=U1)");
+    }
+
+    #[test]
+    fn user_label_prefers_name_then_username_then_email_then_fallback() {
+        let v = serde_json::json!({"name":"Jane Doe","preferred_username":"jane","email":"j@x.io"});
+        assert_eq!(user_label_from_userinfo(&v, Some("e@x.io"), "U1"), "Jane Doe");
+        let v = serde_json::json!({"preferred_username":"jane","email":"j@x.io"});
+        assert_eq!(user_label_from_userinfo(&v, Some("e@x.io"), "U1"), "jane");
+        let v = serde_json::json!({"email":"j@x.io"});
+        assert_eq!(user_label_from_userinfo(&v, Some("e@x.io"), "U1"), "j@x.io");
+        let v = serde_json::json!({});
+        assert_eq!(user_label_from_userinfo(&v, Some("e@x.io"), "U1"), "e@x.io");
+        assert_eq!(user_label_from_userinfo(&v, None, "U1"), "U1");
     }
 }
