@@ -98,7 +98,7 @@ HELP = """commands:
   /session         show the backend session id
   /status          show your identity + client/connection status
   /usage           show your own usage (totals + last 7 days)
-  /dir             list your box (per-user files, recursive)
+  /dir             list your sandbox (your files, recursive)
   /render MODE     switch markdown display: auto | plain | raw
   /reset           drop the session and start a fresh one (clears claude context)
   /multi           enter a multi-line message (end with '.')
@@ -206,7 +206,7 @@ def format_dir(reply: dict) -> str:
     n = len(entries)
     lines = [
         "─ dir ───────────────────────────────────────",
-        f" box        your environment · {n} {'entry' if n == 1 else 'entries'}",
+        f" / · {n} {'item' if n == 1 else 'items'}",
     ]
     if entries:
         for e in entries:
@@ -221,7 +221,7 @@ def format_dir(reply: dict) -> str:
             else:
                 lines.append(f"{indent}{name}  {human_bytes(size)}")
     else:
-        lines.append(" (box is empty)")
+        lines.append(" (empty)")
     if truncated:
         lines.append(" … (truncated)")
     lines.append(STATUS_RULE)

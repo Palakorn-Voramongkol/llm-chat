@@ -17,7 +17,7 @@ const HELP: &str = "commands:\n\
   /session         show the backend session id\n\
   /status          show your identity + client/connection status\n\
   /usage           show your own usage (totals + last 7 days)\n\
-  /dir             list your box (per-user files, recursive)\n\
+  /dir             list your sandbox (your files, recursive)\n\
   /render MODE     switch markdown display: auto | plain | raw\n\
   /reset           drop the session and start a fresh one (clears claude context)\n\
   /multi           enter a multi-line message (end with '.')\n\
@@ -151,8 +151,8 @@ fn format_dir(reply: &serde_json::Value) -> String {
     let n = entries.map(|a| a.len()).unwrap_or(0);
     let mut s = format!(
         "─ dir ───────────────────────────────────────\n\
-         \x20box        your environment · {n} {}",
-        if n == 1 { "entry" } else { "entries" },
+         \x20/ · {n} {}",
+        if n == 1 { "item" } else { "items" },
     );
     match entries {
         Some(arr) if !arr.is_empty() => {
@@ -170,7 +170,7 @@ fn format_dir(reply: &serde_json::Value) -> String {
                 }
             }
         }
-        _ => s.push_str("\n (box is empty)"),
+        _ => s.push_str("\n (empty)"),
     }
     if truncated {
         s.push_str("\n … (truncated)");
@@ -559,7 +559,7 @@ mod tests {
             {"path":"todo.md","dir":false,"size":5},
         ]});
         let s = format_dir(&reply);
-        assert!(s.contains("3 entries"));
+        assert!(s.contains("/ · 3 items"));
         assert!(s.contains("\n  projects/"));
         assert!(s.contains("\n    main.rs  11 B"));
         assert!(s.contains("\n  todo.md  5 B"));
@@ -569,7 +569,7 @@ mod tests {
     fn format_dir_empty_box() {
         let reply = serde_json::json!({"type":"dir","truncated":false,"entries":[]});
         let s = format_dir(&reply);
-        assert!(s.contains("0 entries"));
-        assert!(s.contains("(box is empty)"));
+        assert!(s.contains("/ · 0 items"));
+        assert!(s.contains("(empty)"));
     }
 }

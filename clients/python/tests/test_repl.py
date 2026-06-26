@@ -98,7 +98,7 @@ def test_format_dir_renders_tree():
         {"path": "todo.md", "dir": False, "size": 5},
     ]}
     s = format_dir(reply)
-    assert "3 entries" in s
+    assert "/ · 3 items" in s
     assert "\n  projects/" in s
     assert "\n    main.rs  11 B" in s
     assert "\n  todo.md  5 B" in s
@@ -106,5 +106,5 @@ def test_format_dir_renders_tree():
 
 def test_format_dir_empty_box():
     s = format_dir({"type": "dir", "truncated": False, "entries": []})
-    assert "0 entries" in s
-    assert "(box is empty)" in s
+    assert "/ · 0 items" in s
+    assert "(empty)" in s
