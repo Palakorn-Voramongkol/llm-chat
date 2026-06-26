@@ -411,7 +411,7 @@ export default function UsersPage() {
                 ) : sandbox.ok === false ? (
                   <span className="text-destructive text-sm">{sandbox.error || "Sandbox unavailable"}</span>
                 ) : (sandbox.entries ?? []).length === 0 ? (
-                  <span className="text-muted-foreground text-sm">No sandbox yet.</span>
+                  <span className="text-muted-foreground text-sm">No files in this sandbox.</span>
                 ) : (
                   <>
                     <SandboxTree nodes={buildTree(sandbox.entries ?? [])} />
