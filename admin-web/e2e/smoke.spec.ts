@@ -214,15 +214,18 @@ test.describe("authenticated operator flow", () => {
     await deleteRow(page, uname);
   });
 
-  test("create OIDC app reveals the client secret exactly once", async ({ page }) => {
-    // Canonical route is /apps (NAV.href in components/shell/nav.ts); the page
-    // heading is "Applications".
-    await page.goto("/apps");
+  test("create a login client inside an application reveals the secret once", async ({ page }) => {
+    // OIDC login clients are now managed inside each Application (the standalone
+    // /apps page was retired). Open the home (llm-chat) application's detail from
+    // the Applications list, then register a login client there.
+    await page.goto("/applications");
     await expect(page.getByRole("heading", { name: "Applications" })).toBeVisible();
+    await page.getByRole("row", { name: /llm-chat/i }).first().click();
+    await expect(page.getByRole("heading", { name: /llm-chat/i })).toBeVisible();
 
-    const appName = `pw-app-${Date.now()}`;
-    await page.getByTestId("create-app").click();
-    await page.getByLabel("Name").fill(appName);
+    const clientName = `pw-client-${Date.now()}`;
+    await page.getByTestId("create-app").click(); // the "Register login client" trigger
+    await page.getByLabel("Name").fill(clientName);
     await page.getByLabel(/redirect uris/i).fill("https://example.localhost/callback");
     // appType defaults to Web (confidential) + Basic -> server returns a secret.
     await page.getByRole("button", { name: "Create" }).click();
@@ -236,16 +239,19 @@ test.describe("authenticated operator flow", () => {
       page.getByText(/shown once and cannot be retrieved again/i),
     ).toBeVisible();
 
-    // dismiss -> the secret is gone and NOT recoverable from the list page.
+    // dismiss -> the secret is gone and NOT recoverable from the clients list.
     await page.getByTestId("reveal-done").click();
     await expect(page.getByTestId("reveal-client-secret")).toHaveCount(0);
-    await filterBy(page, /search name/i, appName);
-    await expect(page.getByText(appName)).toBeVisible();
-    // the row shows clientId but never the secret value.
+    await expect(page.getByText(clientName)).toBeVisible();
     await expect(page.getByText(secretValue)).toHaveCount(0);
 
-    // Clean up the throwaway OIDC client so runs don't accumulate apps.
-    await deleteRow(page, appName);
+    // Clean up: select the client and delete it via the detail panel
+    // (panel "Delete" -> confirm "Delete"; the modal makes the panel inert, so
+    // the second match is the dialog's button).
+    await page.getByRole("button", { name: new RegExp(clientName) }).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(page.getByText(/login client deleted/i)).toBeVisible();
   });
 
   test("Project & Org settings renders editable project + read-only policies", async ({ page }) => {
