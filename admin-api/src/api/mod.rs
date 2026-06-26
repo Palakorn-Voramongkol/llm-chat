@@ -57,7 +57,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/projects", get(list_projects))
         .route("/api/projects/{pid}/roles", get(list_project_roles).post(create_project_role))
         .route("/api/projects/{pid}/roles/{roleKey}", put(update_project_role).delete(delete_project_role))
-        .route("/api/projects/{pid}/apps", get(list_project_apps))
+        .route("/api/projects/{pid}/apps", get(list_project_apps).post(create_project_app))
+        .route("/api/projects/{pid}/apps/{appId}", get(get_project_app).put(update_project_app).delete(delete_project_app))
+        .route("/api/projects/{pid}/apps/{appId}/secret", post(regenerate_project_app_secret))
         .route("/api/projects/{pid}/grants", get(list_project_grants))
         .route("/api/org/policies/login", get(get_login_policy))
         .route("/api/org/policies/password-complexity", get(get_password_complexity_policy))
@@ -562,6 +564,41 @@ async fn list_project_apps(_op: Operator, State(st): State<AppState>, Path(pid):
     -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "result": st.zitadel.list_apps_for(&pid).await? })))
 }
+
+// Login-client (OIDC app) CRUD scoped to a project (the multi-app model).
+// Requires PROJECT_OWNER on pid — Zitadel returns 403 otherwise (fail-closed,
+// no fallback to the home project). clientSecret on create/regenerate is
+// streamed straight through, never logged.
+async fn create_project_app(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>, Json(b): Json<CreateOidcApp>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(st.zitadel.create_oidc_app_in(
+        &pid, &b.name, &b.redirect_uris, &b.response_types, &b.grant_types, &b.app_type, &b.auth_method_type,
+    ).await?))
+}
+
+async fn get_project_app(_op: Operator, State(st): State<AppState>, Path((pid, app_id)): Path<(String, String)>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(st.zitadel.get_app_in(&pid, &app_id).await?))
+}
+
+async fn update_project_app(_op: Operator, State(st): State<AppState>, Path((pid, app_id)): Path<(String, String)>, Json(b): Json<UpdateOidcConfig>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.update_oidc_config_in(
+        &pid, &app_id, &b.redirect_uris, &b.response_types, &b.grant_types, &b.app_type, &b.auth_method_type,
+    ).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn delete_project_app(_op: Operator, State(st): State<AppState>, Path((pid, app_id)): Path<(String, String)>)
+    -> Result<Json<Value>, ApiError> {
+    st.zitadel.delete_app_in(&pid, &app_id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn regenerate_project_app_secret(_op: Operator, State(st): State<AppState>, Path((pid, app_id)): Path<(String, String)>)
+    -> Result<Json<Value>, ApiError> {
+    Ok(Json(st.zitadel.regenerate_app_secret_in(&pid, &app_id).await?))
+}
 async fn list_project_grants(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
     -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({ "result": st.zitadel.list_project_grants(&pid).await? })))
@@ -782,5 +819,36 @@ mod contract_tests {
             axum::http::Request::builder().uri("/api/usage-daily").body(axum::body::Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn project_app_routes_require_operator() {
+        use tower::ServiceExt;
+        let cases: &[(&str, &str)] = &[
+            ("POST", "/api/projects/p1/apps"),
+            ("GET", "/api/projects/p1/apps/a1"),
+            ("PUT", "/api/projects/p1/apps/a1"),
+            ("DELETE", "/api/projects/p1/apps/a1"),
+            ("POST", "/api/projects/p1/apps/a1/secret"),
+        ];
+        for (method, uri) in cases {
+            let app = test_router_no_session();
+            let res = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(*method)
+                        .uri(*uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{method} {uri} must be Operator-gated (401), got {}",
+                res.status()
+            );
+        }
     }
 }
