@@ -7,7 +7,7 @@ import { PageHeader } from "@/components/shell/PageHeader";
 import { buildApplicationColumns, type AppMeta } from "@/components/applications/columns";
 import { api, ApiError } from "@/lib/api";
 import type {
-  AppProject, AppProjectList, ProjectGrantList, RoleList,
+  AppProject, AppProjectList, OidcAppList, ProjectGrantList, RoleList,
 } from "@/lib/types";
 
 export default function ApplicationsPage() {
@@ -33,9 +33,10 @@ export default function ApplicationsPage() {
     const pairs = await Promise.all(
       projects.map(async (p): Promise<[string, AppMeta] | null> => {
         try {
-          const [roles, grants] = await Promise.all([
+          const [roles, grants, apps] = await Promise.all([
             api.get<RoleList>(`/api/projects/${p.id}/roles`),
             api.get<ProjectGrantList>(`/api/projects/${p.id}/grants`),
+            api.get<OidcAppList>(`/api/projects/${p.id}/apps`),
           ]);
           const userCount = new Set(
             (grants.result ?? [])
@@ -45,6 +46,7 @@ export default function ApplicationsPage() {
           return [p.id, {
             roleKeys: (roles.result ?? []).map((r) => r.key),
             userCount,
+            clientCount: (apps.result ?? []).length,
           }];
         } catch {
           return null;
