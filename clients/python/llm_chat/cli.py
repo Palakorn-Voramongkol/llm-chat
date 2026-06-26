@@ -34,7 +34,7 @@ from .errors import (
 )
 from .protocol import ChatClient
 from .render import render_markdown, resolve_mode
-from .repl import run_repl
+from .repl import ReplCtx, run_repl
 from .tokens import TokenStore
 
 log = logging.getLogger("llm_chat.cli")
@@ -116,17 +116,25 @@ def _decode_claims(token: str | None) -> dict:
         return {}
 
 
-def _print_whoami(ts: oidc.TokenSet) -> None:
-    claims = _decode_claims(ts.id_token or ts.access_token)
+def _identity_from_token(token: str | None) -> tuple[str, str, list[str]]:
+    """(who, sub, roles) from a JWT's claims (display only — no verification).
+    ``who`` prefers email, then preferred_username, then sub. ``roles`` are the
+    sorted, de-duped keys of every ``*:roles`` claim. Shared by whoami + /status."""
+    claims = _decode_claims(token)
     sub = claims.get("sub", "?")
     who = claims.get("email") or claims.get("preferred_username") or sub
-    roles = []
+    roles: list[str] = []
     for k, v in claims.items():
         if k.endswith(":roles") and isinstance(v, dict):
             roles.extend(v.keys())
+    return who, sub, sorted(set(roles))
+
+
+def _print_whoami(ts: oidc.TokenSet) -> None:
+    who, sub, roles = _identity_from_token(ts.id_token or ts.access_token)
     print(f"logged in as {who} (sub={sub})")
     if roles:
-        print(f"  roles: {', '.join(sorted(set(roles)))}")
+        print(f"  roles: {', '.join(roles)}")
 
 
 # ---------------- run loops ----------------
@@ -144,11 +152,11 @@ async def _run_ask(provider, manager_url: str, send: str, timeout: float,
     return EXIT_OK
 
 
-async def _run_chat(provider, manager_url: str, timeout: float,
+async def _run_chat(provider, manager_url: str, ctx: ReplCtx, timeout: float,
                     render_mode: str) -> int:
     client = ChatClient(manager_url, provider)
     try:
-        return await run_repl(client, timeout, render_mode)
+        return await run_repl(client, ctx, timeout, render_mode)
     finally:
         await client.close()
 
@@ -202,7 +210,16 @@ def _cmd_chat_or_ask(args) -> int:
     render_mode = resolve_mode(plain=args.plain, raw=args.raw)
     if args.command == "ask":
         return asyncio.run(_run_ask(provider, manager_url, args.send, args.timeout, render_mode))
-    return asyncio.run(_run_chat(provider, manager_url, args.timeout, render_mode))
+    # Static context for the REPL's /status block (identity is read live).
+    ctx = ReplCtx(
+        kind="python",
+        version=__version__,
+        auth_label="machine (kabytech key)" if mode == "machine" else "human (browser login)",
+        issuer=_resolve_issuer(args),
+        project=_resolve_project(args),
+        manager_url=manager_url,
+    )
+    return asyncio.run(_run_chat(provider, manager_url, ctx, args.timeout, render_mode))
 
 
 # ---------------- dispatch ----------------

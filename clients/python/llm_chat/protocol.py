@@ -87,6 +87,15 @@ class ChatClient:
     async def __aexit__(self, *exc) -> None:
         await self.close()
 
+    @property
+    def connected(self) -> bool:
+        return self._ws is not None
+
+    async def current_token(self) -> str:
+        """Re-mint (machine) or refresh (human) the access token — used by
+        display surfaces like the REPL's ``/status``, which decode its claims."""
+        return await _call_token_provider(self._token_provider)
+
     async def connect(self) -> None:
         """Open the WebSocket and drain the manager's ``initialized`` frame.
 

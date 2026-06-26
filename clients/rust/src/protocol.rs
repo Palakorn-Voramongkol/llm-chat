@@ -80,6 +80,12 @@ impl ChatClient {
         self.ws.is_some()
     }
 
+    /// Re-mint (machine) or refresh (human) the access token — used by display
+    /// surfaces like the REPL's `/status`, which decode its claims.
+    pub async fn current_token(&self) -> Result<String> {
+        self.fetch_token().await
+    }
+
     async fn fetch_token(&self) -> Result<String> {
         let p = self.token_provider.clone();
         tokio::task::spawn_blocking(move || p())

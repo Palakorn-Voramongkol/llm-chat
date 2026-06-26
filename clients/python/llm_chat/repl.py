@@ -7,6 +7,7 @@ import itertools
 import os
 import sys
 import time
+from dataclasses import dataclass
 
 from .errors import AnswerTimeout, ManagerUnavailable, ProtocolError
 from .protocol import Answer, ChatClient
@@ -95,11 +96,50 @@ HELP = """commands:
   /help            show this help
   /history         print this session's Q&A so far
   /session         show the backend session id
+  /status          show your identity + client/connection status
   /render MODE     switch markdown display: auto | plain | raw
   /reset           drop the session and start a fresh one (clears claude context)
   /multi           enter a multi-line message (end with '.')
   /quit, /exit     leave
 anything else is sent to claude on the same (context-preserving) session."""
+
+STATUS_RULE = "─────────────────────────────────────────────"
+
+
+@dataclass(frozen=True)
+class ReplCtx:
+    """Static context for the REPL's /status block (dynamic bits read live)."""
+
+    kind: str            # "python"
+    version: str
+    auth_label: str      # "human (browser login)" | "machine (kabytech key)"
+    issuer: str
+    project: str
+    manager_url: str
+
+
+def format_status(ctx: ReplCtx, who: str, sub: str, roles: list[str],
+                  connected: bool, session_id: str | None, msgs: int,
+                  render: str, timeout_s: float) -> str:
+    """PURE: render the /status block (roles already sorted/deduped). Matches
+    the Rust client's layout (only `kind` differs) — keep the two in sync."""
+    roles_str = ", ".join(roles) if roles else "—"
+    conn = "connected" if connected else "disconnected"
+    sid = session_id if session_id else "—"
+    return (
+        "─ status ───────────────────────────────────\n"
+        f" client    llm-chat · {ctx.kind} · v{ctx.version}\n"
+        f" auth      {ctx.auth_label}\n"
+        f" user      {who}\n"
+        f"   sub     {sub}\n"
+        f"   roles   {roles_str}\n"
+        f" manager   {ctx.manager_url} · {conn}\n"
+        f" session   {sid} · {msgs} msgs this session\n"
+        f" issuer    {ctx.issuer}\n"
+        f" project   {ctx.project}\n"
+        f" display   render={render} · timeout={int(timeout_s)}s\n"
+        f"{STATUS_RULE}"
+    )
 
 
 def _print_answer(c: _Ansi, text: str, render_mode: str, latency_s: float | None) -> None:
@@ -115,7 +155,7 @@ def _print_answer(c: _Ansi, text: str, render_mode: str, latency_s: float | None
     print()
 
 
-async def run_repl(client: ChatClient, timeout: float, render_mode: str = "auto") -> int:
+async def run_repl(client: ChatClient, ctx: ReplCtx, timeout: float, render_mode: str = "auto") -> int:
     """Run the interactive loop until the user quits. Returns an exit code."""
     c = _Ansi(_color_enabled())
     try:
@@ -143,6 +183,23 @@ async def run_repl(client: ChatClient, timeout: float, render_mode: str = "auto"
             continue
         if user == "/session":
             print(c.dim(f"session {client.session_id}\n"))
+            continue
+        if user == "/status":
+            # Re-mint/refresh the token and decode its identity live. Local
+            # import avoids a cli<->repl import cycle.
+            note = None
+            try:
+                tok = await client.current_token()
+                from .cli import _identity_from_token
+                who, sub, roles = _identity_from_token(tok)
+            except Exception as e:  # noqa: BLE001 — display surface; never crash /status
+                who, sub, roles, note = "(could not read token)", "—", [], str(e)
+            print(c.dim(format_status(
+                ctx, who, sub, roles, client.connected,
+                client.session_id, len(history), render_mode, timeout)))
+            if note:
+                print(c.err(f"  token error: {note}"))
+            print()
             continue
         if user == "/history":
             if not history:

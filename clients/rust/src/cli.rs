@@ -16,7 +16,7 @@ use crate::errors::{Error, Result, EXIT_AUTH};
 use crate::oidc::{self, TokenSet};
 use crate::protocol::{ChatClient, TokenProvider};
 use crate::render::{render_markdown, resolve_mode, RenderMode};
-use crate::repl::run_repl;
+use crate::repl::{run_repl, ReplCtx};
 use crate::tokens::TokenStore;
 
 #[derive(Parser, Debug)]
@@ -127,19 +127,19 @@ fn decode_claims(token: &str) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn print_whoami(ts: &TokenSet) {
-    let token = ts
-        .id_token
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&ts.access_token);
+/// PURE: extract `(who, sub, roles)` from a JWT's claims (no verification —
+/// display only). `who` prefers `email`, then `preferred_username`, then `sub`.
+/// Roles are the sorted, de-duped keys of every `*:roles` claim. Shared by
+/// `whoami` and the REPL's `/status`.
+pub fn identity_from_token(token: &str) -> (String, String, Vec<String>) {
     let claims = decode_claims(token);
-    let sub = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("?");
+    let sub = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("?").to_string();
     let who = claims
         .get("email")
         .and_then(|v| v.as_str())
         .or_else(|| claims.get("preferred_username").and_then(|v| v.as_str()))
-        .unwrap_or(sub);
+        .unwrap_or(&sub)
+        .to_string();
     let mut roles: Vec<String> = Vec::new();
     for (k, v) in &claims {
         if k.ends_with(":roles") {
@@ -148,10 +148,20 @@ fn print_whoami(ts: &TokenSet) {
             }
         }
     }
+    roles.sort();
+    roles.dedup();
+    (who, sub, roles)
+}
+
+fn print_whoami(ts: &TokenSet) {
+    let token = ts
+        .id_token
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&ts.access_token);
+    let (who, sub, roles) = identity_from_token(token);
     println!("logged in as {who} (sub={sub})");
     if !roles.is_empty() {
-        roles.sort();
-        roles.dedup();
         println!("  roles: {}", roles.join(", "));
     }
 }
@@ -273,7 +283,22 @@ fn cmd_chat_or_ask(c: &CommonArgs, send: Option<String>) -> Result<u8> {
         .map_err(|e| Error::ManagerUnavailable(format!("could not start runtime: {e}")))?;
     match send {
         Some(q) => rt.block_on(run_ask(provider, &manager_url, &q, timeout, render_mode)),
-        None => rt.block_on(run_chat(provider, &manager_url, timeout, render_mode)),
+        None => {
+            // Static context for the REPL's /status block (issuer/project read
+            // the same way the provider resolved them; identity is read live).
+            let ctx = ReplCtx {
+                kind: "rust",
+                version: env!("CARGO_PKG_VERSION"),
+                auth_label: match mode {
+                    AuthMode::Machine => "machine (kabytech key)".to_string(),
+                    AuthMode::User => "human (browser login)".to_string(),
+                },
+                issuer: resolve_issuer(c)?,
+                project: resolve_project(c)?,
+                manager_url: manager_url.clone(),
+            };
+            rt.block_on(run_chat(provider, &manager_url, &ctx, timeout, render_mode))
+        }
     }
 }
 
@@ -301,11 +326,12 @@ async fn run_ask(
 async fn run_chat(
     provider: TokenProvider,
     manager_url: &str,
+    ctx: &ReplCtx,
     timeout: Duration,
     render_mode: RenderMode,
 ) -> Result<u8> {
     let mut client = ChatClient::new(manager_url, provider);
-    let code = run_repl(&mut client, timeout, render_mode).await;
+    let code = run_repl(&mut client, ctx, timeout, render_mode).await;
     client.close().await;
     Ok(code as u8)
 }

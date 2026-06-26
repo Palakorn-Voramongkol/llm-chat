@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::cli::identity_from_token;
 use crate::errors::Error;
 use crate::protocol::ChatClient;
 use crate::render::{render_markdown, RenderMode};
@@ -14,11 +15,62 @@ const HELP: &str = "commands:\n\
   /help            show this help\n\
   /history         print this session's Q&A so far\n\
   /session         show the backend session id\n\
+  /status          show your identity + client/connection status\n\
   /render MODE     switch markdown display: auto | plain | raw\n\
   /reset           drop the session and start a fresh one (clears claude context)\n\
   /multi           enter a multi-line message (end with '.')\n\
   /quit, /exit     leave\n\
 anything else is sent to claude on the same (context-preserving) session.";
+
+/// Static context for the REPL's `/status` block. The dynamic bits (identity,
+/// connection state, message count) are read live when `/status` runs.
+pub struct ReplCtx {
+    pub kind: &'static str,    // "rust"
+    pub version: &'static str, // crate version
+    pub auth_label: String,    // "human (browser login)" | "machine (kabytech key)"
+    pub issuer: String,
+    pub project: String,
+    pub manager_url: String,
+}
+
+const STATUS_RULE: &str = "─────────────────────────────────────────────";
+
+/// PURE: render the `/status` block (`roles` already sorted/de-duped). The
+/// Python client emits the identical layout — keep them in sync.
+#[allow(clippy::too_many_arguments)]
+fn format_status(
+    ctx: &ReplCtx,
+    who: &str,
+    sub: &str,
+    roles: &[String],
+    connected: bool,
+    session_id: Option<&str>,
+    msgs: usize,
+    render: &str,
+    timeout_s: u64,
+) -> String {
+    let roles_str = if roles.is_empty() { "—".to_string() } else { roles.join(", ") };
+    let conn = if connected { "connected" } else { "disconnected" };
+    let sid = session_id.unwrap_or("—");
+    format!(
+        "─ status ───────────────────────────────────\n\
+         \x20client    llm-chat · {kind} · v{version}\n\
+         \x20auth      {auth}\n\
+         \x20user      {who}\n\
+         \x20  sub     {sub}\n\
+         \x20  roles   {roles}\n\
+         \x20manager   {manager} · {conn}\n\
+         \x20session   {sid} · {msgs} msgs this session\n\
+         \x20issuer    {issuer}\n\
+         \x20project   {project}\n\
+         \x20display   render={render} · timeout={timeout}s\n\
+         {rule}",
+        kind = ctx.kind, version = ctx.version, auth = ctx.auth_label,
+        who = who, sub = sub, roles = roles_str, manager = ctx.manager_url,
+        conn = conn, sid = sid, msgs = msgs, issuer = ctx.issuer,
+        project = ctx.project, render = render, timeout = timeout_s, rule = STATUS_RULE,
+    )
+}
 
 /// Minimal ANSI styling, disabled when stdout isn't a TTY or NO_COLOR is set.
 struct Ansi {
@@ -135,7 +187,7 @@ fn print_answer(c: &Ansi, text: &str, mode: RenderMode, latency_s: Option<f64>) 
 }
 
 /// Run the interactive loop until the user quits. Returns an exit code.
-pub async fn run_repl(client: &mut ChatClient, timeout: Duration, mut render_mode: RenderMode) -> i32 {
+pub async fn run_repl(client: &mut ChatClient, ctx: &ReplCtx, timeout: Duration, mut render_mode: RenderMode) -> i32 {
     let c = Ansi::new();
     if let Err(e) = client.connect().await {
         eprintln!("{}", c.err(&format!("cannot connect: {e}")));
@@ -176,6 +228,38 @@ pub async fn run_repl(client: &mut ChatClient, timeout: Duration, mut render_mod
                 "{}\n",
                 c.dim(&format!("session {}", client.session_id.as_deref().unwrap_or("?")))
             );
+            continue;
+        }
+        if user == "/status" {
+            // Re-mint/refresh the token and decode its identity live.
+            let (who, sub, roles, note) = match client.current_token().await {
+                Ok(tok) => {
+                    let (w, s, r) = identity_from_token(&tok);
+                    (w, s, r, None)
+                }
+                Err(e) => (
+                    "(could not read token)".to_string(),
+                    "—".to_string(),
+                    Vec::new(),
+                    Some(format!("{e}")),
+                ),
+            };
+            let block = format_status(
+                ctx,
+                &who,
+                &sub,
+                &roles,
+                client.connected(),
+                client.session_id.as_deref(),
+                history.len(),
+                mode_name(render_mode),
+                timeout.as_secs(),
+            );
+            println!("{}", c.dim(&block));
+            if let Some(n) = note {
+                println!("{}", c.err(&format!("  token error: {n}")));
+            }
+            println!();
             continue;
         }
         if user == "/history" {
@@ -259,4 +343,45 @@ pub async fn run_repl(client: &mut ChatClient, timeout: Duration, mut render_mod
 
     println!("{}", c.dim("bye"));
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> ReplCtx {
+        ReplCtx {
+            kind: "rust",
+            version: "1.0.0",
+            auth_label: "machine (kabytech key)".to_string(),
+            issuer: "http://iss:8080".to_string(),
+            project: "P123".to_string(),
+            manager_url: "ws://m:7777/chat".to_string(),
+        }
+    }
+
+    #[test]
+    fn format_status_includes_all_fields() {
+        let roles = vec!["chat.admin".to_string(), "chat.user".to_string()];
+        let s = format_status(&ctx(), "admin@example.com", "U9", &roles, true, Some("s1"), 2, "auto", 120);
+        assert!(s.contains("llm-chat · rust · v1.0.0"));
+        assert!(s.contains("machine (kabytech key)"));
+        assert!(s.contains("user      admin@example.com"));
+        assert!(s.contains("sub     U9"));
+        assert!(s.contains("roles   chat.admin, chat.user"));
+        assert!(s.contains("ws://m:7777/chat · connected"));
+        assert!(s.contains("session   s1 · 2 msgs this session"));
+        assert!(s.contains("issuer    http://iss:8080"));
+        assert!(s.contains("project   P123"));
+        assert!(s.contains("render=auto · timeout=120s"));
+    }
+
+    #[test]
+    fn format_status_handles_empty_roles_and_no_session() {
+        let s = format_status(&ctx(), "who", "sub", &[], false, None, 0, "raw", 60);
+        assert!(s.contains("roles   —"));
+        assert!(s.contains("session   — · 0 msgs"));
+        assert!(s.contains("ws://m:7777/chat · disconnected"));
+        assert!(s.contains("render=raw · timeout=60s"));
+    }
 }
