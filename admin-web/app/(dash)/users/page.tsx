@@ -16,12 +16,15 @@ import { KeysDialog } from "@/components/users/keys-dialog";
 import { UsageTrend } from "@/components/users/usage-trend";
 import { UsersFilterPanel, type UsersCategory } from "@/components/users/UsersFilterPanel";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
+import { SandboxTree } from "@/components/users/sandbox-tree";
+import { buildTree } from "@/lib/sandbox-tree";
 import { Badge } from "@/components/ui/badge";
 import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
 import type {
   AppProjectList, ChatClient, ChatSessions, GrantList, Role, RoleList,
   SigninList, User, UserList, UsageRow, UsageResponse, DailyRow, UsageDailyResponse,
+  SandboxFiles,
 } from "@/lib/types";
 
 export default function UsersPage() {
@@ -57,6 +60,21 @@ export default function UsersPage() {
   // Per-user monitoring joins: last sign-in time + live chat sessions.
   const [lastSignIn, setLastSignIn] = useState<Map<string, string>>(new Map());
   const [liveByUser, setLiveByUser] = useState<Map<string, ChatClient[]>>(new Map());
+  // The selected user's confined claude sandbox tree (read-only). null = loading.
+  const [sandbox, setSandbox] = useState<SandboxFiles | null>(null);
+
+  // Fetch the selected user's confined sandbox tree for the side panel.
+  // Best-effort: a sandbox error degrades only this section, never the panel.
+  useEffect(() => {
+    if (!selected) { setSandbox(null); return; }
+    let alive = true;
+    setSandbox(null); // loading
+    api
+      .get<SandboxFiles>(`/api/users/${selected.id}/files`)
+      .then((s) => { if (alive) setSandbox(s); })
+      .catch(() => { if (alive) setSandbox({ configured: true, ok: false, error: "Failed to load sandbox" }); });
+    return () => { alive = false; };
+  }, [selected]);
 
   // Fetch the selected user's grants for the side panel. Keyed by user id so
   // the panel shows "Loading…" until the CURRENT selection's fetch resolves and
@@ -457,6 +475,24 @@ export default function UsersPage() {
                       </li>
                     ))}
                   </ul>
+                )}
+              </PanelSection>
+              <PanelSection title="Sandbox">
+                {!sandbox ? (
+                  <span className="text-muted-foreground text-sm">Loading…</span>
+                ) : sandbox.configured === false ? (
+                  <span className="text-muted-foreground text-sm">Sandbox view not configured (MANAGER_CONTROL_URL).</span>
+                ) : sandbox.ok === false ? (
+                  <span className="text-destructive text-sm">{sandbox.error || "Sandbox unavailable"}</span>
+                ) : (sandbox.entries ?? []).length === 0 ? (
+                  <span className="text-muted-foreground text-sm">No sandbox yet.</span>
+                ) : (
+                  <>
+                    <SandboxTree nodes={buildTree(sandbox.entries ?? [])} />
+                    {sandbox.truncated && (
+                      <p className="text-muted-foreground mt-2 text-xs">Showing first 2000 entries (truncated).</p>
+                    )}
+                  </>
                 )}
               </PanelSection>
             </>
