@@ -185,3 +185,34 @@ is worse than a failed one.
 often, accept more inputs, or require fewer proofs, treat it as a red flag and
 stop. Confirm the control is still at least as strict as before; if you must
 change it, say so explicitly and let the user decide.
+
+## Business logic lives in the backend, not the client
+
+Clients — the python/rust REPL, the admin-web Console, any UI — stay **thin**:
+they render and relay. They do **not** implement business logic. Resolving an
+identifier to a human label (user id → name, project id → name), authorization
+decisions, data shaping/derivation, formatting rules, and anything about what a
+value **means** belong on the server, which returns the result **ready to
+display**.
+
+- do **not** decode/parse tokens, choose which token or claim to trust, or map
+  ids → names in a client — the backend resolves it and returns the label
+- do **not** recompute or reconstruct, client-side, a domain value the server is
+  authoritative for (counts, statuses, names, permissions)
+- the client receives **finished, display-ready** data; if a label or decision
+  is missing, the fix is to make the **backend** return it, never to derive it
+  in the client
+
+**Why:** logic in a client drifts across the python/rust/web clients, can't be
+trusted (a client is user-controlled), and duplicates rules the server already
+owns. The server is the single source of truth; a client computing its own
+version is the same failure as scraping-and-reconstructing (rule 2) and almost
+always becomes a dirty fix (rule 1). (Resolving an id to a name in the client
+because "the token already has it" is exactly this trap.)
+
+**How to apply:** when a client needs a human label, a decision, or a derived
+value, ask "is the server authoritative for this?" If yes, add or extend a
+backend endpoint/response to return it, and have the client just show it.
+Reserve client code for presentation and transport — when you catch yourself
+decoding a JWT, mapping an id, or computing a domain value in a client, stop and
+move it to the backend.
