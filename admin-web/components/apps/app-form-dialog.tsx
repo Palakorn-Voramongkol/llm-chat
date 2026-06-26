@@ -20,6 +20,7 @@ import type { OidcApp, AppSecret } from "@/lib/types";
 import {
   APP_TYPES, AUTH_METHODS, appToConfigForm, formToConfigBody, type ConfigForm,
 } from "@/lib/oidc";
+import { clientsBase, clientPath } from "@/lib/clients";
 
 const schema = z.object({
   name: z.string().min(1),
@@ -44,9 +45,10 @@ const DEFAULTS = {
 // its trigger; the edit instance is fully controlled by the page (mirrors the
 // users/ EditUserDialog vs CreateUserDialog split).
 export function AppFormDialog({
-  mode, app, open, onOpenChange, onSaved, onSecret,
+  mode, projectId, app, open, onOpenChange, onSaved, onSecret,
 }: {
   mode: "create" | "edit";
+  projectId: string;
   app: OidcApp | null;
   open: boolean;
   onOpenChange: (o: boolean) => void;
@@ -83,17 +85,17 @@ export function AppFormDialog({
     try {
       if (isEdit && app) {
         // read-modify-write: PUT the whole oidc_config (design §8).
-        await api.put(`/api/apps/${app.id}`, {
+        await api.put(clientPath(projectId, app.id), {
           redirectUris: body.redirectUris,
           responseTypes: body.responseTypes,
           grantTypes: body.grantTypes,
           appType: body.appType,
           authMethodType: body.authMethodType,
         });
-        toast.success("App updated");
+        toast.success("Login client updated");
       } else {
-        const created = await api.post<AppSecret>("/api/apps", body);
-        toast.success("App created");
+        const created = await api.post<AppSecret>(clientsBase(projectId), body);
+        toast.success("Login client created");
         if (created?.clientSecret) onSecret(created); // one-time reveal
       }
       onOpenChange(false);
@@ -105,7 +107,7 @@ export function AppFormDialog({
 
   const inner = (
     <DialogContent>
-      <DialogHeader><DialogTitle>{isEdit ? "Edit application" : "Create application"}</DialogTitle></DialogHeader>
+      <DialogHeader><DialogTitle>{isEdit ? "Edit login client" : "Register login client"}</DialogTitle></DialogHeader>
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <FormField control={form.control} name="name" render={({ field }) => (
@@ -152,7 +154,7 @@ export function AppFormDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button variant="brand" data-testid="create-app">Create application</Button>
+        <Button variant="brand" data-testid="create-app">Register login client</Button>
       </DialogTrigger>
       {inner}
     </Dialog>
