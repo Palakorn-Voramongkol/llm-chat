@@ -20,7 +20,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async, connect_async_with_config, MaybeTlsStream, WebSocketStream};
 
 use crate::errors::{Error, Result};
 
@@ -84,6 +84,12 @@ impl ChatClient {
     /// surfaces like the REPL's `/status`, which decode its claims.
     pub async fn current_token(&self) -> Result<String> {
         self.fetch_token().await
+    }
+
+    /// Clone the token provider — used to authenticate the short-lived
+    /// `/identity` connection that `/status` opens.
+    pub fn token_provider(&self) -> TokenProvider {
+        self.token_provider.clone()
     }
 
     /// Send a one-shot typed request (`{"type":<kind>}`) and await the reply
@@ -351,6 +357,88 @@ impl ChatClient {
                     tracing::debug!("skip frame type={:?} id={:?}", other, msg.get("id"));
                 }
             }
+        }
+    }
+}
+
+/// Open a short-lived `/identity` connection, send ONE request, and return the
+/// single reply frame whose `type` matches the request's. The manager spawns no
+/// worker; it resolves identity, renders, replies, and closes. Used by `/status`
+/// (`{"type":"status","client":{…}}`) and `whoami` (`{"type":"whoami"}`). The
+/// client prints the returned text verbatim — it does no identity logic.
+pub async fn request_identity(
+    identity_url: &str,
+    provider: &TokenProvider,
+    request: serde_json::Value,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    let want = request
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let p = provider.clone();
+    let token = tokio::task::spawn_blocking(move || p())
+        .await
+        .map_err(|e| Error::Auth(format!("token task failed: {e}")))??;
+
+    let mut req = identity_url
+        .into_client_request()
+        .map_err(|e| Error::ManagerUnavailable(format!("bad identity URL {identity_url}: {e}")))?;
+    req.headers_mut().insert(
+        "Authorization",
+        format!("Bearer {token}")
+            .parse()
+            .map_err(|e| Error::ManagerUnavailable(format!("bad auth header: {e}")))?,
+    );
+
+    let (mut ws, _) = match tokio::time::timeout(Duration::from_secs(15), connect_async(req)).await {
+        Err(_) => {
+            return Err(Error::ManagerUnavailable(format!(
+                "could not connect to {identity_url}: open timed out"
+            )))
+        }
+        Ok(Err(e)) => {
+            return Err(Error::ManagerUnavailable(format!(
+                "could not connect to {identity_url}: {e}"
+            )))
+        }
+        Ok(Ok(pair)) => pair,
+    };
+
+    ws.send(Message::Text(request.to_string()))
+        .await
+        .map_err(|e| Error::ManagerUnavailable(format!("identity send failed: {e}")))?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::AnswerTimeout("no identity reply within timeout".into()));
+        }
+        let frame = match tokio::time::timeout(remaining, ws.next()).await {
+            Err(_) => return Err(Error::AnswerTimeout("no identity reply within timeout".into())),
+            Ok(None) | Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) => {
+                return Err(Error::ManagerUnavailable("identity connection closed".into()))
+            }
+            Ok(Some(Ok(Message::Text(t)))) => t,
+            Ok(Some(Ok(Message::Binary(b)))) => String::from_utf8_lossy(&b).into_owned(),
+            Ok(Some(Ok(_))) => continue,
+        };
+        let msg: serde_json::Value = serde_json::from_str(&frame)
+            .map_err(|_| Error::Protocol(format!("manager sent non-JSON frame: {frame}")))?;
+        match msg.get("type").and_then(|t| t.as_str()) {
+            Some(t) if t == want => {
+                let _ = ws.close(None).await;
+                return Ok(msg);
+            }
+            Some("err") => {
+                return Err(Error::Protocol(
+                    msg.get("text").and_then(|v| v.as_str()).unwrap_or("error").to_string(),
+                ))
+            }
+            _ => continue,
         }
     }
 }
