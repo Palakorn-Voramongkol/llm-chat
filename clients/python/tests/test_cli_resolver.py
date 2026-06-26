@@ -1,17 +1,10 @@
-"""Unit tests for CLI auth-mode selection, JWT display, and parser wiring."""
+"""Unit tests for CLI auth-mode selection and parser wiring."""
 
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 
-from llm_chat import cli, oidc
-
-
-def _fake_jwt(payload: dict) -> str:
-    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
-    return f"header.{body}.sig"
+from llm_chat import cli
 
 
 def test_auth_mode_is_role_based_by_default():
@@ -22,25 +15,6 @@ def test_auth_mode_is_role_based_by_default():
 def test_auth_mode_explicit_override_wins():
     assert cli._auth_mode(argparse.Namespace(command="chat", auth="machine")) == "machine"
     assert cli._auth_mode(argparse.Namespace(command="ask", auth="user")) == "user"
-
-
-def test_decode_claims_reads_payload():
-    tok = _fake_jwt({"sub": "u1", "email": "demo@llm-chat.local"})
-    claims = cli._decode_claims(tok)
-    assert claims["email"] == "demo@llm-chat.local"
-    assert cli._decode_claims(None) == {}
-    assert cli._decode_claims("not-a-jwt") == {}
-
-
-def test_print_whoami_shows_email_and_roles(capsys):
-    tok = _fake_jwt({
-        "sub": "u1", "email": "demo@llm-chat.local",
-        "urn:zitadel:iam:org:project:123:roles": {"chat.user": {"org": "o1"}},
-    })
-    cli._print_whoami(oidc.TokenSet("acc", None, tok, 9e9))
-    out = capsys.readouterr().out
-    assert "demo@llm-chat.local" in out
-    assert "chat.user" in out
 
 
 def test_parser_has_login_logout_whoami_and_auth_flag():

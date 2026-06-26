@@ -96,6 +96,11 @@ class ChatClient:
         display surfaces like the REPL's ``/status``, which decode its claims."""
         return await _call_token_provider(self._token_provider)
 
+    @property
+    def token_provider(self) -> TokenProvider:
+        """The token provider — used to auth the short-lived /identity connection."""
+        return self._token_provider
+
     async def connect(self) -> None:
         """Open the WebSocket and drain the manager's ``initialized`` frame.
 
@@ -233,3 +238,60 @@ class ChatClient:
     async def dir(self, *, timeout: float = 120.0) -> dict:
         """Request a listing of THIS user's box; return the manager's ``dir`` reply."""
         return await self._request_reply("dir", timeout=timeout)
+
+
+async def request_identity(
+    identity_url: str,
+    provider: TokenProvider,
+    request: dict,
+    *,
+    timeout: float = 120.0,
+) -> dict:
+    """Open a short-lived `/identity` connection, send ONE request, and return
+    the reply frame whose ``type`` matches. The manager spawns no worker; it
+    resolves identity, renders, replies, and closes. Used by `/status`
+    (``{"type":"status","client":{…}}``) and whoami (``{"type":"whoami"}``).
+    The client prints the returned text verbatim — no identity logic here.
+
+    Raises AnswerTimeout / ProtocolError / ManagerUnavailable.
+    """
+    want = request.get("type", "")
+    token = await _call_token_provider(provider)
+    try:
+        ws = await websockets.connect(
+            identity_url,
+            additional_headers=[("Authorization", f"Bearer {token}")],
+            max_size=None,
+            open_timeout=15,
+        )
+    except (OSError, websockets.WebSocketException, asyncio.TimeoutError) as e:
+        raise ManagerUnavailable(f"could not connect to {identity_url}: {e}") from e
+
+    try:
+        await ws.send(json.dumps(request))
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AnswerTimeout("no identity reply within the timeout")
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            except asyncio.TimeoutError:
+                raise AnswerTimeout("no identity reply within the timeout") from None
+            except websockets.ConnectionClosed as e:
+                raise ManagerUnavailable(f"identity connection closed: {e}") from e
+            try:
+                msg = json.loads(raw)
+            except ValueError as e:
+                raise ProtocolError(f"manager sent non-JSON frame: {raw!r}") from e
+            mtype = msg.get("type")
+            if mtype == want:
+                return msg
+            if mtype == "err":
+                raise ProtocolError(msg.get("text", "identity error"))
+            log.debug("skip frame type=%s (awaiting %s)", mtype, want)
+    finally:
+        try:
+            await ws.close()
+        except Exception:  # noqa: BLE001 — close must never raise
+            pass

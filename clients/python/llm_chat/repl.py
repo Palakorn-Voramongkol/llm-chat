@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 
 from .errors import AnswerTimeout, ManagerUnavailable, ProtocolError
-from .protocol import Answer, ChatClient
+from .protocol import Answer, ChatClient, request_identity
 from .render import MODES, render_markdown
 
 
@@ -110,38 +110,14 @@ STATUS_RULE = "─────────────────────�
 
 @dataclass(frozen=True)
 class ReplCtx:
-    """Static context for the REPL's /status block (dynamic bits read live)."""
+    """Static context for the REPL's /status request. All CLIENT facts; identity,
+    project, and issuer come from the backend (which also renders the block)."""
 
     kind: str            # "python"
     version: str
     auth_label: str      # "human (browser login)" | "machine (kabytech key)"
-    issuer: str
-    project: str
     manager_url: str
-
-
-def format_status(ctx: ReplCtx, who: str, sub: str, roles: list[str],
-                  connected: bool, session_id: str | None, msgs: int,
-                  render: str, timeout_s: float) -> str:
-    """PURE: render the /status block (roles already sorted/deduped). Matches
-    the Rust client's layout (only `kind` differs) — keep the two in sync."""
-    roles_str = ", ".join(roles) if roles else "—"
-    conn = "connected" if connected else "disconnected"
-    sid = session_id if session_id else "—"
-    return (
-        "─ status ───────────────────────────────────\n"
-        f" client    llm-chat · {ctx.kind} · v{ctx.version}\n"
-        f" auth      {ctx.auth_label}\n"
-        f" user      {who}\n"
-        f"   sub     {sub}\n"
-        f"   roles   {roles_str}\n"
-        f" manager   {ctx.manager_url} · {conn}\n"
-        f" session   {sid} · {msgs} msgs this session\n"
-        f" issuer    {ctx.issuer}\n"
-        f" project   {ctx.project}\n"
-        f" display   render={render} · timeout={int(timeout_s)}s\n"
-        f"{STATUS_RULE}"
-    )
+    identity_url: str
 
 
 def human_int(n: int) -> str:
@@ -271,20 +247,26 @@ async def run_repl(client: ChatClient, ctx: ReplCtx, timeout: float, render_mode
             print(c.dim(f"session {client.session_id}\n"))
             continue
         if user == "/status":
-            # Re-mint/refresh the token and decode its identity live. Local
-            # import avoids a cli<->repl import cycle.
-            note = None
+            req = {
+                "type": "status",
+                "client": {
+                    "kind": ctx.kind,
+                    "version": ctx.version,
+                    "authLabel": ctx.auth_label,
+                    "renderMode": render_mode,
+                    "timeoutSecs": int(timeout),
+                    "managerUrl": ctx.manager_url,
+                    "connected": client.connected,
+                    "sessionId": client.session_id,
+                    "msgsThisSession": len(history),
+                },
+            }
             try:
-                tok = await client.current_token()
-                from .cli import _identity_from_token
-                who, sub, roles = _identity_from_token(tok)
-            except Exception as e:  # noqa: BLE001 — display surface; never crash /status
-                who, sub, roles, note = "(could not read token)", "—", [], str(e)
-            print(c.dim(format_status(
-                ctx, who, sub, roles, client.connected,
-                client.session_id, len(history), render_mode, timeout)))
-            if note:
-                print(c.err(f"  token error: {note}"))
+                reply = await request_identity(
+                    ctx.identity_url, client.token_provider, req, timeout=timeout)
+                print(c.dim(reply.get("block") or "(no status)"))
+            except (AnswerTimeout, ProtocolError, ManagerUnavailable) as e:
+                print(c.err(f"status unavailable: {e}"))
             print()
             continue
         if user == "/usage":

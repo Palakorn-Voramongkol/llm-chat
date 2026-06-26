@@ -15,15 +15,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
-import json
 import logging
 import os
 import sys
 
 from . import __version__, oidc
 from .auth import fetch_access_token, resolve_credentials
-from .config import add_common_args, configure_logging, load_env_local, resolve_manager
+from .config import add_common_args, configure_logging, identity_url, load_env_local, resolve_manager
 from .errors import (
     AnswerTimeout,
     AuthError,
@@ -32,7 +30,7 @@ from .errors import (
     ManagerUnavailable,
     ProtocolError,
 )
-from .protocol import ChatClient
+from .protocol import ChatClient, request_identity
 from .render import render_markdown, resolve_mode
 from .repl import ReplCtx, run_repl
 from .tokens import TokenStore
@@ -103,38 +101,15 @@ def _login_and_store(issuer, client_id, project, store, port) -> oidc.TokenSet:
     return ts
 
 
-# ---------------- jwt display (no verification) ----------------
+# ---------------- backend identity (the manager resolves + renders) ----------------
 
-def _decode_claims(token: str | None) -> dict:
-    if not token:
-        return {}
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload))
-    except Exception:  # noqa: BLE001 — display only
-        return {}
-
-
-def _identity_from_token(token: str | None) -> tuple[str, str, list[str]]:
-    """(who, sub, roles) from a JWT's claims (display only — no verification).
-    ``who`` prefers email, then preferred_username, then sub. ``roles`` are the
-    sorted, de-duped keys of every ``*:roles`` claim. Shared by whoami + /status."""
-    claims = _decode_claims(token)
-    sub = claims.get("sub", "?")
-    who = claims.get("email") or claims.get("preferred_username") or sub
-    roles: list[str] = []
-    for k, v in claims.items():
-        if k.endswith(":roles") and isinstance(v, dict):
-            roles.extend(v.keys())
-    return who, sub, sorted(set(roles))
-
-
-def _print_whoami(ts: oidc.TokenSet) -> None:
-    who, sub, roles = _identity_from_token(ts.id_token or ts.access_token)
-    print(f"logged in as {who} (sub={sub})")
-    if roles:
-        print(f"  roles: {', '.join(roles)}")
+async def _show_identity(manager_url: str, provider, timeout: float) -> int:
+    """Ask the backend /identity who we are and print its rendered line. No
+    client-side token decoding; fails loudly if the manager is unreachable."""
+    reply = await request_identity(
+        identity_url(manager_url), provider, {"type": "whoami"}, timeout=timeout)
+    print(reply.get("line") or "(no identity)")
+    return EXIT_OK
 
 
 # ---------------- run loops ----------------
@@ -164,10 +139,15 @@ async def _run_chat(provider, manager_url: str, ctx: ReplCtx, timeout: float,
 # ---------------- subcommands ----------------
 
 def _cmd_login(args) -> int:
-    issuer, client_id, project, store, _ = _user_session(args)
-    ts = _login_and_store(issuer, client_id, project, store, args.oidc_port)
-    _print_whoami(ts)
-    return EXIT_OK
+    issuer, client_id, project, store, endpoints = _user_session(args)
+    _login_and_store(issuer, client_id, project, store, args.oidc_port)
+    provider = _user_provider(issuer, client_id, store, endpoints)
+    manager_url = resolve_manager(args.manager)
+    try:  # greeting is best-effort — the session is already cached
+        return asyncio.run(_show_identity(manager_url, provider, args.timeout))
+    except (ManagerUnavailable, ProtocolError, AnswerTimeout) as e:
+        print(f"logged in. (identity unavailable: {e})")
+        return EXIT_OK
 
 
 def _cmd_logout(args) -> int:
@@ -184,13 +164,13 @@ def _cmd_logout(args) -> int:
 
 
 def _cmd_whoami(args) -> int:
-    issuer, client_id, _, store, _ = _user_session(args)
-    ts = store.load()
-    if not ts:
+    issuer, client_id, _project, store, endpoints = _user_session(args)
+    if store.load() is None:
         print("not logged in — run `llm-chat login`", file=sys.stderr)
         return EXIT_AUTH
-    _print_whoami(ts)
-    return EXIT_OK
+    provider = _user_provider(issuer, client_id, store, endpoints)
+    manager_url = resolve_manager(args.manager)
+    return asyncio.run(_show_identity(manager_url, provider, args.timeout))
 
 
 def _cmd_chat_or_ask(args) -> int:
@@ -210,14 +190,14 @@ def _cmd_chat_or_ask(args) -> int:
     render_mode = resolve_mode(plain=args.plain, raw=args.raw)
     if args.command == "ask":
         return asyncio.run(_run_ask(provider, manager_url, args.send, args.timeout, render_mode))
-    # Static context for the REPL's /status block (identity is read live).
+    # Static context for the REPL's /status request — all CLIENT facts; identity,
+    # project, and issuer come from the backend.
     ctx = ReplCtx(
         kind="python",
         version=__version__,
         auth_label="machine (kabytech key)" if mode == "machine" else "human (browser login)",
-        issuer=_resolve_issuer(args),
-        project=_resolve_project(args),
         manager_url=manager_url,
+        identity_url=identity_url(manager_url),
     )
     return asyncio.run(_run_chat(provider, manager_url, ctx, args.timeout, render_mode))
 
