@@ -1,8 +1,9 @@
 """Credential resolution and Zitadel JWT-bearer token minting.
 
-Resolution precedence for each credential: explicit value > environment var >
-the compose stack's ``secrets/`` directory. This is what lets the CLI run with
-no flags when the stack is up.
+Connection settings are SOLE-SOURCED from ``.env.local`` (loaded into the
+process env at CLI startup). Resolution precedence per credential: explicit
+value > environment var. There is NO ``secrets/`` fallback and NO hardcoded
+default — a missing value fails closed.
 """
 
 from __future__ import annotations
@@ -20,27 +21,6 @@ from .errors import AuthError, CredentialError
 
 log = logging.getLogger("llm_chat.auth")
 
-# This file lives at <repo>/clients/python/llm_chat/auth.py, so the compose
-# stack's secrets are three levels up.
-_SECRETS_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "secrets")
-)
-
-
-def secrets_dir() -> str:
-    """Absolute path to the stack's ``secrets/`` directory (may not exist)."""
-    # Allow an override for non-standard layouts / tests.
-    return os.environ.get("LLM_CHAT_SECRETS_DIR", _SECRETS_DIR)
-
-
-def _read_secret_file(name: str) -> str | None:
-    path = os.path.join(secrets_dir(), name)
-    try:
-        with open(path, encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return None
-
 
 @dataclass(frozen=True)
 class Credentials:
@@ -56,35 +36,26 @@ def resolve_credentials(
     project: str | None = None,
     key_file: str | None = None,
 ) -> Credentials:
-    """Fill in any missing credential from env / the secrets dir.
+    """Resolve each credential from an explicit value or the process env (fed by
+    ``.env.local``). SOLE-SOURCED — no ``secrets/`` fallback, no default: a
+    missing value fails closed with a message naming the env var. The key file's
+    *contents* still live in ``secrets/``; ``KABYTECH_KEY`` is just the path.
 
     Raises:
-        CredentialError: if a credential can't be resolved, or the key file is
-            absent — with a message that names what to do about it.
+        CredentialError: if a credential is absent, or the key file is missing.
     """
-    issuer = issuer or os.environ.get("ZITADEL_ISSUER") or _read_secret_file("issuer")
+    issuer = issuer or os.environ.get("ZITADEL_ISSUER")
     if not issuer:
-        raise CredentialError(
-            "no issuer: pass --issuer, set ZITADEL_ISSUER, or run the compose "
-            f"stack so {os.path.join(secrets_dir(), 'issuer')} exists"
-        )
+        raise CredentialError("no issuer: pass --issuer or set ZITADEL_ISSUER in .env.local")
 
-    project = project or os.environ.get("PROJECT_ID") or _read_secret_file("project_id")
+    project = project or os.environ.get("PROJECT_ID")
     if not project:
-        raise CredentialError(
-            "no project id: pass --project, set PROJECT_ID, or run the compose "
-            f"stack so {os.path.join(secrets_dir(), 'project_id')} exists"
-        )
+        raise CredentialError("no project id: pass --project or set PROJECT_ID in .env.local")
 
-    if not key_file:
-        key_file = os.environ.get("KABYTECH_KEY")
-    if not key_file:
-        candidate = os.path.join(secrets_dir(), "kabytech-key.json")
-        key_file = candidate if os.path.exists(candidate) else None
+    key_file = key_file or os.environ.get("KABYTECH_KEY")
     if not key_file:
         raise CredentialError(
-            "no machine-user key: pass --key-file, set KABYTECH_KEY, or run the "
-            f"compose stack so {os.path.join(secrets_dir(), 'kabytech-key.json')} exists"
+            "no machine-user key: pass --key-file or set KABYTECH_KEY in .env.local"
         )
     if not os.path.exists(key_file):
         raise CredentialError(f"key file not found: {key_file}")

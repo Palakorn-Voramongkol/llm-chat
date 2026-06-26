@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -29,41 +28,42 @@ def _write_machine_key(path: str) -> dict:
 
 
 @pytest.fixture
-def secrets(tmp_path, monkeypatch):
-    """A populated secrets dir wired in via LLM_CHAT_SECRETS_DIR."""
-    (tmp_path / "issuer").write_text("http://host.docker.internal:8080", encoding="utf-8")
-    (tmp_path / "project_id").write_text("376349317130092547", encoding="utf-8")
-    _write_machine_key(str(tmp_path / "kabytech-key.json"))
-    monkeypatch.setenv("LLM_CHAT_SECRETS_DIR", str(tmp_path))
-    for var in ("ZITADEL_ISSUER", "PROJECT_ID", "KABYTECH_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    return tmp_path
+def creds_env(tmp_path, monkeypatch):
+    """Connection settings provided via the process env (exactly as .env.local
+    would load them) + a real machine key on disk. No secrets/ dir involved —
+    that fallback no longer exists (sole-source policy)."""
+    key_path = tmp_path / "kabytech-key.json"
+    _write_machine_key(str(key_path))
+    monkeypatch.setenv("ZITADEL_ISSUER", "http://host.docker.internal:8080")
+    monkeypatch.setenv("PROJECT_ID", "376349317130092547")
+    monkeypatch.setenv("KABYTECH_KEY", str(key_path))
+    return tmp_path, str(key_path)
 
 
-def test_resolve_reads_from_secrets_dir(secrets):
+def test_resolve_reads_from_env(creds_env):
+    _, key_path = creds_env
     creds = resolve_credentials()
     assert creds.issuer == "http://host.docker.internal:8080"
     assert creds.project == "376349317130092547"
-    assert creds.key_file == os.path.join(str(secrets), "kabytech-key.json")
+    assert creds.key_file == key_path
 
 
-def test_resolve_fails_closed_when_issuer_absent(secrets):
-    # No --issuer, no $ZITADEL_ISSUER, and no secrets/issuer file -> reject,
-    # never fall back to a hardcoded default (fail-closed config policy).
-    (secrets / "issuer").unlink()
+def test_resolve_fails_closed_when_issuer_absent(creds_env, monkeypatch):
+    # No --issuer and no $ZITADEL_ISSUER -> reject; never fall back to a
+    # hardcoded default or a secrets/ file (sole-source, fail-closed policy).
+    monkeypatch.delenv("ZITADEL_ISSUER", raising=False)
     with pytest.raises(CredentialError, match="no issuer"):
         resolve_credentials()
 
 
-def test_explicit_args_win(secrets, tmp_path):
+def test_explicit_args_win(creds_env, tmp_path):
     other = tmp_path / "other-key.json"
     _write_machine_key(str(other))
     creds = resolve_credentials(issuer="http://x:8080", project="p1", key_file=str(other))
     assert (creds.issuer, creds.project, creds.key_file) == ("http://x:8080", "p1", str(other))
 
 
-def test_missing_project_raises(tmp_path, monkeypatch):
-    monkeypatch.setenv("LLM_CHAT_SECRETS_DIR", str(tmp_path))  # empty dir
+def test_missing_project_raises(monkeypatch):
     monkeypatch.setenv("ZITADEL_ISSUER", "http://x:8080")  # issuer present
     for var in ("PROJECT_ID", "KABYTECH_KEY"):
         monkeypatch.delenv(var, raising=False)
@@ -71,16 +71,15 @@ def test_missing_project_raises(tmp_path, monkeypatch):
         resolve_credentials()
 
 
-def test_missing_key_file_raises(tmp_path, monkeypatch):
-    (tmp_path / "project_id").write_text("p1", encoding="utf-8")
-    monkeypatch.setenv("LLM_CHAT_SECRETS_DIR", str(tmp_path))
+def test_missing_key_file_raises(monkeypatch):
     monkeypatch.setenv("ZITADEL_ISSUER", "http://x:8080")  # issuer present
+    monkeypatch.setenv("PROJECT_ID", "p1")
     monkeypatch.delenv("KABYTECH_KEY", raising=False)
     with pytest.raises(CredentialError, match="machine-user key"):
         resolve_credentials()
 
 
-def test_fetch_access_token_posts_assertion(secrets, monkeypatch):
+def test_fetch_access_token_posts_assertion(creds_env, monkeypatch):
     creds = resolve_credentials()
     captured = {}
 
@@ -105,7 +104,7 @@ def test_fetch_access_token_posts_assertion(secrets, monkeypatch):
     assert captured["data"]["assertion"]  # a signed JWT string
 
 
-def test_fetch_access_token_non_200_raises(secrets, monkeypatch):
+def test_fetch_access_token_non_200_raises(creds_env, monkeypatch):
     creds = resolve_credentials()
 
     class _Resp:

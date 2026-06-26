@@ -22,8 +22,8 @@ import os
 import sys
 
 from . import __version__, oidc
-from .auth import _read_secret_file, fetch_access_token, resolve_credentials
-from .config import add_common_args, configure_logging, resolve_manager
+from .auth import fetch_access_token, resolve_credentials
+from .config import add_common_args, configure_logging, load_env_local, resolve_manager
 from .errors import (
     AnswerTimeout,
     AuthError,
@@ -57,28 +57,24 @@ def _auth_mode(args: argparse.Namespace) -> str:
 
 
 def _resolve_issuer(args) -> str:
-    issuer = args.issuer or os.environ.get("ZITADEL_ISSUER") or _read_secret_file("issuer")
+    issuer = args.issuer or os.environ.get("ZITADEL_ISSUER")
     if not issuer:
-        raise CredentialError(
-            "no issuer: pass --issuer, set ZITADEL_ISSUER, or run the compose stack"
-        )
+        raise CredentialError("no issuer: pass --issuer or set ZITADEL_ISSUER in .env.local")
     return issuer
 
 
 def _resolve_project(args) -> str:
-    p = args.project or os.environ.get("PROJECT_ID") or _read_secret_file("project_id")
+    p = args.project or os.environ.get("PROJECT_ID")
     if not p:
-        raise CredentialError("no project id: pass --project or run the compose stack")
+        raise CredentialError("no project id: pass --project or set PROJECT_ID in .env.local")
     return p
 
 
 def _resolve_client_id(args) -> str:
-    cid = (getattr(args, "oidc_client_id", None) or os.environ.get("OIDC_CLIENT_ID")
-           or _read_secret_file("oidc_client_id"))
+    cid = getattr(args, "oidc_client_id", None) or os.environ.get("OIDC_CLIENT_ID")
     if not cid:
         raise CredentialError(
-            "no OIDC client id: run the compose stack so secrets/oidc_client_id exists, "
-            "or pass --oidc-client-id")
+            "no OIDC client id: pass --oidc-client-id or set OIDC_CLIENT_ID in .env.local")
     return cid
 
 
@@ -275,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     _force_utf8()
+    load_env_local()  # sole-source connection settings (real env / --flags win)
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command is None:           # bare `llm-chat` → interactive chat
@@ -287,6 +284,7 @@ def ask_main(argv: list[str] | None = None) -> int:
     `--issuer/--project/--key-file/--manager/--send/--timeout`, no subcommand.
     Always machine auth (kabytech)."""
     _force_utf8()
+    load_env_local()  # sole-source connection settings (real env / --flags win)
     p = argparse.ArgumentParser(prog="llm_chat_client.py",
                                 description="One-shot llm-chat question (legacy interface).")
     add_common_args(p)

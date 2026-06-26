@@ -16,6 +16,9 @@ dependencies = [
     "keyring>=24",
     "platformdirs>=4",
     "rich>=13",
+    # Load connection settings from the repo-root .env.local (sole source; no
+    # secrets/ fallback). Non-overriding: real env vars / --flags still win.
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
