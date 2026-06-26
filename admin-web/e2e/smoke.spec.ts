@@ -245,12 +245,13 @@ test.describe("authenticated operator flow", () => {
     await expect(page.getByText(clientName)).toBeVisible();
     await expect(page.getByText(secretValue)).toHaveCount(0);
 
-    // Clean up: select the client and delete it via the detail panel
-    // (panel "Delete" -> confirm "Delete"; the modal makes the panel inert, so
-    // the second match is the dialog's button).
+    // Clean up: select the client and delete it via the detail panel. The
+    // confirm is a Radix AlertDialog (role="alertdialog"); scope the confirm
+    // click to it so the panel's own "Delete" button can never be matched twice
+    // (avoids a strict-mode violation regardless of panel inertness).
     await page.getByRole("button", { name: new RegExp(clientName) }).click();
     await page.getByRole("button", { name: "Delete", exact: true }).click();
-    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: "Delete", exact: true }).click();
     await expect(page.getByText(/login client deleted/i)).toBeVisible();
   });
 
