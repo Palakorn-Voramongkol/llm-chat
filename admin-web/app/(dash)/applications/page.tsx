@@ -33,20 +33,26 @@ export default function ApplicationsPage() {
     const pairs = await Promise.all(
       projects.map(async (p): Promise<[string, AppMeta] | null> => {
         try {
-          const [roles, grants, apps] = await Promise.all([
+          const [roles, grants] = await Promise.all([
             api.get<RoleList>(`/api/projects/${p.id}/roles`),
             api.get<ProjectGrantList>(`/api/projects/${p.id}/grants`),
-            api.get<OidcAppList>(`/api/projects/${p.id}/apps`),
           ]);
           const userCount = new Set(
             (grants.result ?? [])
               .map((g) => g.userId)
               .filter((u): u is string => !!u),
           ).size;
+          // Client count is its own best-effort fetch: a clients-list permission
+          // error must not blank this app's roles/users counts.
+          let clientCount = 0;
+          try {
+            const apps = await api.get<OidcAppList>(`/api/projects/${p.id}/apps`);
+            clientCount = (apps.result ?? []).length;
+          } catch { /* leave clientCount at 0 */ }
           return [p.id, {
             roleKeys: (roles.result ?? []).map((r) => r.key),
             userCount,
-            clientCount: (apps.result ?? []).length,
+            clientCount,
           }];
         } catch {
           return null;

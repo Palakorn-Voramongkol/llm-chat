@@ -78,7 +78,9 @@ export function resolveTokenTypes(
 ): { responseTypes: OidcResponseType[]; grantTypes: OidcGrantType[] } {
   if (existing) {
     const f = appToConfigForm(existing);
-    return { responseTypes: f.responseTypes, grantTypes: f.grantTypes };
+    // Copy so callers can never mutate the source client's arrays (symmetry
+    // with the create path below).
+    return { responseTypes: [...f.responseTypes], grantTypes: [...f.grantTypes] };
   }
   return {
     responseTypes: [...DEFAULT_RESPONSE_TYPES],

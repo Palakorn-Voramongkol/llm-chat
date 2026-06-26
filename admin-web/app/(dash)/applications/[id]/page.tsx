@@ -194,6 +194,11 @@ export default function ApplicationDetailPage() {
                     ? selectedClient.oidcConfig.grantTypes.map(pretty).join(", ")
                     : "—"}
                 </PanelField>
+                <PanelField label="Response types">
+                  {selectedClient.oidcConfig?.responseTypes?.length
+                    ? selectedClient.oidcConfig.responseTypes.map(pretty).join(", ")
+                    : "—"}
+                </PanelField>
               </PanelSection>
               <PanelSection title="Redirect URIs">
                 {selectedClient.oidcConfig?.redirectUris?.length ? (
