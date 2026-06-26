@@ -195,34 +195,41 @@ class ChatClient:
             # `initialized`, `ack`, or an unrelated `a` → keep waiting.
             log.debug("skip frame type=%s id=%s", mtype, msg.get("id"))
 
-    async def usage(self, *, timeout: float = 120.0) -> dict:
-        """Request THIS user's own usage; return the manager's ``usage`` reply.
-
-        Sends ``{"type":"usage"}`` and awaits the ``usage`` frame, skipping any
-        interleaved ack/answer frames. Raises AnswerTimeout / ProtocolError /
+    async def _request_reply(self, kind: str, *, timeout: float) -> dict:
+        """Send a one-shot ``{"type":<kind>}`` request and await the reply frame
+        of the SAME type, skipping interleaved ack/answer frames. Shared by
+        usage() and dir(). Raises AnswerTimeout / ProtocolError /
         ManagerUnavailable."""
         if not self.connected:
             await self.connect()
-        await self._ws.send(json.dumps({"type": "usage"}))
+        await self._ws.send(json.dumps({"type": kind}))
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise AnswerTimeout("no usage reply within the timeout")
+                raise AnswerTimeout(f"no {kind} reply within the timeout")
             try:
                 raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
             except asyncio.TimeoutError:
-                raise AnswerTimeout("no usage reply within the timeout") from None
+                raise AnswerTimeout(f"no {kind} reply within the timeout") from None
             except websockets.ConnectionClosed as e:
                 await self.close()
-                raise ManagerUnavailable(f"connection closed during usage(): {e}") from e
+                raise ManagerUnavailable(f"connection closed during {kind}(): {e}") from e
             try:
                 msg = json.loads(raw)
             except ValueError as e:
                 raise ProtocolError(f"manager sent non-JSON frame: {raw!r}") from e
             mtype = msg.get("type")
-            if mtype == "usage":
+            if mtype == kind:
                 return msg
             if mtype == "err":
-                raise ProtocolError(msg.get("text", "usage error"))
-            log.debug("skip frame type=%s (awaiting usage)", mtype)
+                raise ProtocolError(msg.get("text", f"{kind} error"))
+            log.debug("skip frame type=%s (awaiting %s)", mtype, kind)
+
+    async def usage(self, *, timeout: float = 120.0) -> dict:
+        """Request THIS user's own usage; return the manager's ``usage`` reply."""
+        return await self._request_reply("usage", timeout=timeout)
+
+    async def dir(self, *, timeout: float = 120.0) -> dict:
+        """Request a listing of THIS user's box; return the manager's ``dir`` reply."""
+        return await self._request_reply("dir", timeout=timeout)

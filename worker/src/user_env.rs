@@ -118,6 +118,84 @@ pub fn open_cwd(
     resolve_user_cwd(base, uid, subpath)
 }
 
+/// One entry in a box listing. `path` is RELATIVE to the box root,
+/// '/'-separated. Symlinks are reported (`dir=false`) but never descended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    pub path: String,
+    pub dir: bool,
+    pub size: u64,
+}
+
+/// Recursively list the user's box (`{base}/{user_id}`), CONFINED. Bounded by
+/// `max_depth` (directory nesting) and `max_entries` (total). Does NOT follow
+/// symlinks — a symlink is listed (`dir=false`) but never descended, so the
+/// walk can never escape the box even if a symlink points outside it. Entries
+/// are sorted by path. Fails closed via `resolve_user_cwd` (mandatory user id;
+/// traversal/escape rejected; box auto-created).
+pub fn list_box_tree(
+    base: &Path,
+    user_id: Option<&str>,
+    max_depth: usize,
+    max_entries: usize,
+) -> Result<(Vec<DirEntry>, bool), ResolveError> {
+    let uid = user_id.unwrap_or("").trim();
+    if uid.is_empty() {
+        return Err(ResolveError::BadUser(
+            "per-user environment requires an authenticated user id".into(),
+        ));
+    }
+    let root = resolve_user_cwd(base, uid, None)?; // confined + created box root
+    let mut out = Vec::new();
+    let mut truncated = false;
+    walk_box(&root, &root, 0, max_depth, max_entries, &mut out, &mut truncated);
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((out, truncated))
+}
+
+fn walk_box(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    max_depth: usize,
+    max_entries: usize,
+    out: &mut Vec<DirEntry>,
+    truncated: &mut bool,
+) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if out.len() >= max_entries {
+            *truncated = true;
+            return;
+        }
+        // symlink_metadata: never follow a symlink (it could point outside the
+        // box). It is listed as a non-dir entry and never descended.
+        let md = match std::fs::symlink_metadata(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let is_dir = md.is_dir() && !md.file_type().is_symlink();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        out.push(DirEntry { path: rel, dir: is_dir, size: if is_dir { 0 } else { md.len() } });
+        if is_dir {
+            if depth + 1 < max_depth {
+                walk_box(root, &path, depth + 1, max_depth, max_entries, out, truncated);
+            } else if std::fs::read_dir(&path).map(|mut r| r.next().is_some()).unwrap_or(false) {
+                *truncated = true; // deeper entries exist but the depth cap hides them
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +288,64 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = open_cwd(tmp.path(), Some("u1"), None).unwrap();
         assert!(p.is_dir());
+    }
+
+    #[test]
+    fn list_box_tree_lists_confined_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("u1");
+        std::fs::create_dir_all(root.join("projects/sub")).unwrap();
+        std::fs::write(root.join("todo.md"), b"hello").unwrap();
+        std::fs::write(root.join("projects/main.rs"), b"fn main(){}").unwrap();
+        let (entries, truncated) = list_box_tree(tmp.path(), Some("u1"), 8, 1000).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"todo.md"));
+        assert!(paths.contains(&"projects"));
+        assert!(paths.contains(&"projects/main.rs"));
+        assert!(paths.contains(&"projects/sub"));
+        assert!(!truncated);
+        let todo = entries.iter().find(|e| e.path == "todo.md").unwrap();
+        assert_eq!(todo.size, 5);
+        assert!(!todo.dir);
+        assert!(entries.iter().find(|e| e.path == "projects").unwrap().dir);
+    }
+
+    #[test]
+    fn list_box_tree_rejects_missing_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(matches!(list_box_tree(tmp.path(), None, 8, 1000), Err(ResolveError::BadUser(_))));
+        assert!(matches!(list_box_tree(tmp.path(), Some(""), 8, 1000), Err(ResolveError::BadUser(_))));
+    }
+
+    #[test]
+    fn list_box_tree_depth_cap_truncates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("u1");
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/b/c/deep.txt"), b"x").unwrap();
+        // depth 1: top-level "a" listed, but its contents are not descended.
+        let (entries, truncated) = list_box_tree(tmp.path(), Some("u1"), 1, 1000).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"a"));
+        assert!(!paths.contains(&"a/b"));
+        assert!(truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_box_tree_does_not_follow_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"top secret").unwrap();
+        let root = tmp.path().join("u1");
+        std::fs::create_dir_all(&root).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+        let (entries, _) = list_box_tree(tmp.path(), Some("u1"), 8, 1000).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"link")); // the symlink itself is listed
+        assert!(!paths.iter().any(|p| p.contains("secret"))); // but NOT followed
+        assert!(!entries.iter().find(|e| e.path == "link").unwrap().dir);
     }
 }

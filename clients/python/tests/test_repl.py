@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from llm_chat.repl import (
-    ReplCtx, format_answer, format_status, format_usage, human_bytes, human_int,
+    ReplCtx, format_answer, format_dir, format_status, format_usage,
+    human_bytes, human_int,
 )
 
 
@@ -88,3 +89,22 @@ def test_format_usage_empty_daily():
     s = format_usage(reply)
     assert "(no usage in the last 7 days)" in s
     assert "files      0 · 0 B" in s
+
+
+def test_format_dir_renders_tree():
+    reply = {"type": "dir", "truncated": False, "entries": [
+        {"path": "projects", "dir": True, "size": 0},
+        {"path": "projects/main.rs", "dir": False, "size": 11},
+        {"path": "todo.md", "dir": False, "size": 5},
+    ]}
+    s = format_dir(reply)
+    assert "3 entries" in s
+    assert "\n  projects/" in s
+    assert "\n    main.rs  11 B" in s
+    assert "\n  todo.md  5 B" in s
+
+
+def test_format_dir_empty_box():
+    s = format_dir({"type": "dir", "truncated": False, "entries": []})
+    assert "0 entries" in s
+    assert "(box is empty)" in s

@@ -2296,11 +2296,34 @@ async fn handle_chat(
                 let _ = answer_tx_for_in.send(reply).await;
                 continue;
             }
+            if msg_type == "dir" {
+                // List the caller's OWN box via the worker (which owns the
+                // per-user filesystem). user_id_for_in is the verified JWT sub;
+                // the worker confines the walk to {base}/{sub}.
+                let reply = match lookup_port(&state_for_in, &sid_for_in).await {
+                    Some(port) => match call_backend(port, serde_json::json!({"cmd":"dir","userId": user_id_for_in})).await {
+                        Ok(r) if r.get("ok").and_then(|v| v.as_bool()) == Some(true) => serde_json::json!({
+                            "type": "dir",
+                            "entries": r.get("entries").cloned().unwrap_or_else(|| serde_json::json!([])),
+                            "truncated": r.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false),
+                        }),
+                        Ok(r) => serde_json::json!({"type":"err",
+                            "text":format!("dir: {}", r.get("error").and_then(|v| v.as_str()).unwrap_or("rejected")),
+                            "timeIn":time_in,"timeOut":now_iso()}),
+                        Err(e) => serde_json::json!({"type":"err",
+                            "text":format!("dir backend error: {e}"),"timeIn":time_in,"timeOut":now_iso()}),
+                    },
+                    None => serde_json::json!({"type":"err",
+                        "text":"no backend for this session","timeIn":time_in,"timeOut":now_iso()}),
+                };
+                let _ = answer_tx_for_in.send(reply).await;
+                continue;
+            }
             if msg_type != "q" {
                 let _ = answer_tx_for_in
                     .send(serde_json::json!({
                         "type":"err",
-                        "text":format!("unknown type \"{}\"; expected \"q\", \"confirm\", or \"usage\"", msg_type),
+                        "text":format!("unknown type \"{}\"; expected \"q\", \"confirm\", \"usage\", or \"dir\"", msg_type),
                         "timeIn": time_in,
                         "timeOut": now_iso(),
                     }))

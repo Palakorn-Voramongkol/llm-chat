@@ -17,6 +17,7 @@ const HELP: &str = "commands:\n\
   /session         show the backend session id\n\
   /status          show your identity + client/connection status\n\
   /usage           show your own usage (totals + last 7 days)\n\
+  /dir             list your box (per-user files, recursive)\n\
   /render MODE     switch markdown display: auto | plain | raw\n\
   /reset           drop the session and start a fresh one (clears claude context)\n\
   /multi           enter a multi-line message (end with '.')\n\
@@ -135,6 +136,44 @@ fn format_usage(reply: &serde_json::Value) -> String {
             }
         }
         _ => s.push_str("\n (no usage in the last 7 days)"),
+    }
+    s.push('\n');
+    s.push_str(STATUS_RULE);
+    s
+}
+
+/// PURE: render the `/dir` block (recursive box tree) from the manager's `dir`
+/// reply. Entries are box-relative '/'-separated paths, pre-sorted; indent by
+/// depth. Matches the Python client's layout — keep them in sync.
+fn format_dir(reply: &serde_json::Value) -> String {
+    let entries = reply.get("entries").and_then(|v| v.as_array());
+    let truncated = reply.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+    let n = entries.map(|a| a.len()).unwrap_or(0);
+    let mut s = format!(
+        "─ dir ───────────────────────────────────────\n\
+         \x20box        your environment · {n} {}",
+        if n == 1 { "entry" } else { "entries" },
+    );
+    match entries {
+        Some(arr) if !arr.is_empty() => {
+            for e in arr {
+                let path = e.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                let is_dir = e.get("dir").and_then(|v| v.as_bool()).unwrap_or(false);
+                let size = e.get("size").and_then(|v| v.as_i64()).unwrap_or(0);
+                let depth = path.matches('/').count();
+                let name = path.rsplit('/').next().unwrap_or(path);
+                let indent = "  ".repeat(depth + 1);
+                if is_dir {
+                    s.push_str(&format!("\n{indent}{name}/"));
+                } else {
+                    s.push_str(&format!("\n{indent}{name}  {}", human_bytes(size)));
+                }
+            }
+        }
+        _ => s.push_str("\n (box is empty)"),
+    }
+    if truncated {
+        s.push_str("\n … (truncated)");
     }
     s.push('\n');
     s.push_str(STATUS_RULE);
@@ -338,6 +377,13 @@ pub async fn run_repl(client: &mut ChatClient, ctx: &ReplCtx, timeout: Duration,
             }
             continue;
         }
+        if user == "/dir" {
+            match client.dir(timeout).await {
+                Ok(reply) => println!("{}\n", c.dim(&format_dir(&reply))),
+                Err(e) => println!("{}\n", c.err(&format!("dir unavailable: {e}"))),
+            }
+            continue;
+        }
         if user == "/history" {
             if history.is_empty() {
                 println!("{}\n", c.dim("(no messages yet)"));
@@ -503,5 +549,27 @@ mod tests {
         let s = format_usage(&reply);
         assert!(s.contains("(no usage in the last 7 days)"));
         assert!(s.contains("files      0 · 0 B"));
+    }
+
+    #[test]
+    fn format_dir_renders_tree() {
+        let reply = serde_json::json!({"type":"dir","truncated":false,"entries":[
+            {"path":"projects","dir":true,"size":0},
+            {"path":"projects/main.rs","dir":false,"size":11},
+            {"path":"todo.md","dir":false,"size":5},
+        ]});
+        let s = format_dir(&reply);
+        assert!(s.contains("3 entries"));
+        assert!(s.contains("\n  projects/"));
+        assert!(s.contains("\n    main.rs  11 B"));
+        assert!(s.contains("\n  todo.md  5 B"));
+    }
+
+    #[test]
+    fn format_dir_empty_box() {
+        let reply = serde_json::json!({"type":"dir","truncated":false,"entries":[]});
+        let s = format_dir(&reply);
+        assert!(s.contains("0 entries"));
+        assert!(s.contains("(box is empty)"));
     }
 }

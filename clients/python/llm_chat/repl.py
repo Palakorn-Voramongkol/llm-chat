@@ -98,6 +98,7 @@ HELP = """commands:
   /session         show the backend session id
   /status          show your identity + client/connection status
   /usage           show your own usage (totals + last 7 days)
+  /dir             list your box (per-user files, recursive)
   /render MODE     switch markdown display: auto | plain | raw
   /reset           drop the session and start a fresh one (clears claude context)
   /multi           enter a multi-line message (end with '.')
@@ -196,6 +197,37 @@ def format_usage(reply: dict) -> str:
     return "\n".join(lines)
 
 
+def format_dir(reply: dict) -> str:
+    """PURE: render the /dir block (recursive box tree) from the manager's `dir`
+    reply. Entries are box-relative '/'-separated paths, pre-sorted; indent by
+    depth. Matches the Rust client's layout — keep them in sync."""
+    entries = reply.get("entries") or []
+    truncated = bool(reply.get("truncated"))
+    n = len(entries)
+    lines = [
+        "─ dir ───────────────────────────────────────",
+        f" box        your environment · {n} {'entry' if n == 1 else 'entries'}",
+    ]
+    if entries:
+        for e in entries:
+            path = e.get("path") or ""
+            is_dir = bool(e.get("dir"))
+            size = e.get("size") if isinstance(e.get("size"), int) else 0
+            depth = path.count("/")
+            name = path.rsplit("/", 1)[-1]
+            indent = "  " * (depth + 1)
+            if is_dir:
+                lines.append(f"{indent}{name}/")
+            else:
+                lines.append(f"{indent}{name}  {human_bytes(size)}")
+    else:
+        lines.append(" (box is empty)")
+    if truncated:
+        lines.append(" … (truncated)")
+    lines.append(STATUS_RULE)
+    return "\n".join(lines)
+
+
 def _print_answer(c: _Ansi, text: str, render_mode: str, latency_s: float | None) -> None:
     """Print the 'Claude:' label, then render the answer body as a block.
 
@@ -261,6 +293,13 @@ async def run_repl(client: ChatClient, ctx: ReplCtx, timeout: float, render_mode
                 print(c.dim(format_usage(reply)) + "\n")
             except (AnswerTimeout, ProtocolError, ManagerUnavailable) as e:
                 print(c.err(f"usage unavailable: {e}") + "\n")
+            continue
+        if user == "/dir":
+            try:
+                reply = await client.dir(timeout=timeout)
+                print(c.dim(format_dir(reply)) + "\n")
+            except (AnswerTimeout, ProtocolError, ManagerUnavailable) as e:
+                print(c.err(f"dir unavailable: {e}") + "\n")
             continue
         if user == "/history":
             if not history:
