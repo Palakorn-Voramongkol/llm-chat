@@ -153,6 +153,38 @@ pub fn list_box_tree(
     Ok((out, truncated))
 }
 
+/// Read-only, NON-CREATING variant of `list_box_tree` for the admin Console
+/// view: if the user's box does not exist yet, return an empty listing WITHOUT
+/// creating it (viewing must never mutate the filesystem). Same confinement and
+/// symlink-safety as `list_box_tree` (a symlink is listed but never descended,
+/// so the walk can't escape the box). Fails closed on an invalid user id.
+pub fn list_box_readonly(
+    base: &Path,
+    user_id: Option<&str>,
+    max_depth: usize,
+    max_entries: usize,
+) -> Result<(Vec<DirEntry>, bool), ResolveError> {
+    let uid = user_id.unwrap_or("").trim();
+    if !valid_user_id(uid) {
+        return Err(ResolveError::BadUser(format!("{uid:?}")));
+    }
+    let root_lexical = base.join(uid);
+    // Non-creating: no box on disk → no sandbox yet (do NOT create one).
+    if !root_lexical.exists() {
+        return Ok((Vec::new(), false));
+    }
+    // Canonicalize the root to prove it resolves before walking (mirrors
+    // resolve_user_cwd minus the create); the walk never follows symlinks.
+    let root = root_lexical
+        .canonicalize()
+        .map_err(|e| ResolveError::Escape(format!("canonicalize root: {e}")))?;
+    let mut out = Vec::new();
+    let mut truncated = false;
+    walk_box(&root, &root, 0, max_depth, max_entries, &mut out, &mut truncated);
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((out, truncated))
+}
+
 fn walk_box(
     root: &Path,
     dir: &Path,
@@ -347,5 +379,54 @@ mod tests {
         assert!(paths.contains(&"link")); // the symlink itself is listed
         assert!(!paths.iter().any(|p| p.contains("secret"))); // but NOT followed
         assert!(!entries.iter().find(|e| e.path == "link").unwrap().dir);
+    }
+
+    #[test]
+    fn list_box_readonly_lists_existing_box() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("u1");
+        std::fs::create_dir_all(root.join("projects/sub")).unwrap();
+        std::fs::write(root.join("todo.md"), b"hello").unwrap();
+        let (entries, truncated) = list_box_readonly(tmp.path(), Some("u1"), 8, 1000).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"todo.md"));
+        assert!(paths.contains(&"projects"));
+        assert!(paths.contains(&"projects/sub"));
+        assert!(!truncated);
+        assert_eq!(entries.iter().find(|e| e.path == "todo.md").unwrap().size, 5);
+    }
+
+    #[test]
+    fn list_box_readonly_absent_box_is_empty_and_not_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (entries, truncated) = list_box_readonly(tmp.path(), Some("ghost"), 8, 1000).unwrap();
+        assert!(entries.is_empty());
+        assert!(!truncated);
+        assert!(!tmp.path().join("ghost").exists(), "viewing must NOT create the box");
+    }
+
+    #[test]
+    fn list_box_readonly_rejects_bad_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(matches!(list_box_readonly(tmp.path(), None, 8, 1000), Err(ResolveError::BadUser(_))));
+        assert!(matches!(list_box_readonly(tmp.path(), Some(""), 8, 1000), Err(ResolveError::BadUser(_))));
+        assert!(matches!(list_box_readonly(tmp.path(), Some("a/b"), 8, 1000), Err(ResolveError::BadUser(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_box_readonly_does_not_follow_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"top secret").unwrap();
+        let root = tmp.path().join("u1");
+        std::fs::create_dir_all(&root).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+        let (entries, _) = list_box_readonly(tmp.path(), Some("u1"), 8, 1000).unwrap();
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"link"));
+        assert!(!paths.iter().any(|p| p.contains("secret")));
     }
 }
