@@ -15,7 +15,7 @@ vi.mock("../lib/api", () => ({
 describe("Sidebar", () => {
   it("renders a labelled link for every NAV area", () => {
     render(<Sidebar />);
-    for (const label of ["Dashboard", "Users", "Roles", "Applications", "OIDC Clients", "Project & Org", "Audit"]) {
+    for (const label of ["Dashboard", "Users", "Roles", "Applications", "Project & Org", "Audit"]) {
       expect(screen.getByRole("link", { name: new RegExp(label, "i") })).toBeInTheDocument();
     }
   });

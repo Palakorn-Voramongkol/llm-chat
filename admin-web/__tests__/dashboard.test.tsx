@@ -36,7 +36,7 @@ describe("dashboard cards", () => {
     expect(screen.getByText("Machine accounts")).toBeInTheDocument();
     // each card deep-links to its area
     expect(screen.getByRole("link", { name: /Humans/ })).toHaveAttribute("href", "/users");
-    expect(screen.getByRole("link", { name: /Apps/ })).toHaveAttribute("href", "/apps");
+    expect(screen.getByRole("link", { name: /Apps/ })).toHaveAttribute("href", "/applications");
     expect(screen.getByRole("link", { name: /Roles/ })).toHaveAttribute("href", "/roles");
   });
 

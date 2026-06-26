@@ -34,7 +34,7 @@ const CARDS: CardDef[] = [
   { key: "machines", label: "Machine accounts", href: "/users",  Icon: Bot,         bg: "bg-cyan-500/14",    fg: "text-cyan-600" },
   { key: "roles",    label: "Roles",            href: "/roles",  Icon: ShieldCheck, bg: "bg-indigo-500/12",  fg: "text-indigo-600" },
   { key: "grants",   label: "Grants",           href: "/users",  Icon: KeyRound,    bg: "bg-emerald-500/12", fg: "text-emerald-600" },
-  { key: "apps",     label: "Apps",             href: "/apps",   Icon: AppWindow,   bg: "bg-violet-500/14",  fg: "text-violet-600" },
+  { key: "apps",     label: "Apps",             href: "/applications",   Icon: AppWindow,   bg: "bg-violet-500/14",  fg: "text-violet-600" },
 ];
 
 // Bucket events into 24 hourly bins ending at the current hour ("HH:00").
