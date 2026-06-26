@@ -1076,6 +1076,17 @@ struct ManagerState {
     /// updated on each q, removed on disconnect. /control "clients" reads
     /// this for a real-time view of who's online.
     clients: HashMap<String, ClientInfo>,
+    /// Outbound HTTP for the user's own Zitadel `/userinfo` (display-name
+    /// resolution on `/identity`). Reused across requests.
+    http: reqwest::Client,
+    /// Zitadel issuer (for building the `/userinfo` URL). `None` when Zitadel
+    /// auth isn't configured — `/identity` then rejects (no verified user).
+    issuer: Option<String>,
+    /// The manager's own Zitadel project id (shown on `/status` when no
+    /// friendly name is configured).
+    project_id: Option<String>,
+    /// Friendly project name from `MANAGER_PROJECT_NAME` (else the id is shown).
+    project_name: Option<String>,
 }
 
 type SharedState = Arc<Mutex<ManagerState>>;
@@ -1223,8 +1234,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Zitadel JWT auth — optional. If ZITADEL_ISSUER is unset, fall back to the
     // legacy shared-token check (handle_client decides based on `jwks`).
+    // Captured from ZitadelConfig before it's consumed by JwksCache::new, so
+    // /identity can build the userinfo URL and show the project.
+    let mut manager_issuer: Option<String> = None;
+    let mut manager_project_id: Option<String> = None;
     let jwks = match zitadel_auth::ZitadelConfig::from_env() {
         Ok(cfg) => {
+            manager_issuer = Some(cfg.issuer.clone());
+            manager_project_id = Some(cfg.project_id.clone());
             tracing::info!(target: "manager::auth",
                 issuer = %cfg.issuer,
                 audience = ?cfg.audience,
@@ -1262,6 +1279,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let manager_project_name = std::env::var("MANAGER_PROJECT_NAME")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     let state: SharedState = Arc::new(Mutex::new(ManagerState {
         instance_ports: ports.clone(),
         session_to_port: HashMap::new(),
@@ -1270,6 +1291,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         jwks,
         chat_db,
         clients: HashMap::new(),
+        http: reqwest::Client::new(),
+        issuer: manager_issuer,
+        project_id: manager_project_id,
+        project_name: manager_project_name,
     }));
 
     // bind_host was resolved+validated up front (before any spawning).
@@ -1383,10 +1408,14 @@ async fn handle_client(
     let query_holder = Arc::new(std::sync::Mutex::new(String::new()));
     let user_id_holder = Arc::new(std::sync::Mutex::new(None::<String>));
     let roles_holder = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let token_holder = Arc::new(std::sync::Mutex::new(None::<String>));
+    let email_holder = Arc::new(std::sync::Mutex::new(None::<String>));
     let path_capture = path_holder.clone();
     let query_capture = query_holder.clone();
     let user_id_capture = user_id_holder.clone();
     let roles_capture = roles_holder.clone();
+    let token_capture = token_holder.clone();
+    let email_capture = email_holder.clone();
     let cb = move |req: &Request, resp: Response| -> Result<Response, ErrorResponse> {
         *path_capture.lock().unwrap() = req.uri().path().to_string();
         *query_capture.lock().unwrap() = req.uri().query().unwrap_or("").to_string();
@@ -1435,6 +1464,8 @@ async fn handle_client(
             tracing::info!(target: "manager::auth", user_id = %principal.user_id, roles = ?principal.roles, "JWT verified; capturing user id");
             *user_id_capture.lock().unwrap() = Some(principal.user_id.clone());
             *roles_capture.lock().unwrap() = principal.roles.clone();
+            *token_capture.lock().unwrap() = Some(token.clone());
+            *email_capture.lock().unwrap() = principal.email.clone();
             return Ok(resp);
         }
 
@@ -1460,6 +1491,28 @@ async fn handle_client(
     let req_query = query_holder.lock().unwrap().clone();
     let user_id = user_id_holder.lock().unwrap().clone();
     tracing::info!(target: "manager", path = %req_path, query = %redact_query(&req_query), user_id = ?user_id, "post-handshake routing");
+
+    let captured_token = token_holder.lock().unwrap().take();
+    let captured_email = email_holder.lock().unwrap().take();
+
+    if req_path == "/identity" {
+        // Lightweight identity surface: resolve who-am-I + render /status or
+        // whoami. No worker, no chat session. chat.user already enforced at the
+        // handshake. The user's token is used only for their own /userinfo.
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
+        let roles = roles_holder.lock().unwrap().clone();
+        let token = match captured_token {
+            Some(t) => t,
+            None => return reject_no_user(ws).await,
+        };
+        return handle_identity(ws, state, uid, roles, captured_email, token).await;
+    }
+    // Not /identity → do not retain the user's access token.
+    drop(captured_token);
+    drop(captured_email);
 
     if req_path == "/control" {
         let uid = match user_id {
@@ -1530,6 +1583,102 @@ async fn handle_client(
     let _ = sink
         .send(Message::Text(format!("unknown path: {}", req_path)))
         .await;
+    Ok(())
+}
+
+// ---------- /identity ----------
+
+/// IO: GET {issuer}/oidc/v1/userinfo with the user's OWN access token and shape
+/// the display label. Best-effort: any failure → email_fallback → sub.
+async fn resolve_user_label(
+    http: &reqwest::Client,
+    issuer: &str,
+    access_token: &str,
+    email_fallback: Option<&str>,
+    sub: &str,
+) -> String {
+    let url = format!("{}/oidc/v1/userinfo", issuer);
+    match http.get(&url).bearer_auth(access_token).send().await {
+        Ok(resp) => match resp.json::<serde_json::Value>().await {
+            Ok(v) => user_label_from_userinfo(&v, email_fallback, sub),
+            Err(_) => email_fallback.unwrap_or(sub).to_string(),
+        },
+        Err(_) => email_fallback.unwrap_or(sub).to_string(),
+    }
+}
+
+async fn handle_identity(
+    ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    state: SharedState,
+    user_id: String,
+    roles: Vec<String>,
+    email: Option<String>,
+    token: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
+    let (mut sink, mut stream) = ws.split();
+
+    // One request, then close.
+    let text = match tokio::time::timeout(Duration::from_secs(30), stream.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) => t,
+        Ok(Some(Ok(Message::Binary(b)))) => String::from_utf8_lossy(&b).into_owned(),
+        _ => return Ok(()), // closed / no request
+    };
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = sink
+                .send(Message::Text(
+                    serde_json::json!({"type":"err","text":format!("bad JSON: {e}")}).to_string(),
+                ))
+                .await;
+            return Ok(());
+        }
+    };
+
+    let (http, issuer, project_id, project_name) = {
+        let st = state.lock().await;
+        (st.http.clone(), st.issuer.clone(), st.project_id.clone(), st.project_name.clone())
+    };
+    let issuer = match issuer {
+        Some(i) => i,
+        None => {
+            let _ = sink
+                .send(Message::Text(
+                    serde_json::json!({"type":"err","text":"identity unavailable: no issuer configured"}).to_string(),
+                ))
+                .await;
+            return Ok(());
+        }
+    };
+
+    let who = resolve_user_label(&http, &issuer, &token, email.as_deref(), &user_id).await;
+    let mut sorted_roles = roles.clone();
+    sorted_roles.sort();
+    sorted_roles.dedup();
+
+    let reply = match v.get("type").and_then(|t| t.as_str()) {
+        Some("status") => {
+            let c = parse_status_client(&v);
+            let project = project_name
+                .as_deref()
+                .or(project_id.as_deref())
+                .unwrap_or("—");
+            let block = format_status_block(&c, &who, &user_id, &sorted_roles, &issuer, project);
+            serde_json::json!({"type":"status","block": block})
+        }
+        Some("whoami") => {
+            let line = format_whoami_line(&who, &user_id, &sorted_roles);
+            serde_json::json!({"type":"whoami","line": line})
+        }
+        other => serde_json::json!({
+            "type":"err",
+            "text": format!("unknown identity request type {:?}; expected \"status\" or \"whoami\"", other),
+        }),
+    };
+
+    let _ = sink.send(Message::Text(reply.to_string())).await;
+    let _ = sink.send(Message::Close(None)).await;
     Ok(())
 }
 
