@@ -112,12 +112,13 @@ services:
     build:
       context: .
       dockerfile: deploy/compose/manager.Dockerfile
+    # Connection config (ZITADEL_ISSUER, MANAGER_BIND, MANAGER_BACKEND_HOST/
+    # PORTS) is sole-sourced from the repo-root .env.local; secret + log level
+    # stay in environment: below.
+    env_file:
+      - .env.local
     environment:
-      ZITADEL_ISSUER: http://host.docker.internal:8080
       LLM_CHAT_AUTH_TOKEN: ${LLM_CHAT_AUTH_TOKEN}
-      MANAGER_BIND: 0.0.0.0
-      MANAGER_BACKEND_HOST: host.docker.internal
-      MANAGER_BACKEND_PORTS: "7878"
       # Operator-tunable log verbosity (tracing EnvFilter). Default info; set
       # e.g. RUST_LOG=manager::chat=debug,manager::chat::qa=debug in .env to
       # trace the full chat data path.
@@ -135,35 +136,19 @@ services:
     build:
       context: .
       dockerfile: deploy/compose/admin-api.Dockerfile
+    # Connection config (ZITADEL_ISSUER, ADMIN_BIND_ADDR, ADMIN_PUBLIC/ALLOWED_
+    # ORIGIN, MANAGER_CONTROL_URL, ADMIN_SA_KEY_PATH + ADMIN_OIDC_*_FILE paths)
+    # is sole-sourced from .env.local (see its comments for the origin/redirect
+    # rationale). Secrets + the cookie toggle stay in environment: below.
+    env_file:
+      - .env.local
     environment:
-      # Single-issuer linchpin (§3): same literal string the manager uses, so
-      # the JWTs the admin verifies share one `iss`. admin-api fails fast at
-      # startup if the discovery doc's issuer differs.
-      ZITADEL_ISSUER: http://host.docker.internal:8080
-      ADMIN_BIND_ADDR: 0.0.0.0:7676
-      # admin SA JSON key + OIDC client creds written by the provisioner into
-      # the (read-only) secrets mount; never reach the browser or logs. The
-      # entrypoint resolves *_FILE -> value and sources /out for project/audience.
-      ADMIN_SA_KEY_PATH: /secrets/admin-api-key.json
-      ADMIN_OIDC_CLIENT_ID_FILE: /secrets/admin_oidc_client_id
-      ADMIN_OIDC_CLIENT_SECRET_FILE: /secrets/admin_oidc_client_secret
-      # public_origin is the proxy/web origin (:3000), NOT the BFF's own port:
-      # admin-web same-origin-proxies the OIDC nav (/login,/callback,/logout) to
-      # the BFF, so the OIDC redirect_uri must stay on :3000 or Zitadel 302s the
-      # browser straight to :7676, bypassing the proxy and dropping the pre-auth
-      # cookie (scoped to :3000) -> permanent "state mismatch" 403 at /callback.
-      # Must equal create_admin_oidc_app's registered redirect (:3000/callback).
-      ADMIN_PUBLIC_ORIGIN: http://localhost:3000
-      ADMIN_ALLOWED_ORIGIN: http://localhost:3000
       ADMIN_SESSION_KEY: ${ADMIN_SESSION_KEY}
       # Local stack is plain HTTP — the session cookie must NOT be Secure or the
       # browser never sends it back and login silently fails. Production (TLS)
       # omits this so it defaults to Secure=true. (fail-closed default; see
       # config::parse_cookie_secure)
       ADMIN_COOKIE_SECURE: "false"
-      # Sessions page: read-only chat-sessions panel via the manager's /control
-      # (requires the SA's chat.user+chat.admin grant; /control is chat.admin-only).
-      MANAGER_CONTROL_URL: ws://manager:7777/control
       RUST_LOG: ${RUST_LOG:-info}
     ports:
       - "127.0.0.1:7676:7676"   # loopback-only (local-dev)
@@ -180,11 +165,12 @@ services:
     build:
       context: ./admin-web
       dockerfile: ../deploy/compose/admin-web.Dockerfile
+    # ADMIN_API_ORIGIN (the in-network BFF the Next.js rewrites proxy /api,
+    # /login,/callback,/logout to) is sole-sourced from .env.local.
+    env_file:
+      - .env.local
     environment:
       NODE_ENV: production
-      # next.config rewrites /api,/login,/callback,/logout to this origin
-      # (same-origin proxy: no CORS, SameSite=Lax cookie). In-network DNS name.
-      ADMIN_API_ORIGIN: http://admin-api:7676
     ports:
       - "127.0.0.1:3000:3000"   # loopback-only (local-dev)
     depends_on:
@@ -197,18 +183,13 @@ services:
     build:
       context: .
       dockerfile: deploy/compose/kabytech-backend.Dockerfile
+    # Connection config (ZITADEL_ISSUER, KABY_BIND_ADDR, KABY_PUBLIC/ALLOWED_
+    # ORIGIN, KABY_SA_KEY_PATH) is sole-sourced from .env.local (see its comments
+    # for the frontend-origin rationale). Secret + cookie toggle + log stay below.
+    env_file:
+      - .env.local
     environment:
-      ZITADEL_ISSUER: http://host.docker.internal:8080
-      KABY_BIND_ADDR: 0.0.0.0:7670
-      # public_origin is the FRONTEND origin (:3001): the OIDC redirect_uri is
-      # {public_origin}/callback, and the browser must land on the proxied
-      # frontend or the SameSite=Lax cookie is dropped (same rule as admin-api).
-      KABY_PUBLIC_ORIGIN: http://localhost:3001
-      KABY_ALLOWED_ORIGIN: http://localhost:3001
       KABY_SESSION_KEY: ${KABY_SESSION_KEY}
-      # The kabytech-login SA key (ORG_USER_MANAGER + IAM_LOGIN_CLIENT) the
-      # backend mints invite/accept Management tokens from. Mounted read-only.
-      KABY_SA_KEY_PATH: /secrets/kabytech-login-key.json
       # Local stack is plain HTTP — the session cookie must NOT be Secure.
       KABY_COOKIE_SECURE: "false"
       RUST_LOG: ${RUST_LOG:-info}
@@ -226,9 +207,12 @@ services:
     build:
       context: ./services/kabytech/frontend
       dockerfile: ../../../deploy/compose/kabytech-frontend.Dockerfile
+    # KABY_BACKEND_ORIGIN (the in-network backend the frontend proxies to) is
+    # sole-sourced from .env.local.
+    env_file:
+      - .env.local
     environment:
       NODE_ENV: production
-      KABY_BACKEND_ORIGIN: http://kabytech-backend:7670
     ports:
       - "127.0.0.1:3001:3000"   # loopback-only (local-dev)
     depends_on:
