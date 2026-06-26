@@ -7,6 +7,39 @@ problem, add it here when you find the fix — future-you will thank you.
 
 ---
 
+## `.env.local` is the sole source of connection config; `up -d` re-runs the seeder
+
+**What broke:** After moving connection settings into `.env.local` (loaded by the
+host CLIs via dotenv and by the Docker services via `env_file:`), running
+`docker compose up -d` to apply a change on an ALREADY-seeded stack failed with
+`service "zitadel-init" didn't complete successfully: exit 1`, leaving the
+dependent services stopped.
+
+**Why:** `zitadel-init` is a one-shot, clean-boot-only provisioner
+(`restart: "no"`). `docker compose up -d` re-runs it to satisfy the
+`service_completed_successfully` dependency, but on a populated instance it
+aborts on the first 409 (`kabytech user already exists`) by design — so the
+dependency is never satisfied and the long-running services don't (re)start.
+
+**Fix:** To apply a `.env.local` (or any compose) change to a running, seeded
+stack, recreate the services WITHOUT re-running the seeder:
+`docker compose up -d --no-deps manager admin-api admin-web kabytech-backend kabytech-frontend`.
+A full reseed (`./reset.ps1` / `./reset.sh`) does `down -v` first, so plain
+`up -d` is correct only there.
+
+**Also:** connection config is sole-sourced from `.env.local` — no `secrets/`
+fallback in the clients. `.env.local` MUST exist before the services start (they
+load it via `env_file`); the reset scripts generate it from `.env.local.example`
++ `secrets/`. Only `PROJECT_ID`/`OIDC_CLIENT_ID` are reseed-dynamic (client-only);
+every service key is static.
+
+**Verify:** `docker compose config` renders each service's merged env (exit 0,
+keys present); `env -u ZITADEL_ISSUER -u MANAGER_WS LLM_CHAT_ENV_FILE=/nope
+./target/release/llm-chat ask --send hi` fails closed with a "set … in
+.env.local" message (exit 2), proving no fallback.
+
+---
+
 ## Provisioning a new machine-user account in Zitadel
 
 **Use case:** a new app/team needs its own credential to talk to the
