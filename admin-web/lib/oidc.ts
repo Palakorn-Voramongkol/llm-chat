@@ -64,3 +64,24 @@ export function formToConfigBody(f: ConfigForm): CreateOidcAppInput {
     authMethodType: f.authMethodType,
   };
 }
+
+// The dialog form does not expose response/grant types. On create, seed sensible
+// defaults; on EDIT, preserve the client's existing types (the read side of RMW)
+// so editing a redirect URI never silently clobbers e.g. device_code / token_exchange.
+export const DEFAULT_RESPONSE_TYPES: OidcResponseType[] = ["OIDC_RESPONSE_TYPE_CODE"];
+export const DEFAULT_GRANT_TYPES: OidcGrantType[] = [
+  "OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN",
+];
+
+export function resolveTokenTypes(
+  existing: OidcApp | null,
+): { responseTypes: OidcResponseType[]; grantTypes: OidcGrantType[] } {
+  if (existing) {
+    const f = appToConfigForm(existing);
+    return { responseTypes: f.responseTypes, grantTypes: f.grantTypes };
+  }
+  return {
+    responseTypes: [...DEFAULT_RESPONSE_TYPES],
+    grantTypes: [...DEFAULT_GRANT_TYPES],
+  };
+}

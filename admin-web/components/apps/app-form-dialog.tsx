@@ -18,7 +18,8 @@ import {
 import { api, ApiError } from "@/lib/api";
 import type { OidcApp, AppSecret } from "@/lib/types";
 import {
-  APP_TYPES, AUTH_METHODS, appToConfigForm, formToConfigBody, type ConfigForm,
+  APP_TYPES, AUTH_METHODS, appToConfigForm, formToConfigBody, resolveTokenTypes,
+  type ConfigForm,
 } from "@/lib/oidc";
 import { clientsBase, clientPath } from "@/lib/clients";
 
@@ -32,11 +33,6 @@ const schema = z.object({
   ]),
 });
 type FormShape = z.infer<typeof schema>;
-
-const DEFAULTS = {
-  responseTypes: ["OIDC_RESPONSE_TYPE_CODE"] as const,
-  grantTypes: ["OIDC_GRANT_TYPE_AUTHORIZATION_CODE", "OIDC_GRANT_TYPE_REFRESH_TOKEN"] as const,
-};
 
 // One dialog serves both modes. `mode` (not `!!app`) decides create-vs-edit so
 // the page's edit instance — which sits at `app={editTarget}` and is therefore
@@ -73,11 +69,14 @@ export function AppFormDialog({
   }, [app, form]);
 
   async function onSubmit(values: FormShape) {
+    // Preserve the client's existing response/grant types on edit (the form
+    // doesn't expose them); seed defaults only when creating a new client.
+    const { responseTypes, grantTypes } = resolveTokenTypes(app);
     const cfg: ConfigForm = {
       name: values.name,
       redirectUris: values.redirectUris,
-      responseTypes: [...DEFAULTS.responseTypes],
-      grantTypes: [...DEFAULTS.grantTypes],
+      responseTypes,
+      grantTypes,
       appType: values.appType,
       authMethodType: values.authMethodType,
     };
