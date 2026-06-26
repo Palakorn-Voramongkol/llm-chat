@@ -39,11 +39,26 @@ rm -rf ./secrets
 echo "==> rebuilding seed image from current provision.py"
 docker compose build zitadel-init
 
+# .env.local must exist BEFORE the services start (they load it via env_file).
+# Regenerate it from the committed template; the two client-only IDs in it
+# (PROJECT_ID/OIDC_CLIENT_ID) are filled in after the seed. No service uses
+# those two, so the static service keys are all present from the start.
+echo "==> regenerating .env.local from .env.local.example"
+cp .env.local.example .env.local
+
 echo "==> docker compose up -d (auto-reseeds Zitadel)"
 docker compose up -d
 
 # `up -d` blocks until zitadel-init completes (services depend on it via
 # service_completed_successfully), so the regenerated secrets exist by now.
+# Sync the client-only IDs from the fresh seed so the host CLIs run flagless.
+echo "==> syncing .env.local PROJECT_ID/OIDC_CLIENT_ID from the fresh seed"
+if [ -f ./secrets/project_id ] && [ -f ./secrets/oidc_client_id ]; then
+  pid=$(cat ./secrets/project_id); cid=$(cat ./secrets/oidc_client_id)
+  sed "s|^PROJECT_ID=.*|PROJECT_ID=${pid}|; s|^OIDC_CLIENT_ID=.*|OIDC_CLIENT_ID=${cid}|" \
+    .env.local > .env.local.tmp && mv .env.local.tmp .env.local
+fi
+
 echo "Done. Fresh credentials:"
 if [ -f ./secrets/admin_password ]; then
   echo "  admin    : $(cat ./secrets/admin_user) / $(cat ./secrets/admin_password)"

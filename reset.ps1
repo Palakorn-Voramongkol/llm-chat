@@ -44,11 +44,29 @@ if (Test-Path .\secrets) { Remove-Item -Recurse -Force .\secrets }
 Write-Host "==> rebuilding seed image from current provision.py" -ForegroundColor Cyan
 docker compose build zitadel-init
 
+# .env.local must exist BEFORE the services start (they load it via env_file).
+# Regenerate it from the committed template; the two client-only IDs in it
+# (PROJECT_ID/OIDC_CLIENT_ID) are filled in after the seed. No service uses
+# those two, so the static service keys are all present from the start.
+Write-Host "==> regenerating .env.local from .env.local.example" -ForegroundColor Cyan
+Copy-Item .\.env.local.example .\.env.local -Force
+
 Write-Host "==> docker compose up -d (auto-reseeds Zitadel)" -ForegroundColor Cyan
 docker compose up -d
 
 # `up -d` blocks until zitadel-init completes (services depend on it via
 # service_completed_successfully), so the regenerated secrets exist by now.
+# Sync the client-only IDs from the fresh seed so the host CLIs run flagless.
+Write-Host "==> syncing .env.local PROJECT_ID/OIDC_CLIENT_ID from the fresh seed" -ForegroundColor Cyan
+if ((Test-Path .\secrets\project_id) -and (Test-Path .\secrets\oidc_client_id)) {
+    $projectId = (Get-Content .\secrets\project_id -Raw).Trim()
+    $clientId = (Get-Content .\secrets\oidc_client_id -Raw).Trim()
+    $envLocal = Get-Content .\.env.local -Raw
+    $envLocal = $envLocal -replace '(?m)^PROJECT_ID=.*', "PROJECT_ID=$projectId"
+    $envLocal = $envLocal -replace '(?m)^OIDC_CLIENT_ID=.*', "OIDC_CLIENT_ID=$clientId"
+    Set-Content .\.env.local -Value $envLocal -NoNewline
+}
+
 Write-Host "Done. Fresh credentials:" -ForegroundColor Green
 if (Test-Path .\secrets\admin_password) {
     "  admin    : {0} / {1}" -f (Get-Content .\secrets\admin_user -Raw).Trim(), (Get-Content .\secrets\admin_password -Raw).Trim()
