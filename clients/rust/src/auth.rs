@@ -4,37 +4,13 @@
 //! the compose stack's `secrets/` directory — so the CLI runs flagless when the
 //! stack is up. HTTP is synchronous (`reqwest::blocking`).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::Serialize;
 
-use crate::config::DEFAULT_ISSUER;
 use crate::errors::{Error, Result};
-
-/// `secrets/` at the repo root (relative to this crate at compile time),
-/// overridable for non-standard layouts / tests via LLM_CHAT_SECRETS_DIR.
-/// Mirrors `auth._SECRETS_DIR` (computed from the source location) + the
-/// `secrets_dir()` env override.
-pub fn secrets_dir() -> PathBuf {
-    if let Ok(o) = std::env::var("LLM_CHAT_SECRETS_DIR") {
-        if !o.is_empty() {
-            return PathBuf::from(o);
-        }
-    }
-    // <repo>/clients/rust/../../secrets == <repo>/secrets
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("secrets")
-}
-
-pub fn read_secret_file(name: &str) -> Option<String> {
-    std::fs::read_to_string(secrets_dir().join(name))
-        .ok()
-        .map(|s| s.trim().to_string())
-}
 
 #[derive(Debug, Clone)]
 pub struct Credentials {
@@ -43,53 +19,41 @@ pub struct Credentials {
     pub key_file: String,
 }
 
-/// Fill in any missing credential from env / the secrets dir.
+/// Resolve each connection credential from an explicit value or the process env
+/// (the env is fed by `.env.local`). SOLE-SOURCED — no `secrets/` fallback and
+/// no hardcoded default: a missing value fails closed with a message naming the
+/// env var to set in `.env.local`. The key file's *contents* still live in
+/// `secrets/`; `KABYTECH_KEY` is just the path to it.
 pub fn resolve_credentials(
     issuer: Option<&str>,
     project: Option<&str>,
     key_file: Option<&str>,
 ) -> Result<Credentials> {
     let issuer = issuer
-        .map(|s| s.to_string())
+        .map(str::to_string)
         .or_else(|| std::env::var("ZITADEL_ISSUER").ok())
-        .unwrap_or_else(|| DEFAULT_ISSUER.to_string());
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Error::Credential("no issuer: pass --issuer or set ZITADEL_ISSUER in .env.local".into())
+        })?;
 
     let project = project
-        .map(|s| s.to_string())
+        .map(str::to_string)
         .or_else(|| std::env::var("PROJECT_ID").ok())
-        .or_else(|| read_secret_file("project_id"))
-        .filter(|s| !s.is_empty());
-    let project = match project {
-        Some(p) => p,
-        None => {
-            return Err(Error::Credential(format!(
-                "no project id: pass --project, set PROJECT_ID, or run the compose \
-                 stack so {} exists",
-                secrets_dir().join("project_id").display()
-            )))
-        }
-    };
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Error::Credential("no project id: pass --project or set PROJECT_ID in .env.local".into())
+        })?;
 
-    let mut key_file = key_file
-        .map(|s| s.to_string())
+    let key_file = key_file
+        .map(str::to_string)
         .or_else(|| std::env::var("KABYTECH_KEY").ok())
-        .filter(|s| !s.is_empty());
-    if key_file.is_none() {
-        let candidate = secrets_dir().join("kabytech-key.json");
-        if candidate.exists() {
-            key_file = Some(candidate.to_string_lossy().into_owned());
-        }
-    }
-    let key_file = match key_file {
-        Some(k) => k,
-        None => {
-            return Err(Error::Credential(format!(
-                "no machine-user key: pass --key-file, set KABYTECH_KEY, or run the \
-                 compose stack so {} exists",
-                secrets_dir().join("kabytech-key.json").display()
-            )))
-        }
-    };
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Error::Credential(
+                "no machine-user key: pass --key-file or set KABYTECH_KEY in .env.local".into(),
+            )
+        })?;
     if !Path::new(&key_file).exists() {
         return Err(Error::Credential(format!("key file not found: {key_file}")));
     }
@@ -187,4 +151,76 @@ pub fn fetch_access_token(creds: &Credentials) -> Result<String> {
         })?;
     tracing::debug!("minted access token len={}", token.len());
     Ok(token)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // These env vars stand in for what `.env.local` loads into the process env
+    // (the SOLE source) — they are NOT a fallback. The binary never sets them;
+    // these tests only assert resolution reads the env and that an explicit
+    // --flag overrides it. Serialize, since std::env is process-global.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_env() {
+        for v in ["ZITADEL_ISSUER", "PROJECT_ID", "KABYTECH_KEY"] {
+            std::env::remove_var(v);
+        }
+    }
+
+    fn temp_key() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join("llm_chat_test_key.json");
+        std::fs::write(&p, "{}").unwrap();
+        p
+    }
+
+    #[test]
+    fn explicit_args_win_over_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        std::env::set_var("ZITADEL_ISSUER", "http://env:8080");
+        let kf = temp_key();
+        let creds = resolve_credentials(Some("http://x:8080"), Some("p1"), kf.to_str()).unwrap();
+        assert_eq!(creds.issuer, "http://x:8080");
+        assert_eq!(creds.project, "p1");
+        assert_eq!(creds.key_file, kf.to_str().unwrap());
+        clear_env();
+    }
+
+    #[test]
+    fn reads_from_env_no_secrets_fallback() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let kf = temp_key();
+        std::env::set_var("ZITADEL_ISSUER", "http://env:8080");
+        std::env::set_var("PROJECT_ID", "penv");
+        std::env::set_var("KABYTECH_KEY", kf.to_str().unwrap());
+        let creds = resolve_credentials(None, None, None).unwrap();
+        assert_eq!(creds.issuer, "http://env:8080");
+        assert_eq!(creds.project, "penv");
+        clear_env();
+    }
+
+    #[test]
+    fn fails_closed_when_issuer_absent() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let kf = temp_key();
+        let err = resolve_credentials(None, Some("p1"), kf.to_str()).unwrap_err();
+        assert!(format!("{err}").contains("no issuer"));
+        clear_env();
+    }
+
+    #[test]
+    fn fails_closed_when_key_path_missing() {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let err =
+            resolve_credentials(Some("http://x:8080"), Some("p1"), Some("/no/such/key.json"))
+                .unwrap_err();
+        assert!(format!("{err}").contains("key file not found"));
+        clear_env();
+    }
 }

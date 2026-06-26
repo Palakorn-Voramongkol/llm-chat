@@ -50,3 +50,6 @@ tiny_http = "0.12"
 open = "5"
 url = "2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Load connection settings from the repo-root .env.local (sole source; no
+# secrets/ fallback). Non-overriding: real env vars / --flags still win.
+dotenvy = "0.15"

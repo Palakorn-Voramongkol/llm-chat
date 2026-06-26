@@ -1,32 +1,50 @@
-//! Shared CLI argument definitions and logging setup.
+//! Shared CLI argument definitions, `.env.local` loading, and logging setup.
 //!
-//! Port of `config.py`. All credential flags default to None so the
-//! precedence (explicit > env > secrets dir) is resolved in `auth`/`cli`, NOT
-//! by clap's `env` (which would wrongly let env beat the secrets-file fallback).
+//! Port of `config.py`. All credential flags default to None; the precedence
+//! (explicit flag > env var, the env fed by `.env.local`) is resolved in
+//! `auth`/`cli`. Connection settings are SOLE-SOURCED from `.env.local`: no
+//! `secrets/` fallback and no hardcoded default — a missing value fails closed.
+
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 
-/// Default Zitadel issuer when neither --issuer nor $ZITADEL_ISSUER is set.
-/// Matches `auth.DEFAULT_ISSUER`.
-pub const DEFAULT_ISSUER: &str = "http://host.docker.internal:8080";
+use crate::errors::{Error, Result};
+
+/// Load connection settings from the repo-root `.env.local` into the process
+/// environment. dotenvy does NOT override already-set vars, so an explicit
+/// shell env var (or a `--flag`, resolved separately) still wins. A missing
+/// file is fine — resolution then fails closed on whatever value is absent.
+/// Override the path via `LLM_CHAT_ENV_FILE`.
+pub fn load_env_local() {
+    let path = std::env::var("LLM_CHAT_ENV_FILE")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            // <repo>/clients/rust/../../.env.local == <repo>/.env.local
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join(".env.local")
+        });
+    let _ = dotenvy::from_path(&path);
+}
 
 /// Connection/auth/display flags shared by every subcommand (the Python
 /// `add_common_args` "connection" + "display" groups plus -v/--verbose).
 #[derive(Args, Debug, Clone)]
 pub struct CommonArgs {
-    /// Zitadel issuer URL (default: $ZITADEL_ISSUER or http://host.docker.internal:8080)
+    /// Zitadel issuer URL (required: --issuer or ZITADEL_ISSUER in .env.local)
     #[arg(long, help_heading = "connection")]
     pub issuer: Option<String>,
 
-    /// Zitadel project_id (default: $PROJECT_ID or secrets/project_id)
+    /// Zitadel project_id (required: --project or PROJECT_ID in .env.local)
     #[arg(long, help_heading = "connection")]
     pub project: Option<String>,
 
-    /// machine-user JSON key (default: $KABYTECH_KEY or secrets/kabytech-key.json)
+    /// machine-user JSON key (required: --key-file or KABYTECH_KEY in .env.local)
     #[arg(long = "key-file", help_heading = "connection")]
     pub key_file: Option<String>,
 
-    /// manager /chat WebSocket URL (default: $MANAGER_WS or ws://127.0.0.1:7777/chat)
+    /// manager /chat WebSocket URL (required: --manager or MANAGER_WS in .env.local)
     #[arg(long, help_heading = "connection")]
     pub manager: Option<String>,
 
@@ -38,7 +56,7 @@ pub struct CommonArgs {
     #[arg(long, value_enum, help_heading = "connection")]
     pub auth: Option<AuthMode>,
 
-    /// OIDC client id (default: $OIDC_CLIENT_ID or secrets/oidc_client_id)
+    /// OIDC client id (required: --oidc-client-id or OIDC_CLIENT_ID in .env.local)
     #[arg(long = "oidc-client-id", help_heading = "connection")]
     pub oidc_client_id: Option<String>,
 
@@ -65,12 +83,19 @@ pub enum AuthMode {
     Machine,
 }
 
-/// `manager or $MANAGER_WS or ws://127.0.0.1:7777/chat` — matches resolve_manager.
-pub fn resolve_manager(manager: &Option<String>) -> String {
+/// `--manager` or `$MANAGER_WS` (from `.env.local`) — fail closed, no default.
+pub fn resolve_manager(manager: &Option<String>) -> Result<String> {
     manager
         .clone()
         .or_else(|| std::env::var("MANAGER_WS").ok())
-        .unwrap_or_else(|| "ws://127.0.0.1:7777/chat".to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Error::Credential(
+                "no manager URL: pass --manager or set MANAGER_WS in .env.local \
+                 (e.g. ws://127.0.0.1:7777/chat)"
+                    .into(),
+            )
+        })
 }
 
 /// Map -v/-vv to a tracing filter. Diagnostics go to stderr so they don't mix
@@ -88,4 +113,40 @@ pub fn configure_logging(verbosity: u8) {
         .with_writer(std::io::stderr)
         .with_target(true)
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // resolve_manager reads $MANAGER_WS; serialize the env-touching tests.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn resolve_manager_explicit_flag_wins() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("MANAGER_WS", "ws://env:7777/chat");
+        assert_eq!(
+            resolve_manager(&Some("ws://flag:7777/chat".to_string())).unwrap(),
+            "ws://flag:7777/chat"
+        );
+        std::env::remove_var("MANAGER_WS");
+    }
+
+    #[test]
+    fn resolve_manager_reads_env() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("MANAGER_WS", "ws://env:7777/chat");
+        assert_eq!(resolve_manager(&None).unwrap(), "ws://env:7777/chat");
+        std::env::remove_var("MANAGER_WS");
+    }
+
+    #[test]
+    fn resolve_manager_fails_closed_when_absent() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("MANAGER_WS");
+        let err = resolve_manager(&None).unwrap_err();
+        assert!(format!("{err}").contains("no manager URL"));
+    }
 }

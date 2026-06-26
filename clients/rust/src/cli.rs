@@ -10,8 +10,8 @@ use base64::Engine;
 use clap::{Parser, Subcommand};
 use serde_json::{Map, Value};
 
-use crate::auth::{fetch_access_token, read_secret_file, resolve_credentials};
-use crate::config::{configure_logging, resolve_manager, AuthMode, CommonArgs, DEFAULT_ISSUER};
+use crate::auth::{fetch_access_token, resolve_credentials};
+use crate::config::{configure_logging, load_env_local, resolve_manager, AuthMode, CommonArgs};
 use crate::errors::{Error, Result, EXIT_AUTH};
 use crate::oidc::{self, TokenSet};
 use crate::protocol::{ChatClient, TokenProvider};
@@ -74,23 +74,25 @@ impl Command {
     }
 }
 
-// ---------------- credential resolution (precedence: explicit > env > secrets) ----------------
+// ------- credential resolution (sole source: explicit flag > env, from .env.local) -------
 
-fn resolve_issuer(c: &CommonArgs) -> String {
+fn resolve_issuer(c: &CommonArgs) -> Result<String> {
     c.issuer
         .clone()
         .or_else(|| std::env::var("ZITADEL_ISSUER").ok())
-        .unwrap_or_else(|| DEFAULT_ISSUER.to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            Error::Credential("no issuer: pass --issuer or set ZITADEL_ISSUER in .env.local".into())
+        })
 }
 
 fn resolve_project(c: &CommonArgs) -> Result<String> {
     c.project
         .clone()
         .or_else(|| std::env::var("PROJECT_ID").ok())
-        .or_else(|| read_secret_file("project_id"))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            Error::Credential("no project id: pass --project or run the compose stack".into())
+            Error::Credential("no project id: pass --project or set PROJECT_ID in .env.local".into())
         })
 }
 
@@ -98,13 +100,10 @@ fn resolve_client_id(c: &CommonArgs) -> Result<String> {
     c.oidc_client_id
         .clone()
         .or_else(|| std::env::var("OIDC_CLIENT_ID").ok())
-        .or_else(|| read_secret_file("oidc_client_id"))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             Error::Credential(
-                "no OIDC client id: run the compose stack so secrets/oidc_client_id exists, \
-                 or pass --oidc-client-id"
-                    .into(),
+                "no OIDC client id: pass --oidc-client-id or set OIDC_CLIENT_ID in .env.local".into(),
             )
         })
 }
@@ -167,7 +166,7 @@ fn cmd_login(c: &CommonArgs) -> Result<u8> {
 }
 
 fn cmd_logout(c: &CommonArgs) -> Result<u8> {
-    let issuer = resolve_issuer(c);
+    let issuer = resolve_issuer(c)?;
     let client_id = resolve_client_id(c)?;
     let store = TokenStore::new(&issuer, &client_id);
     if let Some(ts) = store.load() {
@@ -214,7 +213,7 @@ fn machine_provider(c: &CommonArgs) -> Result<TokenProvider> {
 
 /// (issuer, client_id, project, store, endpoints) for the human path.
 fn user_session(c: &CommonArgs) -> Result<(String, String, String, TokenStore, oidc::Endpoints)> {
-    let issuer = resolve_issuer(c);
+    let issuer = resolve_issuer(c)?;
     let client_id = resolve_client_id(c)?;
     let project = resolve_project(c)?;
     let endpoints = oidc::discover(&issuer);
@@ -248,7 +247,7 @@ fn login_and_store(
 
 fn cmd_chat_or_ask(c: &CommonArgs, send: Option<String>) -> Result<u8> {
     let mode = auth_mode(c, send.is_none());
-    let manager_url = resolve_manager(&c.manager);
+    let manager_url = resolve_manager(&c.manager)?;
     let render_mode = resolve_mode(c.plain, c.raw);
     let timeout = Duration::from_secs_f64(c.timeout);
 
@@ -334,6 +333,9 @@ fn dispatch(command: Command) -> u8 {
 /// Parse args (bare `llm-chat` → chat, like cli.py `main`) and run the chosen
 /// command. Returns the process exit code.
 pub fn main() -> u8 {
+    // Sole-source connection settings from the repo-root .env.local (real env
+    // vars and --flags still win; missing values fail closed during resolution).
+    load_env_local();
     let cli = Cli::parse();
     let command = match cli.command {
         Some(cmd) => cmd,
