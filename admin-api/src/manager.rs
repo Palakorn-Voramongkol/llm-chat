@@ -31,7 +31,7 @@ pub fn combine_control_replies(list: Value, instances: Value, clients: Value) ->
 /// The hello frame ({"ok":true,"hello":"manager-control"}) is consumed first.
 /// The token rides the `Authorization: Bearer` header (never the URL, so it
 /// can't leak into access/proxy logs) — same as the python/rust chat clients.
-pub async fn control_query(url: &str, token: &str, cmd: &str) -> Result<Value, String> {
+pub async fn control_request(url: &str, token: &str, req: Value) -> Result<Value, String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let mut request = url
         .into_client_request()
@@ -51,13 +51,18 @@ pub async fn control_query(url: &str, token: &str, cmd: &str) -> Result<Value, S
     let hello_v: Value = serde_json::from_str(&hello).unwrap_or(json!({}));
     let is_hello = hello_v.get("hello").is_some();
 
-    ws.send(Message::Text(json!({ "cmd": cmd }).to_string()))
+    ws.send(Message::Text(req.to_string()))
         .await
         .map_err(|e| format!("manager send: {e}"))?;
 
     let reply = if is_hello { read_text(&mut ws).await? } else { hello };
     let _ = ws.close(None).await;
     serde_json::from_str(&reply).map_err(|e| format!("manager reply parse: {e}"))
+}
+
+/// Thin wrapper: send a bare `{"cmd": cmd}` request.
+pub async fn control_query(url: &str, token: &str, cmd: &str) -> Result<Value, String> {
+    control_request(url, token, json!({ "cmd": cmd })).await
 }
 
 async fn read_text(

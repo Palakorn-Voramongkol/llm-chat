@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/users/{id}/keys", get(list_keys).post(create_key))
         .route("/api/users/{id}/keys/{keyId}", delete(delete_key))
         .route("/api/users/{id}/secret", post(generate_secret).delete(delete_secret))
+        .route("/api/users/{id}/files", get(user_files))
         .route("/api/apps", get(list_apps).post(create_oidc_app))
         .route("/api/apps/{appId}", get(get_app).put(update_oidc_config).delete(delete_app))
         .route("/api/apps/{appId}/secret", post(regenerate_app_secret))
@@ -273,6 +274,27 @@ async fn usage_daily(_op: Operator, State(st): State<AppState>) -> Result<Json<V
             .await
             .unwrap_or_else(|e| json!({ "ok": false, "error": e })),
     ))
+}
+
+/// A user's claude sandbox tree (read-only) via the manager's /control
+/// "user-box". chat.admin-gated; capability-gated on MANAGER_CONTROL_URL like
+/// chat_sessions/usage. The worker confines the listing to {base}/{userId}.
+async fn user_files(_op: Operator, State(st): State<AppState>, Path(id): Path<String>)
+    -> Result<Json<Value>, ApiError> {
+    let Some(url) = st.cfg.manager_control_url.clone() else {
+        return Ok(Json(json!({ "configured": false, "entries": [], "truncated": false })));
+    };
+    let token = st.zitadel.mint_chat_token().await?;
+    let reply = crate::manager::control_request(&url, &token, json!({ "cmd": "user-box", "userId": id }))
+        .await
+        .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
+    Ok(Json(json!({
+        "configured": true,
+        "ok": reply.get("ok").and_then(Value::as_bool).unwrap_or(false),
+        "entries": reply.get("entries").cloned().unwrap_or_else(|| json!([])),
+        "truncated": reply.get("truncated").and_then(Value::as_bool).unwrap_or(false),
+        "error": reply.get("error").cloned(),
+    })))
 }
 
 /// Recent sign-ins derived from the audit event log (the honest source on this
@@ -851,5 +873,21 @@ mod contract_tests {
                 res.status()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn user_files_route_requires_operator() {
+        use tower::ServiceExt;
+        let app = test_router_no_session();
+        let res = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/users/test-id/files")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 }
