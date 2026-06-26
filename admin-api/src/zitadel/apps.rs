@@ -66,7 +66,8 @@ impl ZitadelClient {
     }
 
     /// List ANY project's apps (login clients): POST
-    /// /management/v1/projects/{pid}/apps/_search.
+    /// /management/v1/projects/{pid}/apps/_search. Each application (project)
+    /// has its own login clients in the multi-app model.
     pub async fn list_apps_for(&self, project_id: &str) -> Result<Vec<Value>, ZitadelError> {
         let url = format!("{}/management/v1/projects/{}/apps/_search", self.cfg.issuer, project_id);
         let v = self.post_json(&url, &json!({})).await?;
