@@ -6,15 +6,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::Engine;
 use clap::{Parser, Subcommand};
-use serde_json::{Map, Value};
 
 use crate::auth::{fetch_access_token, resolve_credentials};
-use crate::config::{configure_logging, load_env_local, resolve_manager, AuthMode, CommonArgs};
+use crate::config::{configure_logging, identity_url, load_env_local, resolve_manager, AuthMode, CommonArgs};
 use crate::errors::{Error, Result, EXIT_AUTH};
 use crate::oidc::{self, TokenSet};
-use crate::protocol::{ChatClient, TokenProvider};
+use crate::protocol::{request_identity, ChatClient, TokenProvider};
 use crate::render::{render_markdown, resolve_mode, RenderMode};
 use crate::repl::{run_repl, ReplCtx};
 use crate::tokens::TokenStore;
@@ -108,71 +106,40 @@ fn resolve_client_id(c: &CommonArgs) -> Result<String> {
         })
 }
 
-// ---------------- jwt display (no verification) ----------------
+// ---------------- backend identity (the manager resolves + renders) ----------------
 
-fn decode_claims(token: &str) -> Map<String, Value> {
-    let parts: Vec<&str> = token.split('.').collect();
-    if parts.len() < 2 {
-        return Map::new();
-    }
-    let mut payload = parts[1].to_string();
-    while payload.len() % 4 != 0 {
-        payload.push('=');
-    }
-    base64::engine::general_purpose::URL_SAFE
-        .decode(payload.as_bytes())
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default()
-}
-
-/// PURE: extract `(who, sub, roles)` from a JWT's claims (no verification —
-/// display only). `who` prefers `email`, then `preferred_username`, then `sub`.
-/// Roles are the sorted, de-duped keys of every `*:roles` claim. Shared by
-/// `whoami` and the REPL's `/status`.
-pub fn identity_from_token(token: &str) -> (String, String, Vec<String>) {
-    let claims = decode_claims(token);
-    let sub = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("?").to_string();
-    let who = claims
-        .get("email")
-        .and_then(|v| v.as_str())
-        .or_else(|| claims.get("preferred_username").and_then(|v| v.as_str()))
-        .unwrap_or(&sub)
-        .to_string();
-    let mut roles: Vec<String> = Vec::new();
-    for (k, v) in &claims {
-        if k.ends_with(":roles") {
-            if let Some(obj) = v.as_object() {
-                roles.extend(obj.keys().cloned());
-            }
-        }
-    }
-    roles.sort();
-    roles.dedup();
-    (who, sub, roles)
-}
-
-fn print_whoami(ts: &TokenSet) {
-    let token = ts
-        .id_token
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&ts.access_token);
-    let (who, sub, roles) = identity_from_token(token);
-    println!("logged in as {who} (sub={sub})");
-    if !roles.is_empty() {
-        println!("  roles: {}", roles.join(", "));
-    }
+/// Ask the backend `/identity` who we are and print its rendered line. The
+/// client does NO token decoding — identity is the server's job. Fails loudly
+/// if the manager is unreachable (no client-side fallback).
+fn show_identity(manager_url: &str, provider: &TokenProvider, timeout: Duration) -> Result<u8> {
+    let id_url = identity_url(manager_url);
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| Error::ManagerUnavailable(format!("could not start runtime: {e}")))?;
+    let reply = rt.block_on(request_identity(
+        &id_url,
+        provider,
+        serde_json::json!({"type": "whoami"}),
+        timeout,
+    ))?;
+    println!("{}", reply.get("line").and_then(|v| v.as_str()).unwrap_or("(no identity)"));
+    Ok(0)
 }
 
 // ---------------- subcommands ----------------
 
 fn cmd_login(c: &CommonArgs) -> Result<u8> {
-    let (issuer, client_id, project, store, _endpoints) = user_session(c)?;
-    let ts = login_and_store(&issuer, &client_id, &project, &store, c.oidc_port)?;
-    print_whoami(&ts);
-    Ok(0)
+    let (issuer, client_id, project, store, endpoints) = user_session(c)?;
+    login_and_store(&issuer, &client_id, &project, &store, c.oidc_port)?;
+    let provider = user_provider(store, endpoints.token.clone(), client_id);
+    let manager_url = resolve_manager(&c.manager)?;
+    // Greeting is best-effort — the session is already cached.
+    match show_identity(&manager_url, &provider, Duration::from_secs_f64(c.timeout)) {
+        Ok(code) => Ok(code),
+        Err(e) => {
+            println!("logged in. (identity unavailable: {e})");
+            Ok(0)
+        }
+    }
 }
 
 fn cmd_logout(c: &CommonArgs) -> Result<u8> {
@@ -191,17 +158,14 @@ fn cmd_logout(c: &CommonArgs) -> Result<u8> {
 }
 
 fn cmd_whoami(c: &CommonArgs) -> Result<u8> {
-    let (_issuer, _client_id, _project, store, _endpoints) = user_session(c)?;
-    match store.load() {
-        Some(ts) => {
-            print_whoami(&ts);
-            Ok(0)
-        }
-        None => {
-            eprintln!("not logged in — run `llm-chat login`");
-            Ok(EXIT_AUTH)
-        }
+    let (_issuer, client_id, _project, store, endpoints) = user_session(c)?;
+    if store.load().is_none() {
+        eprintln!("not logged in — run `llm-chat login`");
+        return Ok(EXIT_AUTH);
     }
+    let provider = user_provider(store, endpoints.token.clone(), client_id);
+    let manager_url = resolve_manager(&c.manager)?;
+    show_identity(&manager_url, &provider, Duration::from_secs_f64(c.timeout))
 }
 
 // ---------------- credential mode + providers ----------------
@@ -284,8 +248,8 @@ fn cmd_chat_or_ask(c: &CommonArgs, send: Option<String>) -> Result<u8> {
     match send {
         Some(q) => rt.block_on(run_ask(provider, &manager_url, &q, timeout, render_mode)),
         None => {
-            // Static context for the REPL's /status block (issuer/project read
-            // the same way the provider resolved them; identity is read live).
+            // Static context for the REPL's /status request — all CLIENT facts;
+            // identity, project, and issuer come from the backend.
             let ctx = ReplCtx {
                 kind: "rust",
                 version: env!("CARGO_PKG_VERSION"),
@@ -293,9 +257,8 @@ fn cmd_chat_or_ask(c: &CommonArgs, send: Option<String>) -> Result<u8> {
                     AuthMode::Machine => "machine (kabytech key)".to_string(),
                     AuthMode::User => "human (browser login)".to_string(),
                 },
-                issuer: resolve_issuer(c)?,
-                project: resolve_project(c)?,
                 manager_url: manager_url.clone(),
+                identity_url: identity_url(&manager_url),
             };
             rt.block_on(run_chat(provider, &manager_url, &ctx, timeout, render_mode))
         }
@@ -373,23 +336,6 @@ pub fn main() -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decode_claims_reads_payload() {
-        // {"sub":"u1","email":"a@b.c"} as a fake JWT (header.payload.sig).
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(br#"{"sub":"u1","email":"a@b.c"}"#);
-        let token = format!("h.{payload}.s");
-        let claims = decode_claims(&token);
-        assert_eq!(claims.get("sub").unwrap().as_str().unwrap(), "u1");
-        assert_eq!(claims.get("email").unwrap().as_str().unwrap(), "a@b.c");
-    }
-
-    #[test]
-    fn decode_claims_bad_token_is_empty() {
-        assert!(decode_claims("not-a-jwt").is_empty());
-        assert!(decode_claims("").is_empty());
-    }
 
     #[test]
     fn cli_parses_subcommands() {

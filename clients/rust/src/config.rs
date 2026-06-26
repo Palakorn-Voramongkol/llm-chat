@@ -98,6 +98,18 @@ pub fn resolve_manager(manager: &Option<String>) -> Result<String> {
         })
 }
 
+/// Derive the `/identity` URL from the manager `/chat` URL: same scheme +
+/// host:port, path replaced with `/identity` (the manager serves both).
+pub fn identity_url(manager_ws: &str) -> String {
+    match manager_ws.split_once("://") {
+        Some((scheme, rest)) => {
+            let authority = rest.split('/').next().unwrap_or(rest);
+            format!("{scheme}://{authority}/identity")
+        }
+        None => manager_ws.to_string(),
+    }
+}
+
 /// Map -v/-vv to a tracing filter. Diagnostics go to stderr so they don't mix
 /// with the chat transcript on stdout. Idempotent across calls.
 pub fn configure_logging(verbosity: u8) {
@@ -148,5 +160,12 @@ mod tests {
         std::env::remove_var("MANAGER_WS");
         let err = resolve_manager(&None).unwrap_err();
         assert!(format!("{err}").contains("no manager URL"));
+    }
+
+    #[test]
+    fn identity_url_swaps_path() {
+        assert_eq!(identity_url("ws://127.0.0.1:7777/chat"), "ws://127.0.0.1:7777/identity");
+        assert_eq!(identity_url("wss://host.example:443/chat"), "wss://host.example:443/identity");
+        assert_eq!(identity_url("ws://h:7777"), "ws://h:7777/identity");
     }
 }
