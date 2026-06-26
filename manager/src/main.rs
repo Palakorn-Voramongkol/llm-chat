@@ -1607,6 +1607,28 @@ async fn handle_control(
                     Err(e) => serde_json::json!({"ok": false, "error": format!("usage-daily query: {e}")}),
                 }
             }
+            "user-box" => {
+                // List ANY user's confined claude sandbox (read-only, non-creating)
+                // for the admin Console. /control is already chat.admin-gated.
+                match req.get("userId").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    None => serde_json::json!({"ok": false, "error": "userId required"}),
+                    Some(uid) => {
+                        // Single shared env-base on the worker host → any worker can
+                        // list any user's box; use the first instance.
+                        let port = state.lock().await.instance_ports.first().copied();
+                        match port {
+                            None => serde_json::json!({"ok": false, "error": "no worker available"}),
+                            Some(p) => match call_backend(
+                                p,
+                                serde_json::json!({"cmd": "dir", "userId": uid, "create": false}),
+                            ).await {
+                                Ok(v) => v,
+                                Err(e) => serde_json::json!({"ok": false, "error": e.to_string()}),
+                            },
+                        }
+                    }
+                }
+            }
             "fifo" => {
                 // Inspect a backend's PTY input FIFO. Target by `port` or
                 // `sessionId`; with neither, aggregate across all backends.
