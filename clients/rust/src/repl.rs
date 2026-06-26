@@ -16,6 +16,7 @@ const HELP: &str = "commands:\n\
   /history         print this session's Q&A so far\n\
   /session         show the backend session id\n\
   /status          show your identity + client/connection status\n\
+  /usage           show your own usage (totals + last 7 days)\n\
   /render MODE     switch markdown display: auto | plain | raw\n\
   /reset           drop the session and start a fresh one (clears claude context)\n\
   /multi           enter a multi-line message (end with '.')\n\
@@ -70,6 +71,74 @@ fn format_status(
         conn = conn, sid = sid, msgs = msgs, issuer = ctx.issuer,
         project = ctx.project, render = render, timeout = timeout_s, rule = STATUS_RULE,
     )
+}
+
+/// PURE: integer with thousands separators (12345 -> "12,345").
+fn human_int(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::new();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    if n < 0 { format!("-{out}") } else { out }
+}
+
+/// PURE: human-readable byte size (0 -> "0 B", 1024 -> "1.0 KB").
+fn human_bytes(n: i64) -> String {
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let units = ["KB", "MB", "GB", "TB"];
+    let mut v = n as f64 / 1024.0;
+    let mut u = 0;
+    while v >= 1024.0 && u < units.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    format!("{v:.1} {}", units[u])
+}
+
+/// PURE: render the `/usage` block from the manager's `usage` reply. Matches the
+/// Python client's layout — keep the two in sync.
+fn format_usage(reply: &serde_json::Value) -> String {
+    let g = |k: &str| reply.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let user = reply.get("userId").and_then(|v| v.as_str()).unwrap_or("—");
+    let last = reply.get("lastUsed").and_then(|v| v.as_str()).unwrap_or("—");
+    let mut s = format!(
+        "─ usage ─────────────────────────────────────\n\
+         \x20user       {user}\n\
+         \x20requests   {req}\n\
+         \x20chars in   {cin}\n\
+         \x20chars out  {cout}\n\
+         \x20files      {files} · {bytes}\n\
+         \x20last used  {last}\n\
+         \x20── last 7 days ──",
+        user = user, req = human_int(g("requests")),
+        cin = human_int(g("charsIn")), cout = human_int(g("charsOut")),
+        files = human_int(g("files")), bytes = human_bytes(g("fileBytes")), last = last,
+    );
+    match reply.get("daily").and_then(|v| v.as_array()) {
+        Some(days) if !days.is_empty() => {
+            for d in days {
+                let dg = |k: &str| d.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+                let day = d.get("day").and_then(|v| v.as_str()).unwrap_or("?");
+                s.push_str(&format!(
+                    "\n {day}   {req} req · {cin} in · {cout} out · {files} files · {bytes}",
+                    day = day, req = human_int(dg("requests")), cin = human_int(dg("charsIn")),
+                    cout = human_int(dg("charsOut")), files = human_int(dg("files")),
+                    bytes = human_bytes(dg("fileBytes")),
+                ));
+            }
+        }
+        _ => s.push_str("\n (no usage in the last 7 days)"),
+    }
+    s.push('\n');
+    s.push_str(STATUS_RULE);
+    s
 }
 
 /// Minimal ANSI styling, disabled when stdout isn't a TTY or NO_COLOR is set.
@@ -262,6 +331,13 @@ pub async fn run_repl(client: &mut ChatClient, ctx: &ReplCtx, timeout: Duration,
             println!();
             continue;
         }
+        if user == "/usage" {
+            match client.usage(timeout).await {
+                Ok(reply) => println!("{}\n", c.dim(&format_usage(&reply))),
+                Err(e) => println!("{}\n", c.err(&format!("usage unavailable: {e}"))),
+            }
+            continue;
+        }
         if user == "/history" {
             if history.is_empty() {
                 println!("{}\n", c.dim("(no messages yet)"));
@@ -383,5 +459,49 @@ mod tests {
         assert!(s.contains("session   — · 0 msgs"));
         assert!(s.contains("ws://m:7777/chat · disconnected"));
         assert!(s.contains("render=raw · timeout=60s"));
+    }
+
+    #[test]
+    fn human_int_groups_thousands() {
+        assert_eq!(human_int(0), "0");
+        assert_eq!(human_int(42), "42");
+        assert_eq!(human_int(12345), "12,345");
+        assert_eq!(human_int(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn human_bytes_scales() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1024), "1.0 KB");
+        assert_eq!(human_bytes(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn format_usage_totals_and_daily() {
+        let reply = serde_json::json!({
+            "type": "usage", "userId": "u9", "requests": 42,
+            "charsIn": 12345, "charsOut": 67890, "files": 3, "fileBytes": 1048576,
+            "lastUsed": "2026-06-26T17:30:00.000Z",
+            "daily": [{"day":"2026-06-26","requests":12,"charsIn":3456,"charsOut":12345,"files":1,"fileBytes":262144}],
+        });
+        let s = format_usage(&reply);
+        assert!(s.contains("user       u9"));
+        assert!(s.contains("requests   42"));
+        assert!(s.contains("chars in   12,345"));
+        assert!(s.contains("files      3 · 1.0 MB"));
+        assert!(s.contains("last used  2026-06-26T17:30:00.000Z"));
+        assert!(s.contains("2026-06-26   12 req · 3,456 in · 12,345 out · 1 files · 256.0 KB"));
+    }
+
+    #[test]
+    fn format_usage_empty_daily() {
+        let reply = serde_json::json!({
+            "userId": "u", "requests": 0, "charsIn": 0, "charsOut": 0,
+            "files": 0, "fileBytes": 0, "daily": [],
+        });
+        let s = format_usage(&reply);
+        assert!(s.contains("(no usage in the last 7 days)"));
+        assert!(s.contains("files      0 · 0 B"));
     }
 }

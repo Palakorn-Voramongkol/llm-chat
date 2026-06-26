@@ -97,6 +97,7 @@ HELP = """commands:
   /history         print this session's Q&A so far
   /session         show the backend session id
   /status          show your identity + client/connection status
+  /usage           show your own usage (totals + last 7 days)
   /render MODE     switch markdown display: auto | plain | raw
   /reset           drop the session and start a fresh one (clears claude context)
   /multi           enter a multi-line message (end with '.')
@@ -140,6 +141,59 @@ def format_status(ctx: ReplCtx, who: str, sub: str, roles: list[str],
         f" display   render={render} · timeout={int(timeout_s)}s\n"
         f"{STATUS_RULE}"
     )
+
+
+def human_int(n: int) -> str:
+    """PURE: integer with thousands separators (12345 -> '12,345')."""
+    return f"{n:,}"
+
+
+def human_bytes(n: int) -> str:
+    """PURE: human-readable byte size (0 -> '0 B', 1024 -> '1.0 KB')."""
+    if n < 1024:
+        return f"{n} B"
+    units = ("KB", "MB", "GB", "TB")
+    v = n / 1024.0
+    u = 0
+    while v >= 1024.0 and u < len(units) - 1:
+        v /= 1024.0
+        u += 1
+    return f"{v:.1f} {units[u]}"
+
+
+def _as_int(obj: dict, k: str) -> int:
+    v = obj.get(k, 0)
+    return v if isinstance(v, int) else 0
+
+
+def format_usage(reply: dict) -> str:
+    """PURE: render the /usage block from the manager's `usage` reply. Matches
+    the Rust client's layout — keep the two in sync."""
+    user = reply.get("userId") or "—"
+    last = reply.get("lastUsed") or "—"
+    lines = [
+        "─ usage ─────────────────────────────────────",
+        f" user       {user}",
+        f" requests   {human_int(_as_int(reply, 'requests'))}",
+        f" chars in   {human_int(_as_int(reply, 'charsIn'))}",
+        f" chars out  {human_int(_as_int(reply, 'charsOut'))}",
+        f" files      {human_int(_as_int(reply, 'files'))} · {human_bytes(_as_int(reply, 'fileBytes'))}",
+        f" last used  {last}",
+        " ── last 7 days ──",
+    ]
+    daily = reply.get("daily") or []
+    if daily:
+        for d in daily:
+            day = d.get("day") or "?"
+            lines.append(
+                f" {day}   {human_int(_as_int(d, 'requests'))} req · "
+                f"{human_int(_as_int(d, 'charsIn'))} in · {human_int(_as_int(d, 'charsOut'))} out · "
+                f"{human_int(_as_int(d, 'files'))} files · {human_bytes(_as_int(d, 'fileBytes'))}"
+            )
+    else:
+        lines.append(" (no usage in the last 7 days)")
+    lines.append(STATUS_RULE)
+    return "\n".join(lines)
 
 
 def _print_answer(c: _Ansi, text: str, render_mode: str, latency_s: float | None) -> None:
@@ -200,6 +254,13 @@ async def run_repl(client: ChatClient, ctx: ReplCtx, timeout: float, render_mode
             if note:
                 print(c.err(f"  token error: {note}"))
             print()
+            continue
+        if user == "/usage":
+            try:
+                reply = await client.usage(timeout=timeout)
+                print(c.dim(format_usage(reply)) + "\n")
+            except (AnswerTimeout, ProtocolError, ManagerUnavailable) as e:
+                print(c.err(f"usage unavailable: {e}") + "\n")
             continue
         if user == "/history":
             if not history:

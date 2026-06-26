@@ -86,6 +86,54 @@ impl ChatClient {
         self.fetch_token().await
     }
 
+    /// Request THIS user's own usage and return the manager's `usage` reply
+    /// object. Sends `{"type":"usage"}` and awaits the `usage` frame, skipping
+    /// any interleaved ack/answer frames.
+    pub async fn usage(&mut self, timeout: Duration) -> Result<serde_json::Value> {
+        if !self.connected() {
+            self.connect().await?;
+        }
+        let req = json!({"type": "usage"}).to_string();
+        match self.ws.as_mut() {
+            Some(ws) => ws
+                .send(Message::Text(req))
+                .await
+                .map_err(|e| Error::ManagerUnavailable(format!("usage send failed: {e}")))?,
+            None => return Err(Error::ManagerUnavailable("not connected".into())),
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::AnswerTimeout("no usage reply within timeout".into()));
+            }
+            let ws = match self.ws.as_mut() {
+                Some(w) => w,
+                None => return Err(Error::ManagerUnavailable("connection closed".into())),
+            };
+            let frame = match tokio::time::timeout(remaining, ws.next()).await {
+                Err(_) => return Err(Error::AnswerTimeout("no usage reply within timeout".into())),
+                Ok(None) | Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) => {
+                    return Err(Error::ManagerUnavailable("connection closed".into()))
+                }
+                Ok(Some(Ok(Message::Text(t)))) => t,
+                Ok(Some(Ok(Message::Binary(b)))) => String::from_utf8_lossy(&b).into_owned(),
+                Ok(Some(Ok(_))) => continue,
+            };
+            let msg: serde_json::Value = serde_json::from_str(&frame)
+                .map_err(|_| Error::Protocol(format!("manager sent non-JSON frame: {frame}")))?;
+            match msg.get("type").and_then(|t| t.as_str()) {
+                Some("usage") => return Ok(msg),
+                Some("err") => {
+                    return Err(Error::Protocol(
+                        msg.get("text").and_then(|v| v.as_str()).unwrap_or("usage error").to_string(),
+                    ))
+                }
+                _ => continue, // skip ack / a / initialized
+            }
+        }
+    }
+
     async fn fetch_token(&self) -> Result<String> {
         let p = self.token_provider.clone();
         tokio::task::spawn_blocking(move || p())

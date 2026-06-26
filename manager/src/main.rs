@@ -108,6 +108,50 @@ fn compose_daily_reply(rows: &[DailyRow]) -> serde_json::Value {
     serde_json::json!({ "ok": true, "days": days })
 }
 
+/// THIS user's own lifetime self-counted totals — no `user_id` column, since the
+/// caller is known from the authenticated connection. Returned by `usage_for`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct OwnUsage {
+    requests: i64,
+    chars_in: i64,
+    chars_out: i64,
+    files: i64,
+    file_bytes: i64,
+    last_used: Option<String>,
+}
+
+/// One day of THIS user's own usage. Returned by `usage_daily_for`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct OwnDaily {
+    day: String,
+    requests: i64,
+    chars_in: i64,
+    chars_out: i64,
+    files: i64,
+    file_bytes: i64,
+}
+
+/// PURE: the `/chat` "usage" reply for ONE authenticated user — own lifetime
+/// totals plus a per-day breakdown (the manager passes the last 7 days).
+fn compose_own_usage_reply(user_id: &str, total: &OwnUsage, daily: &[OwnDaily]) -> serde_json::Value {
+    let days: Vec<serde_json::Value> = daily.iter().map(|d| serde_json::json!({
+        "day": d.day, "requests": d.requests,
+        "charsIn": d.chars_in, "charsOut": d.chars_out,
+        "files": d.files, "fileBytes": d.file_bytes,
+    })).collect();
+    serde_json::json!({
+        "type": "usage",
+        "userId": user_id,
+        "requests": total.requests,
+        "charsIn": total.chars_in,
+        "charsOut": total.chars_out,
+        "files": total.files,
+        "fileBytes": total.file_bytes,
+        "lastUsed": total.last_used,
+        "daily": days,
+    })
+}
+
 /// Runtime-dispatched chat queue backend. Each variant holds an open pool;
 /// every operation matches and uses the dialect-appropriate query string.
 #[derive(Clone)]
@@ -342,6 +386,53 @@ impl ChatDb {
             ChatDb::Postgres(p) => {
                 let pg = sql.replace("time_in >= ?", "time_in >= $1");
                 sqlx::query_as::<_, DailyRow>(&pg).bind(cutoff).fetch_all(p).await
+            }
+        }
+    }
+
+    /// THIS user's own lifetime self-counted totals (always exactly one row;
+    /// zeros if the user has no answered questions). SCOPED by `user_id` — a
+    /// caller can only ever pass their own authenticated JWT sub.
+    async fn usage_for(&self, user_id: &str) -> Result<OwnUsage, sqlx::Error> {
+        let sql = "SELECT COUNT(*) AS requests,
+                     COALESCE(SUM(chars_in),0) AS chars_in,
+                     COALESCE(SUM(chars_out),0) AS chars_out,
+                     COALESCE(SUM(files),0) AS files,
+                     COALESCE(SUM(file_bytes),0) AS file_bytes,
+                     MAX(time_out) AS last_used
+                   FROM chat_question
+                   WHERE status IN ('answered','confirmed') AND user_id = ?";
+        match self {
+            ChatDb::Sqlite(p) => sqlx::query_as::<_, OwnUsage>(sql).bind(user_id).fetch_one(p).await,
+            ChatDb::Postgres(p) => {
+                let pg = sql.replace("user_id = ?", "user_id = $1");
+                sqlx::query_as::<_, OwnUsage>(&pg).bind(user_id).fetch_one(p).await
+            }
+        }
+    }
+
+    /// THIS user's own per-day usage since `cutoff` (ISO-8601). SCOPED by
+    /// `user_id`; `substr(time_in,1,10)` is the YYYY-MM-DD day.
+    async fn usage_daily_for(&self, user_id: &str, cutoff: &str) -> Result<Vec<OwnDaily>, sqlx::Error> {
+        let sql = "SELECT substr(time_in,1,10) AS day,
+                     COUNT(*) AS requests,
+                     COALESCE(SUM(chars_in),0) AS chars_in,
+                     COALESCE(SUM(chars_out),0) AS chars_out,
+                     COALESCE(SUM(files),0) AS files,
+                     COALESCE(SUM(file_bytes),0) AS file_bytes
+                   FROM chat_question
+                   WHERE status IN ('answered','confirmed')
+                     AND user_id = ? AND time_in >= ?
+                   GROUP BY day ORDER BY day";
+        match self {
+            ChatDb::Sqlite(p) => {
+                sqlx::query_as::<_, OwnDaily>(sql).bind(user_id).bind(cutoff).fetch_all(p).await
+            }
+            ChatDb::Postgres(p) => {
+                let pg = sql
+                    .replace("user_id = ?", "user_id = $1")
+                    .replace("time_in >= ?", "time_in >= $2");
+                sqlx::query_as::<_, OwnDaily>(&pg).bind(user_id).bind(cutoff).fetch_all(p).await
             }
         }
     }
@@ -2184,11 +2275,32 @@ async fn handle_chat(
                 }
                 continue;
             }
+            if msg_type == "usage" {
+                // Reply with THIS connection's authenticated user's OWN usage
+                // (lifetime totals + last 7 days). chat.user-scoped: the caller
+                // can never see another user's data — user_id_for_in is the
+                // verified JWT sub captured at handshake, not client-supplied.
+                let cutoff = (chrono::Utc::now() - chrono::Duration::days(7))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let reply = match db_for_in.usage_for(&user_id_for_in).await {
+                    Ok(total) => match db_for_in.usage_daily_for(&user_id_for_in, &cutoff).await {
+                        Ok(daily) => compose_own_usage_reply(&user_id_for_in, &total, &daily),
+                        Err(e) => serde_json::json!({"type":"err",
+                            "text":format!("usage daily query failed: {e}"),
+                            "timeIn":time_in,"timeOut":now_iso()}),
+                    },
+                    Err(e) => serde_json::json!({"type":"err",
+                        "text":format!("usage query failed: {e}"),
+                        "timeIn":time_in,"timeOut":now_iso()}),
+                };
+                let _ = answer_tx_for_in.send(reply).await;
+                continue;
+            }
             if msg_type != "q" {
                 let _ = answer_tx_for_in
                     .send(serde_json::json!({
                         "type":"err",
-                        "text":format!("unknown type \"{}\"; expected \"q\" or \"confirm\"", msg_type),
+                        "text":format!("unknown type \"{}\"; expected \"q\", \"confirm\", or \"usage\"", msg_type),
                         "timeIn": time_in,
                         "timeOut": now_iso(),
                     }))
@@ -2724,6 +2836,30 @@ async fn handle_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_own_usage_reply_shape() {
+        let total = OwnUsage {
+            requests: 42, chars_in: 12345, chars_out: 67890,
+            files: 3, file_bytes: 1024000, last_used: Some("2026-06-26T17:30:00.000Z".into()),
+        };
+        let daily = vec![OwnDaily {
+            day: "2026-06-26".into(), requests: 12, chars_in: 3456,
+            chars_out: 12345, files: 1, file_bytes: 256000,
+        }];
+        let v = compose_own_usage_reply("u-9", &total, &daily);
+        assert_eq!(v["type"], "usage");
+        assert_eq!(v["userId"], "u-9");
+        assert_eq!(v["requests"], 42);
+        assert_eq!(v["charsIn"], 12345);
+        assert_eq!(v["charsOut"], 67890);
+        assert_eq!(v["files"], 3);
+        assert_eq!(v["fileBytes"], 1024000);
+        assert_eq!(v["lastUsed"], "2026-06-26T17:30:00.000Z");
+        assert_eq!(v["daily"][0]["day"], "2026-06-26");
+        assert_eq!(v["daily"][0]["requests"], 12);
+        assert_eq!(v["daily"][0]["fileBytes"], 256000);
+    }
 
     #[test]
     fn scope_sessions_chat_user_sees_only_own() {

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from llm_chat.repl import ReplCtx, format_answer, format_status
+from llm_chat.repl import (
+    ReplCtx, format_answer, format_status, format_usage, human_bytes, human_int,
+)
 
 
 def test_single_line_unchanged():
@@ -47,3 +49,42 @@ def test_format_status_empty_roles_and_no_session():
     assert "session   — · 0 msgs" in s
     assert "ws://m:7777/chat · disconnected" in s
     assert "render=raw · timeout=60s" in s
+
+
+def test_human_int_groups_thousands():
+    assert human_int(0) == "0"
+    assert human_int(42) == "42"
+    assert human_int(12345) == "12,345"
+    assert human_int(1_000_000) == "1,000,000"
+
+
+def test_human_bytes_scales():
+    assert human_bytes(0) == "0 B"
+    assert human_bytes(512) == "512 B"
+    assert human_bytes(1024) == "1.0 KB"
+    assert human_bytes(1024 * 1024) == "1.0 MB"
+
+
+def test_format_usage_totals_and_daily():
+    reply = {
+        "type": "usage", "userId": "u9", "requests": 42,
+        "charsIn": 12345, "charsOut": 67890, "files": 3, "fileBytes": 1048576,
+        "lastUsed": "2026-06-26T17:30:00.000Z",
+        "daily": [{"day": "2026-06-26", "requests": 12, "charsIn": 3456,
+                   "charsOut": 12345, "files": 1, "fileBytes": 262144}],
+    }
+    s = format_usage(reply)
+    assert "user       u9" in s
+    assert "requests   42" in s
+    assert "chars in   12,345" in s
+    assert "files      3 · 1.0 MB" in s
+    assert "last used  2026-06-26T17:30:00.000Z" in s
+    assert "2026-06-26   12 req · 3,456 in · 12,345 out · 1 files · 256.0 KB" in s
+
+
+def test_format_usage_empty_daily():
+    reply = {"userId": "u", "requests": 0, "charsIn": 0, "charsOut": 0,
+             "files": 0, "fileBytes": 0, "daily": []}
+    s = format_usage(reply)
+    assert "(no usage in the last 7 days)" in s
+    assert "files      0 · 0 B" in s
