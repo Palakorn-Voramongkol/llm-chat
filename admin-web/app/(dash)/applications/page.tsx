@@ -2,8 +2,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { DataTable } from "@/components/ui/data-table";
+import type { VisibilityState } from "@tanstack/react-table";
+import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle } from "@/components/ui/data-table";
 import { PageHeader } from "@/components/shell/PageHeader";
+import { useTableDensity } from "@/lib/use-table-density";
+import { useFilterOpen } from "@/lib/use-filter-open";
 import { buildApplicationColumns, type AppMeta } from "@/components/applications/columns";
 import { api, ApiError } from "@/lib/api";
 import type {
@@ -15,6 +18,9 @@ export default function ApplicationsPage() {
   const [apps, setApps] = useState<AppProject[]>([]);
   // projectId -> { role keys, distinct grant-holder count } (best-effort).
   const [metaById, setMetaById] = useState<Map<string, AppMeta>>(new Map());
+  const [filterOpen, setFilterOpen] = useFilterOpen();
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const [density, setDensity] = useTableDensity();
 
   const load = useCallback(async () => {
     let projects: AppProject[] = [];
@@ -73,6 +79,13 @@ export default function ApplicationsPage() {
       <PageHeader
         title="Applications"
         description="Applications on the platform — each defines its own roles and the users who can use it."
+        actions={
+          <>
+            <TableFilterToggle open={filterOpen} onToggle={() => setFilterOpen((o) => !o)} />
+            <TableColumnsToggle columns={columns} visibility={columnVisibility} onChange={setColumnVisibility} />
+            <TableDensityToggle density={density} onChange={setDensity} />
+          </>
+        }
       />
       <div className="min-h-0 flex-1">
         <DataTable columns={columns} data={apps}
@@ -81,7 +94,12 @@ export default function ApplicationsPage() {
           ]}
           emptyMessage="No applications."
           getRowId={(a) => a.id}
-          onRowClick={(a) => router.push(`/applications/${a.id}`)} />
+          onRowClick={(a) => router.push(`/applications/${a.id}`)}
+          filterOpen={filterOpen}
+          onFilterOpenChange={setFilterOpen}
+          columnVisibility={columnVisibility}
+          onColumnVisibilityChange={setColumnVisibility}
+          density={density} />
       </div>
     </div>
   );
