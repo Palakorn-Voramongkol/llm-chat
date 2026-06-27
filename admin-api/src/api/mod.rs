@@ -222,7 +222,7 @@ async fn status(
         "health": { "zitadel": zitadel_ok },
         "capabilities": {
             "events": events_cap,
-            "chatSessions": st.cfg.manager_control_url.is_some(),
+            "chatSessions": !st.cfg.session_apps.is_empty(),
         },
     })))
 }
@@ -231,18 +231,18 @@ async fn status(
 /// "instances"). Capability-gated on MANAGER_CONTROL_URL; each reply degrades
 /// independently so one failing backend never blanks the panel.
 async fn chat_sessions(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let Some(url) = st.cfg.manager_control_url.clone() else {
+    let Some(app) = crate::config::default_app(&st.cfg.session_apps) else {
         return Ok(Json(json!({ "configured": false })));
     };
-    let token = st.zitadel.mint_chat_token().await?;
-    let list = crate::manager::control_query(&url, &token, "list")
+    let token = st.zitadel.mint_chat_token(&app.project_id).await?;
+    let list = crate::manager::control_query(&app.control_url, &token, "list")
         .await
         .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
-    let instances = crate::manager::control_query(&url, &token, "instances")
+    let instances = crate::manager::control_query(&app.control_url, &token, "instances")
         .await
         .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
     // Live /chat clients — carries each session's authenticated owner (userId).
-    let clients = crate::manager::control_query(&url, &token, "clients")
+    let clients = crate::manager::control_query(&app.control_url, &token, "clients")
         .await
         .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
     Ok(Json(crate::manager::combine_control_replies(list, instances, clients)))
@@ -251,12 +251,12 @@ async fn chat_sessions(_op: Operator, State(st): State<AppState>) -> Result<Json
 /// Per-user token usage from the manager's /control "usage" (chat.admin-gated).
 /// Capability-gated on MANAGER_CONTROL_URL, exactly like chat_sessions.
 async fn usage(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let Some(url) = st.cfg.manager_control_url.clone() else {
+    let Some(app) = crate::config::default_app(&st.cfg.session_apps) else {
         return Ok(Json(json!({ "configured": false, "users": [], "totals": {} })));
     };
-    let token = st.zitadel.mint_chat_token().await?;
+    let token = st.zitadel.mint_chat_token(&app.project_id).await?;
     Ok(Json(
-        crate::manager::control_query(&url, &token, "usage")
+        crate::manager::control_query(&app.control_url, &token, "usage")
             .await
             .unwrap_or_else(|e| json!({ "ok": false, "error": e })),
     ))
@@ -265,12 +265,12 @@ async fn usage(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>,
 /// Per-user per-day token usage (last 30 days) from /control "usage-daily".
 /// chat.admin-gated, capability-gated on MANAGER_CONTROL_URL — mirrors usage().
 async fn usage_daily(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let Some(url) = st.cfg.manager_control_url.clone() else {
+    let Some(app) = crate::config::default_app(&st.cfg.session_apps) else {
         return Ok(Json(json!({ "configured": false, "days": [] })));
     };
-    let token = st.zitadel.mint_chat_token().await?;
+    let token = st.zitadel.mint_chat_token(&app.project_id).await?;
     Ok(Json(
-        crate::manager::control_query(&url, &token, "usage-daily")
+        crate::manager::control_query(&app.control_url, &token, "usage-daily")
             .await
             .unwrap_or_else(|e| json!({ "ok": false, "error": e })),
     ))
@@ -281,11 +281,11 @@ async fn usage_daily(_op: Operator, State(st): State<AppState>) -> Result<Json<V
 /// chat_sessions/usage. The worker confines the listing to {base}/{userId}.
 async fn user_files(_op: Operator, State(st): State<AppState>, Path(id): Path<String>)
     -> Result<Json<Value>, ApiError> {
-    let Some(url) = st.cfg.manager_control_url.clone() else {
+    let Some(app) = crate::config::default_app(&st.cfg.session_apps) else {
         return Ok(Json(json!({ "configured": false, "entries": [], "truncated": false })));
     };
-    let token = st.zitadel.mint_chat_token().await?;
-    let reply = crate::manager::control_request(&url, &token, json!({ "cmd": "user-box", "userId": id }))
+    let token = st.zitadel.mint_chat_token(&app.project_id).await?;
+    let reply = crate::manager::control_request(&app.control_url, &token, json!({ "cmd": "user-box", "userId": id }))
         .await
         .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
     Ok(Json(json!({

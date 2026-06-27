@@ -116,7 +116,6 @@ pub struct AdminConfig {
     /// Sessions page's chat-sessions panel. OPTIONAL BY DESIGN (a capability-gated
     /// feature toggle, not a security value): absent → the panel reports
     /// `configured:false` and stays dark. No default URL is invented.
-    pub manager_control_url: Option<String>,
     /// Chat-capable applications for the Sessions page (registry). The first
     /// entry is the default used by the non-selectable endpoints.
     pub session_apps: Vec<SessionApp>,
@@ -155,9 +154,6 @@ impl AdminConfig {
             allowed_origin: require_var("ADMIN_ALLOWED_ORIGIN", get("ADMIN_ALLOWED_ORIGIN"))?,
             session_key: require_var("ADMIN_SESSION_KEY", get("ADMIN_SESSION_KEY"))?,
             cookie_secure: parse_cookie_secure(get("ADMIN_COOKIE_SECURE")),
-            manager_control_url: get("MANAGER_CONTROL_URL")
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
             session_apps,
         })
     }

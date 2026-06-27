@@ -226,7 +226,6 @@ mod tests {
             allowed_origin: "http://localhost:3000".into(),
             session_key: "k".into(),
             cookie_secure: true,
-            manager_control_url: None,
             session_apps: Vec::new(),
         }
     }
