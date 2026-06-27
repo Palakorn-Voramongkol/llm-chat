@@ -1537,7 +1537,8 @@ async fn handle_client(
             None => return reject_no_user(ws).await,
         };
         let cwd = parse_query_param(&req_query, "cwd");
-        return handle_chat(ws, state, uid, cwd).await;
+        let rich = parse_query_param(&req_query, "rich");
+        return handle_chat(ws, state, uid, cwd, rich).await;
     }
     if req_path == "/s/new" {
         let uid = match user_id {
@@ -1716,7 +1717,7 @@ async fn handle_control(
                 }
                 serde_json::json!({"ok":true,"ports":ports,"sessionsPerPort":counts})
             }
-            "open" => match cmd_open(&state, &user_id, None).await {
+            "open" => match cmd_open(&state, &user_id, None, None).await {
                 Ok((sid, port, transport)) => {
                     serde_json::json!({"ok":true,"sessionId":sid,"backendPort":port,"transport":transport})
                 }
@@ -1981,10 +1982,16 @@ async fn pick_least_loaded_port(state: &SharedState) -> Option<u16> {
 /// Build the worker `open` command body. The user id is REQUIRED (the worker
 /// confines every spawn under {base}/{userId}); the relative subpath is added
 /// only when present.
-fn open_request_body(user_id: &str, subpath: Option<&str>) -> serde_json::Value {
+fn open_request_body(user_id: &str, subpath: Option<&str>, rich: Option<&str>) -> serde_json::Value {
     let mut body = serde_json::json!({"cmd":"open","userId": user_id});
     if let Some(p) = subpath {
         body["cwd"] = serde_json::Value::String(p.to_string());
+    }
+    // Optional rich-output level (off|turn|token) chosen by the client via
+    // `/chat?rich=`. The worker validates/resolves it and falls back to its
+    // own LLM_CHAT_RICH default when absent.
+    if let Some(r) = rich {
+        body["rich"] = serde_json::Value::String(r.to_string());
     }
     body
 }
@@ -1993,11 +2000,12 @@ async fn cmd_open(
     state: &SharedState,
     user_id: &str,
     subpath: Option<&str>,
+    rich: Option<&str>,
 ) -> Result<(String, u16, String), Box<dyn std::error::Error + Send + Sync>> {
     let port = pick_least_loaded_port(state)
         .await
         .ok_or("no backends configured")?;
-    let body = open_request_body(user_id, subpath);
+    let body = open_request_body(user_id, subpath, rich);
     tracing::info!(target: "manager", port, user_id, subpath = ?subpath, "cmd_open → worker (open)");
     let resp = call_backend(port, body).await?;
     tracing::info!(target: "manager", resp = %resp, "cmd_open ← worker response");
@@ -2128,7 +2136,7 @@ async fn bridge_session_auto(
     state: SharedState,
     user_id: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (sid, port, _transport) = match cmd_open(&state, &user_id, None).await {
+    let (sid, port, _transport) = match cmd_open(&state, &user_id, None, None).await {
         Ok(x) => x,
         Err(e) => {
             let _ = ws
@@ -2360,6 +2368,7 @@ async fn handle_chat(
     state: SharedState,
     user_id: String,
     cwd: Option<String>,
+    rich: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Duration;
     use tokio::sync::mpsc;
@@ -2367,7 +2376,7 @@ async fn handle_chat(
     // 1. Spawn a fresh session in the least-loaded backend. If the client
     //    asked for a specific working directory via `?cwd=…`, the worker
     //    canonicalizes + trust-marks it and runs claude there.
-    let (sid, port, transport) = match cmd_open(&state, &user_id, cwd.as_deref()).await {
+    let (sid, port, transport) = match cmd_open(&state, &user_id, cwd.as_deref(), rich.as_deref()).await {
         Ok(x) => x,
         Err(e) => {
             let mut ws = ws;
@@ -3271,14 +3280,14 @@ mod tests {
 
     #[test]
     fn open_body_carries_user_id_and_relative_cwd() {
-        let b = open_request_body("311867081814147073", Some("crm/acct-42"));
+        let b = open_request_body("311867081814147073", Some("crm/acct-42"), None);
         assert_eq!(b["cmd"], "open");
         assert_eq!(b["userId"], "311867081814147073");
         assert_eq!(b["cwd"], "crm/acct-42");
     }
     #[test]
     fn open_body_omits_cwd_when_none() {
-        let b = open_request_body("u1", None);
+        let b = open_request_body("u1", None, None);
         assert_eq!(b["userId"], "u1");
         assert!(b.get("cwd").is_none());
     }

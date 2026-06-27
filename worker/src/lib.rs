@@ -722,6 +722,48 @@ fn parse_usage(result_event: &serde_json::Value) -> serde_json::Value {
     })
 }
 
+/// Verbosity of what a stream-json session forwards on its qa channel.
+/// `Off` = final answer only (default; unchanged behavior). `Turn` = also
+/// forward claude's intermediate turn events (assistant / tool_use /
+/// tool_result, system:init). `Token` = the `Turn` set plus
+/// `--include-partial-messages` streaming deltas. Resolved per session:
+/// open-cmd `rich` → `LLM_CHAT_RICH` env → `Off`. Every rich line carries NO
+/// top-level `num`, so the manager ignores it (answer-pairing untouched); only
+/// the `result` line drives pairing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RichLevel {
+    Off,
+    Turn,
+    Token,
+}
+
+impl RichLevel {
+    pub(crate) fn parse(s: &str) -> RichLevel {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "turn" => RichLevel::Turn,
+            "token" => RichLevel::Token,
+            _ => RichLevel::Off,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            RichLevel::Off => "off",
+            RichLevel::Turn => "turn",
+            RichLevel::Token => "token",
+        }
+    }
+
+    /// Resolve from an optional per-session override, falling back to the
+    /// `LLM_CHAT_RICH` worker default, then `Off`.
+    pub(crate) fn resolve(override_opt: Option<&str>) -> RichLevel {
+        match override_opt {
+            Some(s) if !s.trim().is_empty() => RichLevel::parse(s),
+            _ => RichLevel::parse(&std::env::var("LLM_CHAT_RICH").unwrap_or_default()),
+        }
+    }
+}
+
 // ========== Claude stream-json session (source-of-truth transport) ==========
 // Drives `claude` over RAW PIPES in stream-json mode instead of a PTY, so we
 // read claude's ACTUAL answer text (real newlines, real markdown) from its
@@ -750,8 +792,9 @@ mod json_session {
             qa_tx: broadcast::Sender<String>,
             sink: Arc<dyn crate::EventSink>,
             cwd: Option<&str>,
+            rich: crate::RichLevel,
         ) -> Result<Self, String> {
-            let args = [
+            let mut args: Vec<&str> = vec![
                 "-p",
                 "--input-format",
                 "stream-json",
@@ -760,6 +803,11 @@ mod json_session {
                 "--verbose",
                 "--dangerously-skip-permissions",
             ];
+            // Token-level richness needs claude to stream partial message
+            // deltas; turn/off rely on the plain --verbose turn events.
+            if rich == crate::RichLevel::Token {
+                args.push("--include-partial-messages");
+            }
             // claude.cmd/.bat need a shell; claude.exe / unix bins run directly.
             let lower = claude_path.to_ascii_lowercase();
             let mut cmd = if cfg!(windows) && (lower.ends_with(".cmd") || lower.ends_with(".bat")) {
@@ -803,6 +851,10 @@ mod json_session {
                 let sink = sink.clone();
                 std::thread::spawn(move || {
                     let reader = BufReader::new(stdout);
+                    // Monotonic per-session counter for rich event lines so a
+                    // lagging /qa consumer can detect gaps. One reader thread →
+                    // a plain local suffices.
+                    let mut ev_seq: u32 = 0;
                     for line in reader.lines() {
                         let line = match line {
                             Ok(l) => l,
@@ -815,37 +867,81 @@ mod json_session {
                             Ok(v) => v,
                             Err(_) => continue,
                         };
-                        let is_result = v.get("type").and_then(|x| x.as_str()) == Some("result");
-                        let ok = v.get("subtype").and_then(|x| x.as_str()) == Some("success")
-                            || v.get("is_error").and_then(|x| x.as_bool()) == Some(false);
-                        if is_result && ok {
-                            let answer = v
-                                .get("result")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let n = num.fetch_add(1, Ordering::SeqCst) + 1;
-                            let q = last_q.lock().unwrap().clone();
-                            let payload = serde_json::json!({
-                                "num": n,
-                                "question": q,
-                                "answer": answer,
-                                "sessionId": sid,
-                                "isNew": true,
-                                // stream-json emits ONE complete `result` event
-                                // per answer — it is final the moment we see it.
-                                // The manager uses this to flush immediately
-                                // instead of debouncing for late PTY redraws.
-                                "final": true,
-                                "usage": crate::parse_usage(&v),
-                            });
-                            tracing::info!(
-                                target: "backend::qa",
-                                sid = %sid, num = n, len = answer.len(),
-                                "stream-json result → qa"
-                            );
-                            sink.emit("qa-detected", payload.clone());
-                            let _ = qa_tx.send(payload.to_string());
+                        let typ = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                        if typ == "result" {
+                            let ok = v.get("subtype").and_then(|x| x.as_str()) == Some("success")
+                                || v.get("is_error").and_then(|x| x.as_bool()) == Some(false);
+                            if ok {
+                                let answer = v
+                                    .get("result")
+                                    .and_then(|x| x.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let n = num.fetch_add(1, Ordering::SeqCst) + 1;
+                                let q = last_q.lock().unwrap().clone();
+                                let payload = serde_json::json!({
+                                    "num": n,
+                                    "question": q,
+                                    "answer": answer,
+                                    "sessionId": sid,
+                                    "isNew": true,
+                                    // stream-json emits ONE complete `result` event
+                                    // per answer — it is final the moment we see it.
+                                    // The manager uses this to flush immediately
+                                    // instead of debouncing for late PTY redraws.
+                                    "final": true,
+                                    "usage": crate::parse_usage(&v),
+                                });
+                                tracing::info!(
+                                    target: "backend::qa",
+                                    sid = %sid, num = n, len = answer.len(),
+                                    "stream-json result → qa"
+                                );
+                                sink.emit("qa-detected", payload.clone());
+                                let _ = qa_tx.send(payload.to_string());
+                            }
+                            continue;
+                        }
+                        // Non-result events: in rich mode forward claude's OWN
+                        // event JSON verbatim (source of truth — no scraping) on
+                        // the same qa channel, tagged WITHOUT a `num` so the
+                        // manager ignores it (answer-pairing untouched). `turn` =
+                        // assistant/user/system:init; `token` adds the
+                        // stream_event partial deltas.
+                        if rich != crate::RichLevel::Off {
+                            let keep = match typ {
+                                "assistant" | "user" => true,
+                                "system" => {
+                                    v.get("subtype").and_then(|x| x.as_str()) == Some("init")
+                                }
+                                "stream_event" => rich == crate::RichLevel::Token,
+                                _ => false,
+                            };
+                            if keep {
+                                ev_seq += 1;
+                                // Cap a pathologically large event (e.g. a big
+                                // tool_result) so one line can't starve the
+                                // bounded broadcast channel.
+                                const RAW_CAP: usize = 64 * 1024;
+                                let raw_val = if line.len() > RAW_CAP {
+                                    serde_json::json!({
+                                        "truncated": true,
+                                        "bytes": line.len(),
+                                        "kind": typ,
+                                    })
+                                } else {
+                                    v.clone()
+                                };
+                                let payload = serde_json::json!({
+                                    "type": "event",
+                                    "level": rich.as_str(),
+                                    "kind": typ,
+                                    "sessionId": sid,
+                                    "seqNo": ev_seq,
+                                    "raw": raw_val,
+                                });
+                                let _ = qa_tx.send(payload.to_string());
+                            }
                         }
                     }
                     tracing::info!(target: "backend::session", sid = %sid, "stream-json reader ended");
@@ -1257,6 +1353,9 @@ fn do_spawn_session(
     // Re-checked on the exact path we spawn in, closing the TOCTOU between
     // open_cwd's proof and this spawn. None for cwd-less (inherit) sessions.
     confine_root: Option<std::path::PathBuf>,
+    // Per-session rich-output override (off|turn|token). None → fall back to
+    // the LLM_CHAT_RICH env default. Only consulted on the stream-json path.
+    rich_override: Option<String>,
     state: &AppState,
     sink: &Arc<dyn EventSink>,
 ) -> Result<String, String> {
@@ -1314,22 +1413,26 @@ fn do_spawn_session(
         let claude_path = claude_path.ok_or_else(|| {
             "claude CLI not found on PATH (set LLM_CHAT_TRANSPORT=pty for the TUI path)".to_string()
         })?;
+        // Rich-output level for this session: open-cmd override → LLM_CHAT_RICH
+        // env → off. Only `token` changes claude's argv.
+        let rich = RichLevel::resolve(rich_override.as_deref());
         tracing::info!(
             target: "backend::session",
-            sid = %session_id, transport = "stream-json", claude = %claude_path,
+            sid = %session_id, transport = "stream-json", rich = %rich.as_str(),
+            claude = %claude_path,
             cwd = cwd_clean.as_deref().unwrap_or("(inherited)"),
             "spawning stream-json session"
         );
         let (qa_tx, _qa_rx) = broadcast::channel::<String>(256);
         let session = json_session::JsonSession::spawn(
             &claude_path, session_id.clone(), qa_tx.clone(), sink.clone(),
-            cwd_clean.as_deref(),
+            cwd_clean.as_deref(), rich,
         )?;
         state.qa_broadcasts.lock().unwrap().insert(session_id.clone(), qa_tx);
         state.session_order.lock().unwrap().push(session_id.clone());
         state.json_sessions.lock().unwrap().insert(session_id.clone(), session);
         sink.emit("claude-session", serde_json::json!({"sessionId": session_id}));
-        return Ok(format!("{claude_path} (stream-json)"));
+        return Ok(format!("{claude_path} (stream-json, rich={})", rich.as_str()));
     }
 
     // ---- legacy PTY/TUI transport ----
@@ -1406,7 +1509,7 @@ fn spawn_session(
     #[cfg(any(unix, windows))]
     {
         let sink: Arc<dyn EventSink> = Arc::new(TauriSink(app_handle));
-        return do_spawn_session(session_id, cols, rows, None, None, &state, &sink);
+        return do_spawn_session(session_id, cols, rows, None, None, None, &state, &sink);
     }
     #[allow(unreachable_code)]
     Err("Unsupported platform".into())
@@ -2542,7 +2645,16 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                 // error rejects with NO spawn (CLAUDE.md fail closed).
                                 let user_id = req.get("userId").and_then(|v| v.as_str());
                                 let subpath = req.get("cwd").and_then(|v| v.as_str());
-                                tracing::info!(target: "backend::open", user_id = ?user_id, subpath = ?subpath, "open command received");
+                                // Optional per-session rich-output level
+                                // (off|turn|token); None → LLM_CHAT_RICH default.
+                                let rich_override =
+                                    req.get("rich").and_then(|v| v.as_str()).map(|s| s.to_string());
+                                let rich_level = if transport == "pty" {
+                                    "off"
+                                } else {
+                                    RichLevel::resolve(rich_override.as_deref()).as_str()
+                                };
+                                tracing::info!(target: "backend::open", user_id = ?user_id, subpath = ?subpath, rich = %rich_level, "open command received");
                                 let base = USER_ENV_BASE.get().expect("validated at startup");
                                 match crate::user_env::open_cwd(base, user_id, subpath) {
                                     Err(e) => {
@@ -2557,13 +2669,13 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                         let confine_root = user_id
                                             .map(|uid| base.join(uid))
                                             .and_then(|r| r.canonicalize().ok());
-                                        match do_spawn_session(id.clone(), 120, 30, cwd, confine_root, st_handle, &sink_ctrl) {
+                                        match do_spawn_session(id.clone(), 120, 30, cwd, confine_root, rich_override.clone(), st_handle, &sink_ctrl) {
                                             Ok(_) => {
                                                 let _ = sink_ctrl.emit(
                                                     "external-session-added",
                                                     serde_json::json!({"sessionId": id}),
                                                 );
-                                                serde_json::json!({"ok":true,"sessionId":id,"transport":transport})
+                                                serde_json::json!({"ok":true,"sessionId":id,"transport":transport,"rich":rich_level})
                                             }
                                             Err(e) => serde_json::json!({"ok":false,"error":e}),
                                         }
