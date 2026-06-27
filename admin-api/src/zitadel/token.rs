@@ -12,6 +12,14 @@ pub struct CachedToken {
     pub exp: u64,
 }
 
+/// PURE: the manager-token scope requesting `project_id`'s audience + project
+/// roles (the jwt-bearer flow the python machine client uses).
+pub fn chat_token_scope(project_id: &str) -> String {
+    format!(
+        "openid urn:zitadel:iam:org:project:id:{project_id}:aud urn:zitadel:iam:org:projects:roles"
+    )
+}
+
 /// PURE: sign the JWT-bearer assertion. Header `{kid}`, claims
 /// `{iss=sub=user_id, aud=issuer, iat=now, exp=now+3600}`, RS256 over `pem`.
 pub fn build_assertion(
@@ -104,7 +112,7 @@ impl ZitadelClient {
     /// python client's machine flow (clients/python auth.py). This is a
     /// DIFFERENT scope from the Management-API token above (`zitadel` project)
     /// and is deliberately not cached — the Sessions page polls infrequently.
-    pub async fn mint_chat_token(&self) -> Result<String, ZitadelError> {
+    pub async fn mint_chat_token(&self, project_id: &str) -> Result<String, ZitadelError> {
         let raw = std::fs::read_to_string(&self.cfg.sa_key_path)
             .map_err(|e| ZitadelError::Transport(format!("read sa key: {e}")))?;
         let sa: serde_json::Value = serde_json::from_str(&raw)
@@ -114,10 +122,7 @@ impl ZitadelClient {
         let pem = sa["key"].as_str().unwrap_or_default();
         let assertion = build_assertion(user_id, key_id, pem, &self.cfg.issuer, now_secs())
             .map_err(ZitadelError::Invalid)?;
-        let scope = format!(
-            "openid urn:zitadel:iam:org:project:id:{}:aud urn:zitadel:iam:org:projects:roles",
-            self.cfg.project_id
-        );
+        let scope = chat_token_scope(project_id);
         let url = format!("{}/oauth/v2/token", self.cfg.issuer);
         let resp = self
             .http
@@ -157,6 +162,15 @@ mod tests {
     use jsonwebtoken::{decode, Algorithm, DecodingKey, EncodingKey, Validation};
 
     const TEST_PRIV_PEM: &str = include_str!("testdata/test_rsa_priv.pem");
+
+    #[test]
+    fn chat_token_scope_targets_the_given_project() {
+        let s = super::chat_token_scope("999");
+        assert_eq!(
+            s,
+            "openid urn:zitadel:iam:org:project:id:999:aud urn:zitadel:iam:org:projects:roles"
+        );
+    }
 
     #[test]
     fn build_assertion_round_trips() {
