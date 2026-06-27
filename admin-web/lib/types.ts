@@ -260,6 +260,15 @@ export interface ChatSessions {
   };
 }
 
+// GET /api/session-apps — chat-capable applications for the Sessions picker.
+export interface SessionApp {
+  key: string;
+  name: string;
+}
+export interface SessionAppList {
+  apps: SessionApp[];
+}
+
 // GET /api/signins — recent sign-in events (requires the audit capability).
 export interface SigninList {
   available: boolean;

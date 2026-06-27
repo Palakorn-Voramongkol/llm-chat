@@ -2,10 +2,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { LogIn, MessageSquare, Server, Users as UsersIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PageHeader } from "@/components/shell/PageHeader";
 import { api, ApiError } from "@/lib/api";
 import { eventChipClass, eventLabel } from "@/lib/event-style";
-import type { ChatSessions, SigninList, Status, UserList } from "@/lib/types";
+import type { ChatSessions, SessionAppList, SigninList, Status, UserList } from "@/lib/types";
+import { chatSessionsUrl } from "@/lib/session-apps";
 import { deriveWorkers } from "@/lib/workers";
 import { toast } from "sonner";
 import type { LucideIcon } from "lucide-react";
@@ -57,6 +59,8 @@ export default function SessionsPage() {
   const [chat, setChat] = useState<ChatSessions | null>(null);
   const [signins, setSignins] = useState<SigninList | null>(null);
   const [usersById, setUsersById] = useState<Map<string, string>>(new Map());
+  const [apps, setApps] = useState<{ key: string; name: string }[]>([]);
+  const [selectedApp, setSelectedApp] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -68,7 +72,7 @@ export default function SessionsPage() {
     }
     // Best-effort panels: each failure degrades its own card, never the page.
     try {
-      setChat(await api.get<ChatSessions>("/api/chat-sessions"));
+      setChat(await api.get<ChatSessions>(chatSessionsUrl(selectedApp)));
     } catch {
       setChat(null);
     }
@@ -84,6 +88,17 @@ export default function SessionsPage() {
     } catch {
       setUsersById(new Map());
     }
+  }, [selectedApp]);
+
+  // Populate the application picker once; default to the first app.
+  useEffect(() => {
+    api.get<SessionAppList>("/api/session-apps")
+      .then((r) => {
+        const list = r.apps ?? [];
+        setApps(list);
+        setSelectedApp((cur) => cur || (list[0]?.key ?? ""));
+      })
+      .catch(() => setApps([]));
   }, []);
 
   useEffect(() => {
@@ -105,6 +120,22 @@ export default function SessionsPage() {
       <PageHeader
         title="Sessions"
         description="Live activity across the platform — who's signed in, who's chatting, and worker health."
+        actions={
+          apps.length > 0 ? (
+            <Select value={selectedApp} onValueChange={setSelectedApp}>
+              <SelectTrigger className="h-8 w-44" aria-label="Select application">
+                <SelectValue placeholder="Application" />
+              </SelectTrigger>
+              <SelectContent>
+                {apps.map((a) => (
+                  <SelectItem key={a.key} value={a.key}>{a.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <span className="text-muted-foreground text-xs">No chat applications configured</span>
+          )
+        }
       />
 
       {/* At-a-glance monitoring strip (all users) */}
@@ -214,7 +245,7 @@ export default function SessionsPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Recent sign-ins — all users (security/audit) */}
         <Card className="gap-4 p-5 lg:col-span-2">
-          <h2 className="text-sm font-semibold">Recent sign-ins</h2>
+          <h2 className="text-sm font-semibold">Recent sign-ins — all applications</h2>
           {signins && signins.available ? (
             signinEvents.length ? (
               <ul className="space-y-2.5">
