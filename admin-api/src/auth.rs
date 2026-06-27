@@ -227,6 +227,7 @@ mod tests {
             session_key: "k".into(),
             cookie_secure: true,
             manager_control_url: None,
+            session_apps: Vec::new(),
         }
     }
 

@@ -25,6 +25,74 @@ pub fn parse_cookie_secure(raw: Option<String>) -> bool {
     )
 }
 
+/// One chat-capable application in the Sessions registry. `project_id` is the
+/// Zitadel project whose audience the SA token must target (so that app's
+/// manager accepts it) and whose roles it asserts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionApp {
+    pub key: String,
+    pub name: String,
+    pub control_url: String,
+    pub project_id: String,
+}
+
+/// PURE: build the chat-app registry. Prefers `MANAGER_CONTROL_APPS` (a JSON
+/// array of `{key,name,controlUrl,projectId}`); an entry missing any field is
+/// dropped (never defaulted). Malformed JSON is a hard error (fail fast). If the
+/// var is absent/blank, falls back to ONE llm-chat entry synthesized from the
+/// legacy `MANAGER_CONTROL_URL` + the admin project id. Absent both → empty.
+pub fn parse_session_apps(
+    manager_control_apps: Option<&str>,
+    legacy_url: Option<&str>,
+    legacy_project_id: &str,
+) -> Result<Vec<SessionApp>, String> {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        key: Option<String>,
+        name: Option<String>,
+        #[serde(rename = "controlUrl")]
+        control_url: Option<String>,
+        #[serde(rename = "projectId")]
+        project_id: Option<String>,
+    }
+    let nonempty = |s: Option<String>| s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+    if let Some(j) = manager_control_apps.map(str::trim).filter(|s| !s.is_empty()) {
+        let raws: Vec<Raw> = serde_json::from_str(j)
+            .map_err(|e| format!("MANAGER_CONTROL_APPS is not valid JSON: {e}"))?;
+        return Ok(raws
+            .into_iter()
+            .filter_map(|r| {
+                Some(SessionApp {
+                    key: nonempty(r.key)?,
+                    name: nonempty(r.name)?,
+                    control_url: nonempty(r.control_url)?,
+                    project_id: nonempty(r.project_id)?,
+                })
+            })
+            .collect());
+    }
+    if let Some(url) = legacy_url.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(vec![SessionApp {
+            key: "llm-chat".to_string(),
+            name: "llm-chat".to_string(),
+            control_url: url.to_string(),
+            project_id: legacy_project_id.to_string(),
+        }]);
+    }
+    Ok(Vec::new())
+}
+
+/// The default app (the first registry entry) — used by the non-selectable
+/// endpoints (usage, usage-daily, user files, and chat-sessions with no `?app=`).
+pub fn default_app(apps: &[SessionApp]) -> Option<&SessionApp> {
+    apps.first()
+}
+
+/// Resolve a registry entry by its `key`.
+pub fn find_app<'a>(apps: &'a [SessionApp], key: &str) -> Option<&'a SessionApp> {
+    apps.iter().find(|a| a.key == key)
+}
+
 /// Resolved, validated admin-api configuration. Every field is required —
 /// there is no code default (the manager/worker pattern). `from_env`/`from_map`
 /// fail fast naming the first missing var.
@@ -49,6 +117,9 @@ pub struct AdminConfig {
     /// feature toggle, not a security value): absent → the panel reports
     /// `configured:false` and stays dark. No default URL is invented.
     pub manager_control_url: Option<String>,
+    /// Chat-capable applications for the Sessions page (registry). The first
+    /// entry is the default used by the non-selectable endpoints.
+    pub session_apps: Vec<SessionApp>,
 }
 
 impl AdminConfig {
@@ -63,9 +134,15 @@ impl AdminConfig {
         let public_origin = require_var("ADMIN_PUBLIC_ORIGIN", get("ADMIN_PUBLIC_ORIGIN"))?
             .trim_end_matches('/')
             .to_string();
+        let project_id = require_var("ZITADEL_PROJECT_ID", get("ZITADEL_PROJECT_ID"))?;
+        let session_apps = parse_session_apps(
+            get("MANAGER_CONTROL_APPS").as_deref(),
+            get("MANAGER_CONTROL_URL").as_deref(),
+            &project_id,
+        )?;
         Ok(AdminConfig {
             issuer,
-            project_id: require_var("ZITADEL_PROJECT_ID", get("ZITADEL_PROJECT_ID"))?,
+            project_id: project_id.clone(),
             audience: require_var("ZITADEL_AUDIENCE", get("ZITADEL_AUDIENCE"))?,
             sa_key_path: require_var("ADMIN_SA_KEY_PATH", get("ADMIN_SA_KEY_PATH"))?,
             oidc_client_id: require_var("ADMIN_OIDC_CLIENT_ID", get("ADMIN_OIDC_CLIENT_ID"))?,
@@ -81,6 +158,7 @@ impl AdminConfig {
             manager_control_url: get("MANAGER_CONTROL_URL")
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+            session_apps,
         })
     }
 
@@ -164,5 +242,65 @@ mod tests {
             AdminConfig::from_map(&getter(m)),
             Err("ADMIN_OIDC_CLIENT_SECRET must be set (no default)".into())
         );
+    }
+
+    #[test]
+    fn parse_session_apps_reads_json_array() {
+        let json = r#"[
+            {"key":"llm-chat","name":"llm-chat","controlUrl":"ws://m:7777/control","projectId":"p1"},
+            {"key":"app2","name":"App Two","controlUrl":"ws://m2:7777/control","projectId":"p2"}
+        ]"#;
+        let apps = parse_session_apps(Some(json), None, "ignored").expect("ok");
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0], SessionApp {
+            key: "llm-chat".into(), name: "llm-chat".into(),
+            control_url: "ws://m:7777/control".into(), project_id: "p1".into(),
+        });
+        assert_eq!(apps[1].key, "app2");
+        assert_eq!(apps[1].project_id, "p2");
+    }
+
+    #[test]
+    fn parse_session_apps_falls_back_to_legacy_single_entry() {
+        let apps = parse_session_apps(None, Some("ws://m:7777/control"), "p1").expect("ok");
+        assert_eq!(apps, vec![SessionApp {
+            key: "llm-chat".into(), name: "llm-chat".into(),
+            control_url: "ws://m:7777/control".into(), project_id: "p1".into(),
+        }]);
+    }
+
+    #[test]
+    fn parse_session_apps_empty_when_nothing_configured() {
+        assert_eq!(parse_session_apps(None, None, "p1").expect("ok"), vec![]);
+        assert_eq!(parse_session_apps(Some("   "), Some("  "), "p1").expect("ok"), vec![]);
+    }
+
+    #[test]
+    fn parse_session_apps_drops_entries_missing_a_field() {
+        // second entry has no projectId -> dropped (never defaulted).
+        let json = r#"[
+            {"key":"ok","name":"OK","controlUrl":"ws://m/control","projectId":"p1"},
+            {"key":"bad","name":"Bad","controlUrl":"ws://m/control"}
+        ]"#;
+        let apps = parse_session_apps(Some(json), None, "p1").expect("ok");
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].key, "ok");
+    }
+
+    #[test]
+    fn parse_session_apps_errors_on_malformed_json() {
+        let err = parse_session_apps(Some("not json"), None, "p1").unwrap_err();
+        assert!(err.contains("MANAGER_CONTROL_APPS"));
+    }
+
+    #[test]
+    fn default_and_find_app() {
+        let apps = parse_session_apps(
+            Some(r#"[{"key":"a","name":"A","controlUrl":"u","projectId":"p"}]"#), None, "x",
+        ).expect("ok");
+        assert_eq!(default_app(&apps).unwrap().key, "a");
+        assert_eq!(find_app(&apps, "a").unwrap().key, "a");
+        assert!(find_app(&apps, "nope").is_none());
+        assert!(default_app(&[]).is_none());
     }
 }
