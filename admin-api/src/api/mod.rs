@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/org/policies/lockout", get(get_lockout_policy))
         .route("/api/status", get(status))
         .route("/api/chat-sessions", get(chat_sessions))
+        .route("/api/session-apps", get(session_apps))
         .route("/api/usage", get(usage))
         .route("/api/usage-daily", get(usage_daily))
         .route("/api/signins", get(list_signins))
@@ -230,9 +231,20 @@ async fn status(
 /// Active chat sessions via the manager's /control (read-only "list" +
 /// "instances"). Capability-gated on MANAGER_CONTROL_URL; each reply degrades
 /// independently so one failing backend never blanks the panel.
-async fn chat_sessions(_op: Operator, State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let Some(app) = crate::config::default_app(&st.cfg.session_apps) else {
-        return Ok(Json(json!({ "configured": false })));
+#[derive(Deserialize)]
+struct ChatSessionsQuery { app: Option<String> }
+
+async fn chat_sessions(_op: Operator, State(st): State<AppState>, Query(qp): Query<ChatSessionsQuery>)
+    -> Result<Json<Value>, ApiError> {
+    let app = match qp.app.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(key) => match crate::config::find_app(&st.cfg.session_apps, key) {
+            Some(a) => a,
+            None => return Err(ApiError::BadRequest(format!("unknown application: {key}"))),
+        },
+        None => match crate::config::default_app(&st.cfg.session_apps) {
+            Some(a) => a,
+            None => return Ok(Json(json!({ "configured": false }))),
+        },
     };
     let token = st.zitadel.mint_chat_token(&app.project_id).await?;
     let list = crate::manager::control_query(&app.control_url, &token, "list")
@@ -246,6 +258,19 @@ async fn chat_sessions(_op: Operator, State(st): State<AppState>) -> Result<Json
         .await
         .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
     Ok(Json(crate::manager::combine_control_replies(list, instances, clients)))
+}
+
+/// PURE: display-ready app list for the Sessions picker — only key + name leave
+/// the server (control URLs / project ids stay internal).
+fn session_apps_json(apps: &[crate::config::SessionApp]) -> Value {
+    json!({
+        "apps": apps.iter().map(|a| json!({ "key": a.key, "name": a.name })).collect::<Vec<_>>(),
+    })
+}
+
+/// The chat-capable applications for the Sessions page picker.
+async fn session_apps(_op: Operator, State(st): State<AppState>) -> Json<Value> {
+    Json(session_apps_json(&st.cfg.session_apps))
 }
 
 /// Per-user token usage from the manager's /control "usage" (chat.admin-gated).
@@ -759,6 +784,23 @@ mod contract_tests {
         let v = capabilities_json(false);
         assert_eq!(v.get("events").and_then(Value::as_bool), Some(false));
         assert_eq!(capabilities_json(true).get("events").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
+    fn session_apps_json_exposes_only_key_and_name() {
+        let apps = vec![
+            crate::config::SessionApp {
+                key: "llm-chat".into(), name: "llm-chat".into(),
+                control_url: "ws://secret/control".into(), project_id: "p1".into(),
+            },
+        ];
+        let v = session_apps_json(&apps);
+        assert_eq!(v["apps"][0]["key"], "llm-chat");
+        assert_eq!(v["apps"][0]["name"], "llm-chat");
+        // control_url / project_id must NOT leak to the client.
+        assert!(v["apps"][0].get("controlUrl").is_none());
+        assert!(v["apps"][0].get("projectId").is_none());
+        assert!(v["apps"][0].get("control_url").is_none());
     }
 
     #[test]
