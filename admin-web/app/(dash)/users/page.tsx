@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { GroupingState, VisibilityState } from "@tanstack/react-table";
 import { DataTable, TableColumnsToggle, TableDensityToggle, TableFilterToggle, TableGroupToggle } from "@/components/ui/data-table";
@@ -14,7 +14,6 @@ import { GrantsDialog } from "@/components/users/grants-dialog";
 import { AccessDialog } from "@/components/users/access-dialog";
 import { KeysDialog } from "@/components/users/keys-dialog";
 import { UsageTrend } from "@/components/users/usage-trend";
-import { UsersFilterPanel, type UsersCategory } from "@/components/users/UsersFilterPanel";
 import { DetailPanel, PanelField, PanelSection } from "@/components/ui/detail-panel";
 import { SandboxTree } from "@/components/users/sandbox-tree";
 import { buildTree } from "@/lib/sandbox-tree";
@@ -22,14 +21,13 @@ import { Badge } from "@/components/ui/badge";
 import { api, ApiError } from "@/lib/api";
 import { useFilterOpen } from "@/lib/use-filter-open";
 import type {
-  AppProjectList, ChatClient, ChatSessions, GrantList, Role, RoleList,
+  AppProjectList, ChatClient, ChatSessions, GrantList,
   SigninList, User, UserList, UsageRow, UsageResponse, DailyRow, UsageDailyResponse,
   SandboxFiles,
 } from "@/lib/types";
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
-  const [roles, setRoles] = useState<Role[]>([]);
   // userId -> the user's access grouped per application ({ app name, role
   // keys }). A user absent from the map had its grants fetch fail (cell shows
   // "—"). Grouping is preserved (not flattened) so the column can show which
@@ -44,8 +42,6 @@ export default function UsersPage() {
   const [keysTarget, setKeysTarget] = useState<User | null>(null);
   const [selected, setSelected] = useState<User | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [active, setActive] = useState<UsersCategory>("all");
-  const [panelQuery, setPanelQuery] = useState("");
   const [filterOpen, setFilterOpen] = useFilterOpen();
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [density, setDensity] = useTableDensity();
@@ -106,13 +102,6 @@ export default function UsersPage() {
       if (!(e instanceof ApiError && e.status === 401)) {
         toast.error("Failed to load users");
       }
-    }
-    // Role list for the left panel's BY ROLE section (best-effort).
-    try {
-      const rl = await api.get<RoleList>("/api/roles");
-      setRoles(rl.result ?? []);
-    } catch {
-      setRoles([]);
     }
     // Resolve projectId -> application name (best-effort): used to label each
     // app group in the grants column. An unknown id falls back to the raw id.
@@ -255,60 +244,6 @@ export default function UsersPage() {
     usageByUser,
   );
 
-  // Flat set of role keys per user, derived from the grouped access structure
-  // (across all apps). Backs the BY ROLE counts + the role category filter,
-  // which are app-agnostic.
-  const flatKeysByUser = useMemo(() => {
-    const m = new Map<string, Set<string>>();
-    for (const [uid, access] of rolesByUser) {
-      const set = new Set<string>();
-      for (const a of access) for (const k of a.roleKeys) set.add(k);
-      m.set(uid, set);
-    }
-    return m;
-  }, [rolesByUser]);
-
-  // Left-panel counts (all REAL, from live data). Per-role count = number of
-  // users whose grant role keys (across any app) include that role.
-  const counts = useMemo(() => {
-    const byRole = new Map<string, number>();
-    for (const r of roles) {
-      let n = 0;
-      for (const u of users) {
-        if (flatKeysByUser.get(u.id)?.has(r.key)) n++;
-      }
-      byRole.set(r.key, n);
-    }
-    return {
-      all: users.length,
-      humans: users.filter((u) => u.kind === "Human").length,
-      machines: users.filter((u) => u.kind === "Machine").length,
-      locked: users.filter((u) => u.state === "LOCKED").length,
-      byRole,
-    };
-  }, [users, roles, flatKeysByUser]);
-
-  // Apply the active category + the panel's free-text filter to the rows handed
-  // to the DataTable (the DataTable's own field filters still layer on top).
-  const visibleUsers = useMemo(() => {
-    const q = panelQuery.trim().toLowerCase();
-    return users.filter((u) => {
-      let inCat = true;
-      if (active === "humans") inCat = u.kind === "Human";
-      else if (active === "machines") inCat = u.kind === "Machine";
-      else if (active === "locked") inCat = u.state === "LOCKED";
-      else if (active.startsWith("role:")) {
-        const key = active.slice("role:".length);
-        inCat = flatKeysByUser.get(u.id)?.has(key) ?? false;
-      }
-      if (!inCat) return false;
-      if (!q) return true;
-      return (
-        u.userName.toLowerCase().includes(q) ||
-        (u.email ?? "").toLowerCase().includes(q)
-      );
-    });
-  }, [users, active, panelQuery, flatKeysByUser]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 px-6 py-6">
@@ -328,18 +263,9 @@ export default function UsersPage() {
         }
       />
       <div className="flex min-h-0 flex-1 gap-4">
-        <UsersFilterPanel
-          query={panelQuery}
-          onQueryChange={setPanelQuery}
-          active={active}
-          onActive={setActive}
-          counts={counts}
-          roles={roles}
-          onCreate={() => setCreateOpen(true)}
-        />
         <div className="flex min-w-0 flex-1 flex-col gap-4">
           <div className="min-h-0 flex-1">
-          <DataTable columns={columns} data={visibleUsers}
+          <DataTable columns={columns} data={users}
             filterFields={[
               { column: "userName", label: "Username", placeholder: "Search username…" },
               { column: "kind", label: "Type", options: [
