@@ -133,7 +133,9 @@ struct OwnDaily {
 
 /// PURE: the `/chat` "usage" reply for ONE authenticated user — own lifetime
 /// totals plus a per-day breakdown (the manager passes the last 7 days).
-fn compose_own_usage_reply(user_id: &str, total: &OwnUsage, daily: &[OwnDaily]) -> serde_json::Value {
+/// `user_name` is the server-resolved display label (falls back to the id), so
+/// the client shows a friendly name like `/status` does — never the bare id.
+fn compose_own_usage_reply(user_id: &str, user_name: &str, total: &OwnUsage, daily: &[OwnDaily]) -> serde_json::Value {
     let days: Vec<serde_json::Value> = daily.iter().map(|d| serde_json::json!({
         "day": d.day, "requests": d.requests,
         "charsIn": d.chars_in, "charsOut": d.chars_out,
@@ -142,6 +144,7 @@ fn compose_own_usage_reply(user_id: &str, total: &OwnUsage, daily: &[OwnDaily]) 
     serde_json::json!({
         "type": "usage",
         "userId": user_id,
+        "userName": user_name,
         "requests": total.requests,
         "charsIn": total.chars_in,
         "charsOut": total.chars_out,
@@ -1510,7 +1513,20 @@ async fn handle_client(
         };
         return handle_identity(ws, state, uid, roles, captured_email, token).await;
     }
-    // Not /identity → do not retain the user's access token.
+    if req_path == "/chat" {
+        // /chat accepts optional `?cwd=` (working dir) and `?rich=` (mode). The
+        // user's token is used ONCE at session open to resolve the display name
+        // for the /usage reply, then dropped — same transient posture as
+        // /identity (no session-long retention).
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
+        let cwd = parse_query_param(&req_query, "cwd");
+        let rich = parse_query_param(&req_query, "rich");
+        return handle_chat(ws, state, uid, cwd, rich, captured_token, captured_email).await;
+    }
+    // Remaining paths don't need the user's access token.
     drop(captured_token);
     drop(captured_email);
 
@@ -1527,18 +1543,6 @@ async fn handle_client(
             return reject_forbidden(ws, "control requires the chat.admin role").await;
         }
         return handle_control(ws, state, uid).await;
-    }
-    if req_path == "/chat" {
-        // /chat accepts an optional `?cwd=<urlencoded-path>` so the client
-        // can ask claude to run in a specific directory. The worker
-        // canonicalizes and trust-marks the path before spawn.
-        let uid = match user_id {
-            Some(u) => u,
-            None => return reject_no_user(ws).await,
-        };
-        let cwd = parse_query_param(&req_query, "cwd");
-        let rich = parse_query_param(&req_query, "rich");
-        return handle_chat(ws, state, uid, cwd, rich).await;
     }
     if req_path == "/s/new" {
         let uid = match user_id {
@@ -1599,7 +1603,11 @@ async fn resolve_user_label(
     sub: &str,
 ) -> String {
     let url = format!("{}/oidc/v1/userinfo", issuer);
-    match http.get(&url).bearer_auth(access_token).send().await {
+    let req = http
+        .get(&url)
+        .bearer_auth(access_token)
+        .timeout(std::time::Duration::from_secs(5));
+    match req.send().await {
         Ok(resp) => match resp.json::<serde_json::Value>().await {
             Ok(v) => user_label_from_userinfo(&v, email_fallback, sub),
             Err(_) => email_fallback.unwrap_or(sub).to_string(),
@@ -2369,9 +2377,29 @@ async fn handle_chat(
     user_id: String,
     cwd: Option<String>,
     rich: Option<String>,
+    user_token: Option<String>,
+    user_email: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Duration;
     use tokio::sync::mpsc;
+
+    // Resolve the caller's display name ONCE, up front, via their own /userinfo
+    // (best-effort, 5s timeout; falls back to the verified-JWT email then the
+    // sub). Used to label the /usage reply with a friendly name like /status —
+    // never the bare id. The token is used only here, then dropped.
+    let user_name = {
+        let (http, issuer) = {
+            let st = state.lock().await;
+            (st.http.clone(), st.issuer.clone())
+        };
+        match (user_token.as_deref(), issuer.as_deref()) {
+            (Some(tok), Some(iss)) => {
+                resolve_user_label(&http, iss, tok, user_email.as_deref(), &user_id).await
+            }
+            _ => user_id.clone(),
+        }
+    };
+    drop(user_token);
 
     // 1. Spawn a fresh session in the least-loaded backend. If the client
     //    asked for a specific working directory via `?cwd=…`, the worker
@@ -2507,6 +2535,7 @@ async fn handle_chat(
     let answer_tx_for_in = answer_tx.clone();
     let state_for_in = state.clone();
     let user_id_for_in = user_id.clone();
+    let user_name_for_in = user_name.clone();
     let reader = tokio::spawn(async move {
         while let Some(msg) = ws_stream.next().await {
             let text = match msg {
@@ -2564,7 +2593,7 @@ async fn handle_chat(
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
                 let reply = match db_for_in.usage_for(&user_id_for_in).await {
                     Ok(total) => match db_for_in.usage_daily_for(&user_id_for_in, &cutoff).await {
-                        Ok(daily) => compose_own_usage_reply(&user_id_for_in, &total, &daily),
+                        Ok(daily) => compose_own_usage_reply(&user_id_for_in, &user_name_for_in, &total, &daily),
                         Err(e) => serde_json::json!({"type":"err",
                             "text":format!("usage daily query failed: {e}"),
                             "timeIn":time_in,"timeOut":now_iso()}),
@@ -3150,9 +3179,10 @@ mod tests {
             day: "2026-06-26".into(), requests: 12, chars_in: 3456,
             chars_out: 12345, files: 1, file_bytes: 256000,
         }];
-        let v = compose_own_usage_reply("u-9", &total, &daily);
+        let v = compose_own_usage_reply("u-9", "Jane Doe", &total, &daily);
         assert_eq!(v["type"], "usage");
         assert_eq!(v["userId"], "u-9");
+        assert_eq!(v["userName"], "Jane Doe");
         assert_eq!(v["requests"], 42);
         assert_eq!(v["charsIn"], 12345);
         assert_eq!(v["charsOut"], 67890);

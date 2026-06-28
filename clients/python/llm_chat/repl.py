@@ -146,7 +146,8 @@ def _as_int(obj: dict, k: str) -> int:
 def format_usage(reply: dict) -> str:
     """PURE: render the /usage block from the manager's `usage` reply. Matches
     the Rust client's layout — keep the two in sync."""
-    user = reply.get("userId") or "—"
+    # Prefer the server-resolved display name (like /status); fall back to the id.
+    user = reply.get("userName") or reply.get("userId") or "—"
     last = reply.get("lastUsed") or "—"
     lines = [
         "─ usage ─────────────────────────────────────",

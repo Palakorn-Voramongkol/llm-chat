@@ -44,14 +44,15 @@ def test_human_bytes_scales():
 
 def test_format_usage_totals_and_daily():
     reply = {
-        "type": "usage", "userId": "u9", "requests": 42,
+        "type": "usage", "userId": "u9", "userName": "Jane Doe", "requests": 42,
         "charsIn": 12345, "charsOut": 67890, "files": 3, "fileBytes": 1048576,
         "lastUsed": "2026-06-26T17:30:00.000Z",
         "daily": [{"day": "2026-06-26", "requests": 12, "charsIn": 3456,
                    "charsOut": 12345, "files": 1, "fileBytes": 262144}],
     }
     s = format_usage(reply)
-    assert "user       u9" in s
+    assert "user       Jane Doe" in s  # server-resolved name, not the id
+    assert "user       u9" not in s
     assert "requests   42" in s
     assert "chars in   12,345" in s
     assert "files      3 · 1.0 MB" in s

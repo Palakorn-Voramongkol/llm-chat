@@ -70,7 +70,12 @@ fn human_bytes(n: i64) -> String {
 /// Python client's layout — keep the two in sync.
 fn format_usage(reply: &serde_json::Value) -> String {
     let g = |k: &str| reply.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
-    let user = reply.get("userId").and_then(|v| v.as_str()).unwrap_or("—");
+    // Prefer the server-resolved display name (like /status); fall back to the id.
+    let user = reply
+        .get("userName")
+        .and_then(|v| v.as_str())
+        .or_else(|| reply.get("userId").and_then(|v| v.as_str()))
+        .unwrap_or("—");
     let last = reply.get("lastUsed").and_then(|v| v.as_str()).unwrap_or("—");
     let mut s = format!(
         "─ usage ─────────────────────────────────────\n\
@@ -446,13 +451,14 @@ mod tests {
     #[test]
     fn format_usage_totals_and_daily() {
         let reply = serde_json::json!({
-            "type": "usage", "userId": "u9", "requests": 42,
+            "type": "usage", "userId": "u9", "userName": "Jane Doe", "requests": 42,
             "charsIn": 12345, "charsOut": 67890, "files": 3, "fileBytes": 1048576,
             "lastUsed": "2026-06-26T17:30:00.000Z",
             "daily": [{"day":"2026-06-26","requests":12,"charsIn":3456,"charsOut":12345,"files":1,"fileBytes":262144}],
         });
         let s = format_usage(&reply);
-        assert!(s.contains("user       u9"));
+        assert!(s.contains("user       Jane Doe")); // server-resolved name, not the id
+        assert!(!s.contains("user       u9"));
         assert!(s.contains("requests   42"));
         assert!(s.contains("chars in   12,345"));
         assert!(s.contains("files      3 · 1.0 MB"));
