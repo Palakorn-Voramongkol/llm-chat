@@ -306,6 +306,15 @@ enum ChatDb {
     Postgres(PgPool),
 }
 
+/// A stored sandbox-template row (Sub-project 2 added version + migrate_instructions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateRecord {
+    template_json: String,
+    version: i64,
+    migrate_instructions: Option<String>,
+    updated_at: String,
+}
+
 impl ChatDb {
     fn dialect(&self) -> &'static str {
         match self {
@@ -314,26 +323,32 @@ impl ChatDb {
         }
     }
 
-    /// The stored sandbox-template JSON for an app code, or None.
-    pub async fn get_template(&self, app_code: &str) -> Result<Option<String>, sqlx::Error> {
+    /// The stored sandbox-template row for an app code, or None.
+    pub async fn get_template(&self, app_code: &str) -> Result<Option<TemplateRecord>, sqlx::Error> {
         match self {
             ChatDb::Sqlite(p) => {
-                let row: Option<(String,)> = sqlx::query_as(
-                    "SELECT template_json FROM app_sandbox_template WHERE app_code = ?",
+                let row: Option<(String, i64, Option<String>, String)> = sqlx::query_as(
+                    "SELECT template_json, version, migrate_instructions, updated_at
+                     FROM app_sandbox_template WHERE app_code = ?",
                 )
                 .bind(app_code)
                 .fetch_optional(p)
                 .await?;
-                Ok(row.map(|r| r.0))
+                Ok(row.map(|r| TemplateRecord {
+                    template_json: r.0, version: r.1, migrate_instructions: r.2, updated_at: r.3,
+                }))
             }
             ChatDb::Postgres(p) => {
-                let row: Option<(String,)> = sqlx::query_as(
-                    "SELECT template_json FROM app_sandbox_template WHERE app_code = $1",
+                let row: Option<(String, i64, Option<String>, String)> = sqlx::query_as(
+                    "SELECT template_json, version, migrate_instructions, updated_at
+                     FROM app_sandbox_template WHERE app_code = $1",
                 )
                 .bind(app_code)
                 .fetch_optional(p)
                 .await?;
-                Ok(row.map(|r| r.0))
+                Ok(row.map(|r| TemplateRecord {
+                    template_json: r.0, version: r.1, migrate_instructions: r.2, updated_at: r.3,
+                }))
             }
         }
     }
@@ -343,34 +358,34 @@ impl ChatDb {
         &self,
         app_code: &str,
         template_json: &str,
+        version: i64,
+        migrate_instructions: Option<&str>,
         updated_at: &str,
     ) -> Result<(), sqlx::Error> {
         match self {
             ChatDb::Sqlite(p) => {
                 sqlx::query(
-                    "INSERT INTO app_sandbox_template (app_code, template_json, updated_at)
-                     VALUES (?, ?, ?)
+                    "INSERT INTO app_sandbox_template (app_code, template_json, version, migrate_instructions, updated_at)
+                     VALUES (?, ?, ?, ?, ?)
                      ON CONFLICT(app_code) DO UPDATE SET template_json = excluded.template_json,
+                       version = excluded.version, migrate_instructions = excluded.migrate_instructions,
                        updated_at = excluded.updated_at",
                 )
-                .bind(app_code)
-                .bind(template_json)
-                .bind(updated_at)
-                .execute(p)
-                .await?;
+                .bind(app_code).bind(template_json).bind(version)
+                .bind(migrate_instructions).bind(updated_at)
+                .execute(p).await?;
             }
             ChatDb::Postgres(p) => {
                 sqlx::query(
-                    "INSERT INTO app_sandbox_template (app_code, template_json, updated_at)
-                     VALUES ($1, $2, $3)
+                    "INSERT INTO app_sandbox_template (app_code, template_json, version, migrate_instructions, updated_at)
+                     VALUES ($1, $2, $3, $4, $5)
                      ON CONFLICT (app_code) DO UPDATE SET template_json = EXCLUDED.template_json,
+                       version = EXCLUDED.version, migrate_instructions = EXCLUDED.migrate_instructions,
                        updated_at = EXCLUDED.updated_at",
                 )
-                .bind(app_code)
-                .bind(template_json)
-                .bind(updated_at)
-                .execute(p)
-                .await?;
+                .bind(app_code).bind(template_json).bind(version)
+                .bind(migrate_instructions).bind(updated_at)
+                .execute(p).await?;
             }
         }
         Ok(())
@@ -748,11 +763,21 @@ async fn init_schema_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         "CREATE TABLE IF NOT EXISTS app_sandbox_template (
             app_code TEXT PRIMARY KEY,
             template_json TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            migrate_instructions TEXT,
             updated_at TEXT NOT NULL
         );",
     )
     .execute(pool)
     .await?;
+    // Older DBs predate version/migrate_instructions — add them idempotently
+    // (SQLite has no ADD COLUMN IF NOT EXISTS; ignore the duplicate-column error).
+    let _ = sqlx::query("ALTER TABLE app_sandbox_template ADD COLUMN version INTEGER NOT NULL DEFAULT 1;")
+        .execute(pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE app_sandbox_template ADD COLUMN migrate_instructions TEXT;")
+        .execute(pool)
+        .await;
     Ok(())
 }
 
@@ -806,11 +831,19 @@ async fn init_schema_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
         "CREATE TABLE IF NOT EXISTS app_sandbox_template (
             app_code TEXT PRIMARY KEY,
             template_json TEXT NOT NULL,
+            version BIGINT NOT NULL DEFAULT 1,
+            migrate_instructions TEXT,
             updated_at TEXT NOT NULL
         );",
     )
     .execute(pool)
     .await?;
+    sqlx::query("ALTER TABLE app_sandbox_template ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1;")
+        .execute(pool)
+        .await?;
+    sqlx::query("ALTER TABLE app_sandbox_template ADD COLUMN IF NOT EXISTS migrate_instructions TEXT;")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -1364,7 +1397,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match chat_db.get_template("kabytech").await {
         Ok(None) => {
             let now = now_iso();
-            if let Err(e) = chat_db.upsert_template("kabytech", KABYTECH_DEFAULT_TEMPLATE, &now).await {
+            if let Err(e) = chat_db
+                .upsert_template("kabytech", KABYTECH_DEFAULT_TEMPLATE, 1, None, &now)
+                .await
+            {
                 tracing::warn!(target: "manager", error = %e, "seeding kabytech template failed");
             } else {
                 tracing::info!(target: "manager", "seeded default kabytech sandbox template");
@@ -1885,8 +1921,8 @@ async fn handle_provision(
         (st.http.clone(), st.issuer.clone(), st.chat_db.clone(), st.instance_ports.first().copied())
     };
 
-    let raw = match db.get_template(&app).await {
-        Ok(Some(j)) => j,
+    let rec = match db.get_template(&app).await {
+        Ok(Some(r)) => r,
         Ok(None) => {
             let _ = sink.send(Message::Text(
                 serde_json::json!({"type":"provision","ok":true,"provisioned":false}).to_string())).await;
@@ -1898,6 +1934,7 @@ async fn handle_provision(
             return Ok(());
         }
     };
+    let raw = rec.template_json.clone();
     let entries = match parse_template(&raw) {
         Ok(t) => t,
         Err(e) => {
@@ -3883,9 +3920,15 @@ mod template_tests {
         init_schema_sqlite(&pool).await.unwrap();
         let db = ChatDb::Sqlite(pool);
         assert!(db.get_template("kabytech").await.unwrap().is_none());
-        db.upsert_template("kabytech", "[]", "2026-06-29T00:00:00Z").await.unwrap();
-        assert_eq!(db.get_template("kabytech").await.unwrap().as_deref(), Some("[]"));
-        db.upsert_template("kabytech", "[{\"path\":\"x\",\"dir\":true,\"content\":\"\"}]", "t2").await.unwrap();
-        assert!(db.get_template("kabytech").await.unwrap().unwrap().contains("\"x\""));
+        db.upsert_template("kabytech", "[]", 1, None, "2026-06-29T00:00:00Z").await.unwrap();
+        let rec = db.get_template("kabytech").await.unwrap().unwrap();
+        assert_eq!(rec.template_json, "[]");
+        assert_eq!(rec.version, 1);
+        assert_eq!(rec.migrate_instructions, None);
+        db.upsert_template("kabytech", "[{\"path\":\"x\",\"dir\":true,\"content\":\"\"}]", 2, Some("move things"), "t2").await.unwrap();
+        let rec = db.get_template("kabytech").await.unwrap().unwrap();
+        assert!(rec.template_json.contains("\"x\""));
+        assert_eq!(rec.version, 2);
+        assert_eq!(rec.migrate_instructions.as_deref(), Some("move things"));
     }
 }
