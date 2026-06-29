@@ -1358,15 +1358,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "chat queue DB opened"
     );
 
-    // Seed the default kabytech sandbox template once (no-op if a row exists, so
-    // a later Console edit survives restarts). Sub-project 1 has no editor yet.
-    if chat_db.get_template("kabytech").await.ok().flatten().is_none() {
-        let now = now_iso();
-        if let Err(e) = chat_db.upsert_template("kabytech", KABYTECH_DEFAULT_TEMPLATE, &now).await {
-            tracing::warn!(target: "manager", error = %e, "seeding kabytech template failed");
-        } else {
-            tracing::info!(target: "manager", "seeded default kabytech sandbox template");
+    // Seed the default kabytech sandbox template once. NEVER overwrite an
+    // existing row (a later Console edit must survive restarts), and on a
+    // transient read error SKIP the seed rather than risk clobbering.
+    match chat_db.get_template("kabytech").await {
+        Ok(None) => {
+            let now = now_iso();
+            if let Err(e) = chat_db.upsert_template("kabytech", KABYTECH_DEFAULT_TEMPLATE, &now).await {
+                tracing::warn!(target: "manager", error = %e, "seeding kabytech template failed");
+            } else {
+                tracing::info!(target: "manager", "seeded default kabytech sandbox template");
+            }
         }
+        Ok(Some(_)) => {} // already configured — leave it (Console edits survive)
+        Err(e) => tracing::warn!(target: "manager", error = %e, "template seed check failed; skipping seed"),
     }
 
     // Zitadel JWT auth — optional. If ZITADEL_ISSUER is unset, fall back to the
