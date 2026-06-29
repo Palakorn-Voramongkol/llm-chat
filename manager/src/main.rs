@@ -1904,6 +1904,26 @@ async fn handle_identity(
 
 // ---------- /provision ----------
 
+/// PURE: assemble the worker `provision-app-box` request. `files` are the
+/// already-variable-substituted entries. `migrate_instructions` are operator
+/// prose (NOT variable-substituted) used only when the worker must migrate.
+fn build_provision_request(
+    user_id: &str,
+    app: &str,
+    version: i64,
+    files: Vec<serde_json::Value>,
+    migrate_instructions: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "cmd": "provision-app-box",
+        "userId": user_id,
+        "app": app,
+        "version": version,
+        "files": files,
+        "migrateInstructions": migrate_instructions,
+    })
+}
+
 /// Materialize the caller's app sandbox template into their confined box. Loads
 /// the app's template from the store, substitutes the per-user variables, and
 /// hands the files to a worker (the sole box owner). Self-scoped: userId comes
@@ -1987,9 +2007,11 @@ async fn handle_provision(
             serde_json::json!({"type":"err","text":"no worker available"}).to_string())).await;
         return Ok(());
     };
-    let reply = call_backend(port, serde_json::json!({
-        "cmd": "provision-app-box", "userId": user_id, "app": app, "files": files,
-    })).await;
+    let reply = call_backend(
+        port,
+        build_provision_request(&user_id, &app, rec.version, files, rec.migrate_instructions.as_deref()),
+    )
+    .await;
     match reply {
         Ok(r) if r.get("ok").and_then(|x| x.as_bool()) == Some(true) => {
             let _ = sink.send(Message::Text(
@@ -3961,6 +3983,20 @@ mod identity_tests {
 #[cfg(test)]
 mod template_tests {
     use super::*;
+
+    #[test]
+    fn build_provision_request_shape() {
+        let files = vec![serde_json::json!({"path":"README.md","dir":false,"content":"hi"})];
+        let v = build_provision_request("u1", "kabytech", 3, files, Some("do the move"));
+        assert_eq!(v["cmd"], "provision-app-box");
+        assert_eq!(v["userId"], "u1");
+        assert_eq!(v["app"], "kabytech");
+        assert_eq!(v["version"], 3);
+        assert_eq!(v["files"][0]["path"], "README.md");
+        assert_eq!(v["migrateInstructions"], "do the move");
+        let v2 = build_provision_request("u1", "kabytech", 1, vec![], None);
+        assert!(v2["migrateInstructions"].is_null());
+    }
 
     #[test]
     fn resolve_set_rules() {
