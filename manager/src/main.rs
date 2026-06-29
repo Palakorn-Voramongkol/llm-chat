@@ -1358,6 +1358,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "chat queue DB opened"
     );
 
+    // Seed the default kabytech sandbox template once (no-op if a row exists, so
+    // a later Console edit survives restarts). Sub-project 1 has no editor yet.
+    if chat_db.get_template("kabytech").await.ok().flatten().is_none() {
+        let now = now_iso();
+        if let Err(e) = chat_db.upsert_template("kabytech", KABYTECH_DEFAULT_TEMPLATE, &now).await {
+            tracing::warn!(target: "manager", error = %e, "seeding kabytech template failed");
+        } else {
+            tracing::info!(target: "manager", "seeded default kabytech sandbox template");
+        }
+    }
+
     // Zitadel JWT auth — optional. If ZITADEL_ISSUER is unset, fall back to the
     // legacy shared-token check (handle_client decides based on `jwks`).
     // Captured from ZitadelConfig before it's consumed by JwksCache::new, so
@@ -1649,6 +1660,20 @@ async fn handle_client(
         let rich = parse_query_param(&req_query, "rich");
         return handle_chat(ws, state, uid, cwd, rich, captured_token, captured_email).await;
     }
+    if req_path == "/provision" {
+        // Materialize the caller's app sandbox template. chat.user-gated; userId
+        // from the verified token; self-scoped. Uses the user's own token only
+        // for their /userinfo (name), then drops it — same posture as /identity.
+        let uid = match user_id {
+            Some(u) => u,
+            None => return reject_no_user(ws).await,
+        };
+        let token = match captured_token {
+            Some(t) => t,
+            None => return reject_no_user(ws).await,
+        };
+        return handle_provision(ws, state, uid, captured_email, token).await;
+    }
     // Remaining paths don't need the user's access token.
     drop(captured_token);
     drop(captured_email);
@@ -1810,6 +1835,111 @@ async fn handle_identity(
     };
 
     let _ = sink.send(Message::Text(reply.to_string())).await;
+    let _ = sink.send(Message::Close(None)).await;
+    Ok(())
+}
+
+// ---------- /provision ----------
+
+/// Materialize the caller's app sandbox template into their confined box. Loads
+/// the app's template from the store, substitutes the per-user variables, and
+/// hands the files to a worker (the sole box owner). Self-scoped: userId comes
+/// from the verified token. No-op (ok) when the app has no template.
+async fn handle_provision(
+    ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    state: SharedState,
+    user_id: String,
+    email: Option<String>,
+    token: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::time::Duration;
+    let (mut sink, mut stream) = ws.split();
+
+    let text = match tokio::time::timeout(Duration::from_secs(30), stream.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) => t,
+        Ok(Some(Ok(Message::Binary(b)))) => String::from_utf8_lossy(&b).into_owned(),
+        _ => return Ok(()),
+    };
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = sink.send(Message::Text(
+                serde_json::json!({"type":"err","text":format!("bad JSON: {e}")}).to_string())).await;
+            return Ok(());
+        }
+    };
+    let app = v.get("app").and_then(|t| t.as_str()).unwrap_or("").to_string();
+    if app.is_empty() {
+        let _ = sink.send(Message::Text(
+            serde_json::json!({"type":"err","text":"missing app"}).to_string())).await;
+        return Ok(());
+    }
+
+    let (http, issuer, db, port) = {
+        let st = state.lock().await;
+        (st.http.clone(), st.issuer.clone(), st.chat_db.clone(), st.instance_ports.first().copied())
+    };
+
+    let raw = match db.get_template(&app).await {
+        Ok(Some(j)) => j,
+        Ok(None) => {
+            let _ = sink.send(Message::Text(
+                serde_json::json!({"type":"provision","ok":true,"provisioned":false}).to_string())).await;
+            return Ok(());
+        }
+        Err(e) => {
+            let _ = sink.send(Message::Text(
+                serde_json::json!({"type":"err","text":format!("template load: {e}")}).to_string())).await;
+            return Ok(());
+        }
+    };
+    let entries = match parse_template(&raw) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = sink.send(Message::Text(
+                serde_json::json!({"type":"err","text":format!("template parse: {e}")}).to_string())).await;
+            return Ok(());
+        }
+    };
+
+    let name = match issuer.as_deref() {
+        Some(iss) => resolve_user_label(&http, iss, &token, email.as_deref(), &user_id).await,
+        None => user_id.clone(),
+    };
+    let vars = TemplateVars {
+        name,
+        user_id: user_id.clone(),
+        app: app.clone(),
+        date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+    };
+    let files: Vec<serde_json::Value> = entries.iter().map(|e| serde_json::json!({
+        "path": e.path,
+        "dir": e.dir,
+        "content": substitute_vars(&e.content, &vars),
+    })).collect();
+
+    let Some(port) = port else {
+        let _ = sink.send(Message::Text(
+            serde_json::json!({"type":"err","text":"no worker available"}).to_string())).await;
+        return Ok(());
+    };
+    let reply = call_backend(port, serde_json::json!({
+        "cmd": "provision-app-box", "userId": user_id, "app": app, "files": files,
+    })).await;
+    match reply {
+        Ok(r) if r.get("ok").and_then(|x| x.as_bool()) == Some(true) => {
+            let _ = sink.send(Message::Text(
+                serde_json::json!({"type":"provision","ok":true,"provisioned":true}).to_string())).await;
+        }
+        Ok(r) => {
+            let _ = sink.send(Message::Text(serde_json::json!({"type":"err",
+                "text": format!("provision: {}", r.get("error").and_then(|x| x.as_str()).unwrap_or("rejected"))}).to_string())).await;
+        }
+        Err(e) => {
+            let _ = sink.send(Message::Text(
+                serde_json::json!({"type":"err","text":format!("worker: {e}")}).to_string())).await;
+        }
+    }
     let _ = sink.send(Message::Close(None)).await;
     Ok(())
 }
