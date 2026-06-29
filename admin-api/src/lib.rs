@@ -15,4 +15,7 @@ pub struct AppState {
     pub jwks: zitadel_auth::JwksCache,
     pub zitadel: Arc<zitadel::ZitadelClient>,
     pub http: reqwest::Client,
+    /// app-code → OIDC-client/project registry (from secrets/app_codes.json).
+    /// Empty when the feature is unconfigured. Drives the sandbox-template editor.
+    pub app_codes: Arc<Vec<config::AppCodeEntry>>,
 }

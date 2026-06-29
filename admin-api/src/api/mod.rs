@@ -858,7 +858,7 @@ mod contract_tests {
             jwks_uri: format!("{}/oauth/v2/keys", cfg.issuer),
             project_id: cfg.project_id.clone(),
         });
-        let state = crate::AppState { cfg, jwks, zitadel, http };
+        let state = crate::AppState { cfg, jwks, zitadel, http, app_codes: std::sync::Arc::new(vec![]) };
         let session_layer = SessionManagerLayer::new(MemoryStore::default())
             .with_name("id");
         crate::api::router(state).layer(session_layer)

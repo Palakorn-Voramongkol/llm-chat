@@ -93,6 +93,49 @@ pub fn find_app<'a>(apps: &'a [SessionApp], key: &str) -> Option<&'a SessionApp>
     apps.iter().find(|a| a.key == key)
 }
 
+/// One app-code → OIDC-client/project mapping (from secrets/app_codes.json,
+/// written by the provisioner). Ties a sandbox template (keyed by app_code) to
+/// the login client (clientId) operators see on the Application page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppCodeEntry {
+    pub app_code: String,
+    pub name: String,
+    pub client_id: String,
+    pub project_id: String,
+}
+
+/// PURE: parse app_codes.json ({ "<code>": {name, clientId, projectId} }). An
+/// entry missing any field is dropped (never defaulted). Malformed JSON errors.
+pub fn parse_app_codes(json: &str) -> Result<Vec<AppCodeEntry>, String> {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        name: Option<String>,
+        #[serde(rename = "clientId")]
+        client_id: Option<String>,
+        #[serde(rename = "projectId")]
+        project_id: Option<String>,
+    }
+    let map: std::collections::BTreeMap<String, Raw> =
+        serde_json::from_str(json).map_err(|e| format!("app_codes.json is not valid JSON: {e}"))?;
+    let nonempty = |s: Option<String>| s.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+    Ok(map
+        .into_iter()
+        .filter_map(|(code, r)| {
+            Some(AppCodeEntry {
+                app_code: nonempty(Some(code))?,
+                name: nonempty(r.name)?,
+                client_id: nonempty(r.client_id)?,
+                project_id: nonempty(r.project_id)?,
+            })
+        })
+        .collect())
+}
+
+/// Find the entry whose OIDC clientId matches.
+pub fn app_code_for_client<'a>(entries: &'a [AppCodeEntry], client_id: &str) -> Option<&'a AppCodeEntry> {
+    entries.iter().find(|e| e.client_id == client_id)
+}
+
 /// Resolved, validated admin-api configuration. Every field is required —
 /// there is no code default (the manager/worker pattern). `from_env`/`from_map`
 /// fail fast naming the first missing var.
@@ -287,6 +330,39 @@ mod tests {
     fn parse_session_apps_errors_on_malformed_json() {
         let err = parse_session_apps(Some("not json"), None, "p1").unwrap_err();
         assert!(err.contains("MANAGER_CONTROL_APPS"));
+    }
+
+    #[test]
+    fn parse_app_codes_reads_map() {
+        let json = r#"{
+          "kabytech": {"name":"kabytech-gateway","clientId":"111","projectId":"222"}
+        }"#;
+        let v = parse_app_codes(json).expect("ok");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0], AppCodeEntry {
+            app_code: "kabytech".into(), name: "kabytech-gateway".into(),
+            client_id: "111".into(), project_id: "222".into(),
+        });
+        assert_eq!(app_code_for_client(&v, "111").unwrap().app_code, "kabytech");
+        assert!(app_code_for_client(&v, "999").is_none());
+    }
+
+    #[test]
+    fn parse_app_codes_empty_object_ok() {
+        assert_eq!(parse_app_codes("{}").expect("ok"), vec![]);
+    }
+
+    #[test]
+    fn parse_app_codes_errors_on_malformed() {
+        assert!(parse_app_codes("not json").is_err());
+    }
+
+    #[test]
+    fn parse_app_codes_drops_entries_missing_fields() {
+        let json = r#"{"ok":{"name":"n","clientId":"1","projectId":"2"},"bad":{"name":"n","projectId":"2"}}"#;
+        let v = parse_app_codes(json).expect("ok");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].app_code, "ok");
     }
 
     #[test]

@@ -107,11 +107,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
     }
+    // App-code registry (sandbox templates). Optional feature: absent path →
+    // empty registry (editor simply hidden). Set-but-unreadable/malformed →
+    // fail fast (no silent default — Global Constraints / fail-closed).
+    let app_codes = match std::env::var("ADMIN_APP_CODES_PATH").ok().filter(|s| !s.trim().is_empty()) {
+        None => Vec::new(),
+        Some(path) => {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|e| format!("ADMIN_APP_CODES_PATH {path}: {e}"))?;
+            llm_chat_admin_api::config::parse_app_codes(&raw)?
+        }
+    };
+    tracing::info!(target: "admin-api", app_codes = app_codes.len(), "app-code registry loaded");
+
     let state = AppState {
         cfg: cfg.clone(),
         jwks,
         zitadel: zitadel_client,
         http: http.clone(),
+        app_codes: Arc::new(app_codes),
     };
 
     // tower-sessions: in-memory store, SameSite=Lax (same-origin proxy means Lax
