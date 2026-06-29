@@ -61,6 +61,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/projects/{pid}/apps", get(list_project_apps).post(create_project_app))
         .route("/api/projects/{pid}/apps/{appId}", get(get_project_app).put(update_project_app).delete(delete_project_app))
         .route("/api/projects/{pid}/apps/{appId}/secret", post(regenerate_project_app_secret))
+        .route("/api/projects/{pid}/apps/{appId}/sandbox-template", get(get_sandbox_template).put(put_sandbox_template))
         .route("/api/projects/{pid}/grants", get(list_project_grants))
         .route("/api/org/policies/login", get(get_login_policy))
         .route("/api/org/policies/password-complexity", get(get_password_complexity_policy))
@@ -626,6 +627,81 @@ async fn list_project_apps(_op: Operator, State(st): State<AppState>, Path(pid):
     Ok(Json(json!({ "result": annotate_apps(apps, &st.app_codes) })))
 }
 
+/// PURE: pull oidcConfig.clientId from a Zitadel app payload, tolerating the
+/// `{app:{…}}` wrapper the GET endpoint returns and the bare object the list
+/// returns.
+fn extract_client_id(app: &Value) -> Option<String> {
+    let oidc = app.get("app").and_then(|a| a.get("oidcConfig"))
+        .or_else(|| app.get("oidcConfig"))?;
+    oidc.get("clientId").and_then(|c| c.as_str()).map(|s| s.to_string())
+}
+
+/// Resolve (project, appId) → the app_code this login client provisions under.
+/// 404 when the app has no clientId or no sandbox template is configured for it.
+async fn resolve_app_code(st: &AppState, pid: &str, app_id: &str) -> Result<String, ApiError> {
+    let app = st.zitadel.get_app_in(pid, app_id).await?;
+    let client_id = extract_client_id(&app)
+        .ok_or_else(|| ApiError::NotFound("app has no OIDC clientId".into()))?;
+    crate::config::app_code_for_client(&st.app_codes, &client_id)
+        .map(|e| e.app_code.clone())
+        .ok_or_else(|| ApiError::NotFound("no sandbox template configured for this client".into()))
+}
+
+/// GET a login client's sandbox template (version + entries + migration prose)
+/// via the manager's /control. chat.admin-gated; capability-gated on the default
+/// chat app like usage/user_files. clientId → app_code resolved server-side.
+async fn get_sandbox_template(_op: Operator, State(st): State<AppState>, Path((pid, app_id)): Path<(String, String)>)
+    -> Result<Json<Value>, ApiError> {
+    let Some(app) = crate::config::default_app(&st.cfg.session_apps) else {
+        return Ok(Json(json!({ "configured": false })));
+    };
+    let app_code = resolve_app_code(&st, &pid, &app_id).await?;
+    let token = st.zitadel.mint_chat_token(&app.project_id).await?;
+    let reply = crate::manager::control_request(&app.control_url, &token, json!({ "cmd": "get-template", "appCode": app_code }))
+        .await
+        .unwrap_or_else(|e| json!({ "ok": false, "error": e }));
+    Ok(Json(json!({
+        "configured": true,
+        "ok": reply.get("ok").and_then(Value::as_bool).unwrap_or(false),
+        "appCode": app_code,
+        "version": reply.get("version").cloned().unwrap_or(json!(0)),
+        "template": reply.get("template").cloned().unwrap_or_else(|| json!([])),
+        "migrateInstructions": reply.get("migrateInstructions").cloned().unwrap_or(Value::Null),
+        "updatedAt": reply.get("updatedAt").cloned().unwrap_or(Value::Null),
+        "error": reply.get("error").cloned(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct SaveTemplateBody {
+    template: Value,
+    #[serde(default)]
+    publish: bool,
+    #[serde(rename = "migrateInstructions")]
+    migrate_instructions: Option<String>,
+}
+
+/// PUT a login client's sandbox template. The manager computes the version
+/// (publish bumps it + requires instructions). Relayed via /control set-template.
+async fn put_sandbox_template(_op: Operator, State(st): State<AppState>, Path((pid, app_id)): Path<(String, String)>, Json(b): Json<SaveTemplateBody>)
+    -> Result<Json<Value>, ApiError> {
+    let Some(app) = crate::config::default_app(&st.cfg.session_apps) else {
+        return Err(ApiError::BadRequest("chat backend not configured".into()));
+    };
+    let app_code = resolve_app_code(&st, &pid, &app_id).await?;
+    let token = st.zitadel.mint_chat_token(&app.project_id).await?;
+    let reply = crate::manager::control_request(&app.control_url, &token, json!({
+        "cmd": "set-template", "appCode": app_code, "template": b.template,
+        "publish": b.publish, "migrateInstructions": b.migrate_instructions,
+    })).await.unwrap_or_else(|e| json!({ "ok": false, "error": e }));
+    Ok(Json(json!({
+        "ok": reply.get("ok").and_then(Value::as_bool).unwrap_or(false),
+        "version": reply.get("version").cloned().unwrap_or(json!(0)),
+        "updatedAt": reply.get("updatedAt").cloned().unwrap_or(Value::Null),
+        "error": reply.get("error").cloned(),
+    })))
+}
+
 // Login-client (OIDC app) CRUD scoped to a project (the multi-app model).
 // Requires PROJECT_OWNER on pid — Zitadel returns 403 otherwise (fail-closed,
 // no fallback to the home project). clientSecret on create/regenerate is
@@ -693,6 +769,15 @@ async fn get_lockout_policy(_op: Operator, State(st): State<AppState>) -> Result
 mod contract_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn extract_client_id_handles_both_shapes() {
+        let wrapped = json!({"app":{"oidcConfig":{"clientId":"111"}}});
+        let bare = json!({"oidcConfig":{"clientId":"222"}});
+        assert_eq!(super::extract_client_id(&wrapped).as_deref(), Some("111"));
+        assert_eq!(super::extract_client_id(&bare).as_deref(), Some("222"));
+        assert!(super::extract_client_id(&json!({"x":1})).is_none());
+    }
 
     #[test]
     fn annotate_apps_sets_app_code_by_client_id() {
