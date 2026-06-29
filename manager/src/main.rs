@@ -255,6 +255,49 @@ fn user_label_from_userinfo(
         .unwrap_or_else(|| sub.to_string())
 }
 
+// ---------- per-app sandbox templates (store: app_sandbox_template) ----------
+
+/// One entry in a per-app sandbox template. `content` is empty for `dir:true`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct TemplateEntry {
+    path: String,
+    #[serde(default)]
+    dir: bool,
+    #[serde(default)]
+    content: String,
+}
+
+/// PURE: parse a template JSON array. Errors on non-array / bad shape.
+fn parse_template(json: &str) -> Result<Vec<TemplateEntry>, String> {
+    serde_json::from_str::<Vec<TemplateEntry>>(json)
+        .map_err(|e| format!("invalid template JSON: {e}"))
+}
+
+/// The substitution context for a template materialization.
+struct TemplateVars {
+    name: String,
+    user_id: String,
+    app: String,
+    date: String,
+}
+
+/// PURE: replace `{{name}}`/`{{userId}}`/`{{app}}`/`{{date}}` literally; leave
+/// any other `{{…}}` untouched.
+fn substitute_vars(content: &str, v: &TemplateVars) -> String {
+    content
+        .replace("{{name}}", &v.name)
+        .replace("{{userId}}", &v.user_id)
+        .replace("{{app}}", &v.app)
+        .replace("{{date}}", &v.date)
+}
+
+/// The default kabytech sandbox template, seeded on startup (Sub-project 1 has
+/// no Console editor yet). README + a starter config.json.
+const KABYTECH_DEFAULT_TEMPLATE: &str = r##"[
+  {"path":"README.md","dir":false,"content":"# kabytech workspace\n\nThis is {{name}}'s kabytech workspace ({{userId}}).\nCreated {{date}}.\n"},
+  {"path":"config.json","dir":false,"content":"{\n  \"app\": \"{{app}}\",\n  \"version\": 1,\n  \"createdAt\": \"{{date}}\",\n  \"settings\": {}\n}\n"}
+]"##;
+
 /// Runtime-dispatched chat queue backend. Each variant holds an open pool;
 /// every operation matches and uses the dialect-appropriate query string.
 #[derive(Clone)]
@@ -269,6 +312,68 @@ impl ChatDb {
             ChatDb::Sqlite(_) => "sqlite",
             ChatDb::Postgres(_) => "postgres",
         }
+    }
+
+    /// The stored sandbox-template JSON for an app code, or None.
+    pub async fn get_template(&self, app_code: &str) -> Result<Option<String>, sqlx::Error> {
+        match self {
+            ChatDb::Sqlite(p) => {
+                let row: Option<(String,)> = sqlx::query_as(
+                    "SELECT template_json FROM app_sandbox_template WHERE app_code = ?",
+                )
+                .bind(app_code)
+                .fetch_optional(p)
+                .await?;
+                Ok(row.map(|r| r.0))
+            }
+            ChatDb::Postgres(p) => {
+                let row: Option<(String,)> = sqlx::query_as(
+                    "SELECT template_json FROM app_sandbox_template WHERE app_code = $1",
+                )
+                .bind(app_code)
+                .fetch_optional(p)
+                .await?;
+                Ok(row.map(|r| r.0))
+            }
+        }
+    }
+
+    /// Insert or replace the sandbox template for an app code.
+    pub async fn upsert_template(
+        &self,
+        app_code: &str,
+        template_json: &str,
+        updated_at: &str,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            ChatDb::Sqlite(p) => {
+                sqlx::query(
+                    "INSERT INTO app_sandbox_template (app_code, template_json, updated_at)
+                     VALUES (?, ?, ?)
+                     ON CONFLICT(app_code) DO UPDATE SET template_json = excluded.template_json,
+                       updated_at = excluded.updated_at",
+                )
+                .bind(app_code)
+                .bind(template_json)
+                .bind(updated_at)
+                .execute(p)
+                .await?;
+            }
+            ChatDb::Postgres(p) => {
+                sqlx::query(
+                    "INSERT INTO app_sandbox_template (app_code, template_json, updated_at)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (app_code) DO UPDATE SET template_json = EXCLUDED.template_json,
+                       updated_at = EXCLUDED.updated_at",
+                )
+                .bind(app_code)
+                .bind(template_json)
+                .bind(updated_at)
+                .execute(p)
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     /// INSERT a 'pending' question. Returns the autoincrement seq.
@@ -639,6 +744,15 @@ async fn init_schema_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     )
     .execute(pool)
     .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS app_sandbox_template (
+            app_code TEXT PRIMARY KEY,
+            template_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -685,6 +799,15 @@ async fn init_schema_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
     }
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_chat_question_status_seq ON chat_question(status, seq);",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS app_sandbox_template (
+            app_code TEXT PRIMARY KEY,
+            template_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );",
     )
     .execute(pool)
     .await?;
@@ -3574,5 +3697,60 @@ mod identity_tests {
         let v = serde_json::json!({});
         assert_eq!(user_label_from_userinfo(&v, Some("e@x.io"), "U1"), "e@x.io");
         assert_eq!(user_label_from_userinfo(&v, None, "U1"), "U1");
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    #[test]
+    fn parse_template_reads_entries() {
+        let json = r#"[
+            {"path":"README.md","dir":false,"content":"hi {{name}}"},
+            {"path":"sub","dir":true,"content":""}
+        ]"#;
+        let t = parse_template(json).expect("ok");
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].path, "README.md");
+        assert!(!t[0].dir);
+        assert_eq!(t[0].content, "hi {{name}}");
+        assert!(t[1].dir);
+    }
+
+    #[test]
+    fn parse_template_rejects_non_array() {
+        assert!(parse_template("{}").is_err());
+        assert!(parse_template("not json").is_err());
+    }
+
+    #[test]
+    fn substitute_vars_replaces_known_tokens_only() {
+        let v = TemplateVars {
+            name: "Jane Doe".into(), user_id: "U9".into(),
+            app: "kabytech".into(), date: "2026-06-29".into(),
+        };
+        let out = substitute_vars("{{name}} {{userId}} {{app}} {{date}} {{unknown}}", &v);
+        assert_eq!(out, "Jane Doe U9 kabytech 2026-06-29 {{unknown}}");
+    }
+
+    #[test]
+    fn kabytech_default_template_parses() {
+        let t = parse_template(KABYTECH_DEFAULT_TEMPLATE).expect("default parses");
+        assert!(t.iter().any(|e| e.path == "README.md"));
+        assert!(t.iter().any(|e| e.path == "config.json"));
+    }
+
+    #[tokio::test]
+    async fn template_table_roundtrips() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        let pool = SqlitePoolOptions::new().connect("sqlite::memory:").await.unwrap();
+        init_schema_sqlite(&pool).await.unwrap();
+        let db = ChatDb::Sqlite(pool);
+        assert!(db.get_template("kabytech").await.unwrap().is_none());
+        db.upsert_template("kabytech", "[]", "2026-06-29T00:00:00Z").await.unwrap();
+        assert_eq!(db.get_template("kabytech").await.unwrap().as_deref(), Some("[]"));
+        db.upsert_template("kabytech", "[{\"path\":\"x\",\"dir\":true,\"content\":\"\"}]", "t2").await.unwrap();
+        assert!(db.get_template("kabytech").await.unwrap().unwrap().contains("\"x\""));
     }
 }
