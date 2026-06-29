@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::broadcast;
 
+mod migrate;
 mod user_env;
 
 // Per-user Claude environment root, validated once at startup (REQUIRED, no
@@ -1294,7 +1295,7 @@ fn find_claude_path() -> Option<String> {
 ///
 /// Read-modify-write of the JSON file; preserves all other fields.
 /// Idempotent — if the path is already trusted we don't touch the file.
-fn ensure_claude_trusts(cwd: &str) -> Result<(), String> {
+pub(crate) fn ensure_claude_trusts(cwd: &str) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let path = std::path::PathBuf::from(home).join(".claude.json");
     let text = std::fs::read_to_string(&path)
