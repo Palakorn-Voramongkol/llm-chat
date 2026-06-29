@@ -12,6 +12,13 @@ mod user_env;
 // under {base}/{user_id}.
 static USER_ENV_BASE: OnceLock<std::path::PathBuf> = OnceLock::new();
 
+// Per-(userId/app) guard so a rapid re-login never starts two concurrent
+// background migrations on the same box.
+static MIGRATIONS_IN_FLIGHT: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+fn migrations_in_flight() -> &'static Mutex<std::collections::HashSet<String>> {
+    MIGRATIONS_IN_FLIGHT.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
 // ---------- SQLite-backed PTY input FIFO ----------
 //
 // One file per backend instance:
@@ -2711,11 +2718,15 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                 }
                             }
                             "provision-app-box" => {
-                                // Materialize an app's sandbox template into the
-                                // caller's confined box. userId + app validated;
-                                // files written only-if-absent. Fail closed.
-                                let user_id = req.get("userId").and_then(|v| v.as_str()).unwrap_or("");
-                                let app = req.get("app").and_then(|v| v.as_str()).unwrap_or("");
+                                // Materialize/reconcile an app's sandbox to the
+                                // template version. userId + app validated; files
+                                // written only-if-absent; migration (if older)
+                                // runs claude confined to {userId}/{app}/ in the
+                                // background. Fail closed; never blocks login.
+                                let user_id = req.get("userId").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let app = req.get("app").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let version = req.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let instructions = req.get("migrateInstructions").and_then(|v| v.as_str()).map(|s| s.to_string());
                                 let entries: Vec<crate::user_env::SeedEntry> = req
                                     .get("files")
                                     .and_then(|v| v.as_array())
@@ -2725,13 +2736,79 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                         content: f.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                                     }).collect())
                                     .unwrap_or_default();
-                                tracing::info!(target: "backend::provision", user_id, app, n = entries.len(), "provision-app-box received");
                                 let base = USER_ENV_BASE.get().expect("validated at startup");
-                                match crate::user_env::provision_entries(base, user_id, app, &entries) {
-                                    Ok(created) => serde_json::json!({"ok": true, "created": created}),
+                                tracing::info!(target: "backend::provision", user_id = %user_id, app = %app, version, n = entries.len(), "provision-app-box received");
+
+                                // Always create any new files write-if-absent first.
+                                match crate::user_env::provision_entries(base, &user_id, &app, &entries) {
                                     Err(e) => {
                                         tracing::warn!(target: "backend::provision", error = %e, "provision REJECTED (fail closed)");
                                         serde_json::json!({"ok": false, "error": format!("env: {e}")})
+                                    }
+                                    Ok(created) => {
+                                        let stamp = crate::user_env::read_stamp(base, &user_id, &app).unwrap_or(0);
+                                        match crate::user_env::decide_action(stamp, version) {
+                                            crate::user_env::ProvisionAction::Provision => {
+                                                match crate::user_env::write_stamp(base, &user_id, &app, version.max(1)) {
+                                                    Ok(()) => serde_json::json!({"ok": true, "action": "provisioned", "version": version, "created": created}),
+                                                    Err(e) => serde_json::json!({"ok": false, "error": format!("stamp: {e}")}),
+                                                }
+                                            }
+                                            crate::user_env::ProvisionAction::Current => {
+                                                serde_json::json!({"ok": true, "action": "current", "version": version, "created": created})
+                                            }
+                                            crate::user_env::ProvisionAction::Migrate => {
+                                                let key = format!("{user_id}/{app}");
+                                                let started = {
+                                                    let mut g = migrations_in_flight().lock().unwrap();
+                                                    if g.contains(&key) { false } else { g.insert(key.clone()); true }
+                                                };
+                                                if !started {
+                                                    serde_json::json!({"ok": true, "action": "migrating", "version": version, "note": "already in flight"})
+                                                } else if let Some(instr) = instructions.clone() {
+                                                    match crate::user_env::resolve_user_cwd(base, &user_id, Some(&app)) {
+                                                        Err(e) => {
+                                                            migrations_in_flight().lock().unwrap().remove(&key);
+                                                            serde_json::json!({"ok": false, "error": format!("cwd: {e}")})
+                                                        }
+                                                        Ok(cwd) => match find_claude_path() {
+                                                            None => {
+                                                                migrations_in_flight().lock().unwrap().remove(&key);
+                                                                tracing::warn!(target: "backend::provision", "migration skipped: claude not found");
+                                                                serde_json::json!({"ok": true, "action": "migrate-unavailable", "version": version})
+                                                            }
+                                                            Some(claude_path) => {
+                                                                let base_owned = base.clone();
+                                                                let (uid2, app2, key2) = (user_id.clone(), app.clone(), key.clone());
+                                                                let manifest = crate::migrate::render_manifest(&entries);
+                                                                let prompt = crate::migrate::migration_prompt(&instr, &manifest);
+                                                                tokio::task::spawn_blocking(move || {
+                                                                    let res = crate::migrate::run_box_migration(
+                                                                        &claude_path, &cwd, &prompt,
+                                                                        std::time::Duration::from_secs(600),
+                                                                    );
+                                                                    match res {
+                                                                        Ok(()) => {
+                                                                            if let Err(e) = crate::user_env::write_stamp(&base_owned, &uid2, &app2, version) {
+                                                                                tracing::warn!(target: "backend::provision", error = %e, "migration ok but stamp write failed");
+                                                                            } else {
+                                                                                tracing::info!(target: "backend::provision", user_id = %uid2, app = %app2, version, "migration complete; stamp bumped");
+                                                                            }
+                                                                        }
+                                                                        Err(e) => tracing::warn!(target: "backend::provision", error = %e, user_id = %uid2, app = %app2, "migration FAILED; stamp left unchanged (retry next login)"),
+                                                                    }
+                                                                    migrations_in_flight().lock().unwrap().remove(&key2);
+                                                                });
+                                                                serde_json::json!({"ok": true, "action": "migrating", "version": version})
+                                                            }
+                                                        },
+                                                    }
+                                                } else {
+                                                    migrations_in_flight().lock().unwrap().remove(&key);
+                                                    serde_json::json!({"ok": true, "action": "migrate-skipped", "version": version, "note": "no instructions"})
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
