@@ -171,6 +171,52 @@ pub fn provision_entries(
     Ok(created)
 }
 
+/// The version-stamp marker, relative to the app folder.
+const STAMP_REL: &str = ".llm-chat/version";
+
+/// What `provision-app-box` should do given the box's recorded version and the
+/// template's current version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProvisionAction { Provision, Current, Migrate }
+
+/// PURE. `stamp` is the box's recorded version (0 = fresh/unprovable); `target`
+/// is the template's current version.
+pub fn decide_action(stamp: i64, target: i64) -> ProvisionAction {
+    if stamp <= 0 { ProvisionAction::Provision }
+    else if stamp >= target { ProvisionAction::Current }
+    else { ProvisionAction::Migrate }
+}
+
+/// PURE: parse a stamp file's content. Missing/empty/non-integer → 0 (fail to
+/// the safe full-provision path).
+pub fn parse_stamp(raw: Option<&str>) -> i64 {
+    raw.map(str::trim).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0)
+}
+
+/// Read `{base}/{user_id}/{app}/.llm-chat/version`. Confinement errors REJECT
+/// (Err); an absent or unreadable/malformed marker → Ok(0) (treat as fresh).
+pub fn read_stamp(base: &Path, user_id: &str, app: &str) -> Result<i64, ResolveError> {
+    let rel = format!("{app}/{STAMP_REL}");
+    let full = confine_path(base, user_id, Some(&rel))?;
+    match std::fs::read_to_string(&full) {
+        Ok(s) => Ok(parse_stamp(Some(&s))),
+        Err(_) => Ok(0),
+    }
+}
+
+/// Write `{base}/{user_id}/{app}/.llm-chat/version`. Confined; creates the
+/// `.llm-chat` parent. The worker owns this file (claude never writes it).
+pub fn write_stamp(base: &Path, user_id: &str, app: &str, version: i64) -> Result<(), ResolveError> {
+    let rel = format!("{app}/{STAMP_REL}");
+    let full = confine_path(base, user_id, Some(&rel))?;
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ResolveError::Io(format!("create {}: {e}", parent.display())))?;
+    }
+    std::fs::write(&full, format!("{version}\n").as_bytes())
+        .map_err(|e| ResolveError::Io(format!("write {}: {e}", full.display())))
+}
+
 /// One entry in a box listing. `path` is RELATIVE to the box root,
 /// '/'-separated. Symlinks are reported (`dir=false`) but never descended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,6 +467,43 @@ mod tests {
         let e = vec![SeedEntry { path: "README.md".into(), dir: false, content: "x".into() }];
         assert!(matches!(provision_entries(tmp.path(), "", "kabytech", &e), Err(ResolveError::BadUser(_))));
         assert!(matches!(provision_entries(tmp.path(), "  ", "kabytech", &e), Err(ResolveError::BadUser(_))));
+    }
+
+    #[test]
+    fn parse_stamp_handles_missing_and_malformed() {
+        assert_eq!(parse_stamp(None), 0);
+        assert_eq!(parse_stamp(Some("")), 0);
+        assert_eq!(parse_stamp(Some("  ")), 0);
+        assert_eq!(parse_stamp(Some("notanint")), 0);
+        assert_eq!(parse_stamp(Some("5")), 5);
+        assert_eq!(parse_stamp(Some("  7\n")), 7);
+    }
+
+    #[test]
+    fn decide_action_branches() {
+        assert!(matches!(decide_action(0, 1), ProvisionAction::Provision));
+        assert!(matches!(decide_action(-3, 2), ProvisionAction::Provision));
+        assert!(matches!(decide_action(2, 2), ProvisionAction::Current));
+        assert!(matches!(decide_action(3, 2), ProvisionAction::Current));
+        assert!(matches!(decide_action(1, 2), ProvisionAction::Migrate));
+    }
+
+    #[test]
+    fn stamp_round_trip_and_absent_is_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        assert_eq!(read_stamp(base, "u1", "kabytech").unwrap(), 0);
+        write_stamp(base, "u1", "kabytech", 4).unwrap();
+        assert_eq!(read_stamp(base, "u1", "kabytech").unwrap(), 4);
+        write_stamp(base, "u1", "kabytech", 5).unwrap();
+        assert_eq!(read_stamp(base, "u1", "kabytech").unwrap(), 5);
+    }
+
+    #[test]
+    fn stamp_rejects_bad_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(matches!(read_stamp(tmp.path(), "", "kabytech"), Err(ResolveError::BadUser(_))));
+        assert!(matches!(write_stamp(tmp.path(), "..", "kabytech", 1), Err(ResolveError::BadUser(_))));
     }
 
     #[test]
