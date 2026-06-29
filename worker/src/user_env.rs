@@ -138,7 +138,15 @@ pub fn provision_entries(
     app: &str,
     entries: &[SeedEntry],
 ) -> Result<usize, ResolveError> {
-    // Ensure {base}/{user_id}/{app}/ exists + is confined (canonicalize-proven).
+    // Fail closed: an authenticated user id is MANDATORY (mirrors open_cwd /
+    // list_box_tree). Don't rely solely on the downstream confine_path check.
+    if user_id.trim().is_empty() {
+        return Err(ResolveError::BadUser(
+            "per-user environment requires an authenticated user id".into(),
+        ));
+    }
+    // Ensure {base}/{user_id}/{app}/ exists + is confined (canonicalize-proven),
+    // so the app folder is present even when `entries` is empty.
     resolve_user_cwd(base, user_id, Some(app))?;
     let mut created = 0usize;
     for e in entries {
@@ -150,16 +158,14 @@ pub fn provision_entries(
                     .map_err(|err| ResolveError::Io(format!("create {}: {err}", full.display())))?;
                 created += 1;
             }
-        } else {
+        } else if !full.exists() {
             if let Some(parent) = full.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|err| ResolveError::Io(format!("create {}: {err}", parent.display())))?;
             }
-            if !full.exists() {
-                std::fs::write(&full, e.content.as_bytes())
-                    .map_err(|err| ResolveError::Io(format!("write {}: {err}", full.display())))?;
-                created += 1;
-            }
+            std::fs::write(&full, e.content.as_bytes())
+                .map_err(|err| ResolveError::Io(format!("write {}: {err}", full.display())))?;
+            created += 1;
         }
     }
     Ok(created)
@@ -398,6 +404,23 @@ mod tests {
         assert!(provision_entries(base, "u1", "kabytech", &e).is_err());
         let e2 = vec![SeedEntry { path: "ok".into(), dir: false, content: "x".into() }];
         assert!(provision_entries(base, "u1", "..", &e2).is_err());
+    }
+
+    #[test]
+    fn provision_entries_creates_app_dir_even_when_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let n = provision_entries(base, "u1", "kabytech", &[]).unwrap();
+        assert_eq!(n, 0);
+        assert!(base.join("u1/kabytech").is_dir(), "app folder exists for an empty template");
+    }
+
+    #[test]
+    fn provision_entries_rejects_empty_user_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let e = vec![SeedEntry { path: "README.md".into(), dir: false, content: "x".into() }];
+        assert!(matches!(provision_entries(tmp.path(), "", "kabytech", &e), Err(ResolveError::BadUser(_))));
+        assert!(matches!(provision_entries(tmp.path(), "  ", "kabytech", &e), Err(ResolveError::BadUser(_))));
     }
 
     #[test]
