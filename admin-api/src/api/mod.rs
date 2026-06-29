@@ -607,9 +607,23 @@ async fn delete_project_role(_op: Operator, State(st): State<AppState>, Path((pi
     st.zitadel.delete_role_in(&pid, &role_key).await?;
     Ok(Json(json!({ "ok": true })))
 }
+/// PURE: tag each app with `appCode` (resolved from its oidcConfig.clientId via
+/// the registry) or JSON null. The client uses this only to show/hide the
+/// editor — the mapping itself stays server-side (Global Constraints).
+fn annotate_apps(apps: Vec<Value>, entries: &[crate::config::AppCodeEntry]) -> Vec<Value> {
+    apps.into_iter().map(|mut a| {
+        let code = a.get("oidcConfig").and_then(|o| o.get("clientId")).and_then(|c| c.as_str())
+            .and_then(|cid| crate::config::app_code_for_client(entries, cid))
+            .map(|e| e.app_code.clone());
+        a["appCode"] = match code { Some(c) => Value::String(c), None => Value::Null };
+        a
+    }).collect()
+}
+
 async fn list_project_apps(_op: Operator, State(st): State<AppState>, Path(pid): Path<String>)
     -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({ "result": st.zitadel.list_apps_for(&pid).await? })))
+    let apps = st.zitadel.list_apps_for(&pid).await?;
+    Ok(Json(json!({ "result": annotate_apps(apps, &st.app_codes) })))
 }
 
 // Login-client (OIDC app) CRUD scoped to a project (the multi-app model).
@@ -679,6 +693,21 @@ async fn get_lockout_policy(_op: Operator, State(st): State<AppState>) -> Result
 mod contract_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn annotate_apps_sets_app_code_by_client_id() {
+        use crate::config::AppCodeEntry;
+        let entries = vec![AppCodeEntry { app_code: "kabytech".into(), name: "kabytech-gateway".into(), client_id: "111".into(), project_id: "222".into() }];
+        let apps = vec![
+            json!({"id":"a1","name":"Gateway","oidcConfig":{"clientId":"111"}}),
+            json!({"id":"a2","name":"Other","oidcConfig":{"clientId":"999"}}),
+            json!({"id":"a3","name":"NoOidc"}),
+        ];
+        let out = super::annotate_apps(apps, &entries);
+        assert_eq!(out[0]["appCode"], "kabytech");
+        assert!(out[1]["appCode"].is_null());
+        assert!(out[2]["appCode"].is_null());
+    }
 
     #[test]
     fn create_human_accepts_camelcase() {
