@@ -37,6 +37,12 @@ pub struct KabyConfig {
     /// invite/accept; Phase 2 Session API). Required.
     pub sa_key_path: String,
     pub cookie_secure: bool,
+    /// Optional manager /provision WS URL (e.g. ws://manager:7777/provision). When
+    /// set, first-login provisions the user's app sandbox (best-effort). Absent →
+    /// the feature is off and login is unaffected.
+    pub manager_provision_url: Option<String>,
+    /// The app code this gateway provisions under (default "kabytech").
+    pub app_code: String,
 }
 
 impl KabyConfig {
@@ -59,6 +65,13 @@ impl KabyConfig {
             session_key: require_var("KABY_SESSION_KEY", get("KABY_SESSION_KEY"))?,
             sa_key_path: require_var("KABY_SA_KEY_PATH", get("KABY_SA_KEY_PATH"))?,
             cookie_secure: parse_cookie_secure(get("KABY_COOKIE_SECURE")),
+            manager_provision_url: get("KABY_MANAGER_PROVISION_URL")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            app_code: get("KABY_APP_CODE")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "kabytech".to_string()),
         })
     }
 
@@ -124,5 +137,18 @@ mod tests {
             KabyConfig::from_map(&getter(m)),
             Err("KABY_OIDC_CLIENT_SECRET must be set (no default)".into())
         );
+    }
+
+    #[test]
+    fn app_code_defaults_to_kabytech_and_provision_url_optional() {
+        let cfg = KabyConfig::from_map(&getter(full_map())).expect("ok");
+        assert_eq!(cfg.app_code, "kabytech");
+        assert_eq!(cfg.manager_provision_url, None);
+        let mut m = full_map();
+        m.insert("KABY_APP_CODE", "other");
+        m.insert("KABY_MANAGER_PROVISION_URL", "ws://manager:7777/provision");
+        let cfg = KabyConfig::from_map(&getter(m)).expect("ok");
+        assert_eq!(cfg.app_code, "other");
+        assert_eq!(cfg.manager_provision_url.as_deref(), Some("ws://manager:7777/provision"));
     }
 }

@@ -2,6 +2,7 @@
 //! holds only an opaque session cookie; this backend owns the OIDC flow + secret.
 pub mod auth;
 pub mod config;
+pub mod provision;
 pub mod session;
 pub mod zitadel;
 

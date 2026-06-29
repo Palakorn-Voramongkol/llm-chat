@@ -125,6 +125,18 @@ pub async fn callback(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let _ = session.insert("login_at", now).await;
+    // Best-effort: materialize this user's app sandbox on first login. NEVER
+    // blocks login — log and continue regardless (idempotent: re-login retries).
+    if let Some(url) = st.cfg.manager_provision_url.clone() {
+        let app = st.cfg.app_code.clone();
+        let tok = token.clone();
+        tokio::spawn(async move {
+            match crate::provision::provision_app_box(&url, &tok, &app).await {
+                Ok(()) => tracing::info!(target: "kaby::provision", app = %app, "provisioned user sandbox"),
+                Err(e) => tracing::warn!(target: "kaby::provision", error = %e, "first-login provision failed (ignored)"),
+            }
+        });
+    }
     Redirect::to(&format!("{}/", st.cfg.allowed_origin)).into_response()
 }
 
@@ -295,6 +307,8 @@ mod tests {
             session_key: "k".into(),
             sa_key_path: "/x".into(),
             cookie_secure: true,
+            manager_provision_url: None,
+            app_code: "kabytech".into(),
         }
     }
 
