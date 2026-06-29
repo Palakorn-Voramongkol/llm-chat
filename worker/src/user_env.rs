@@ -118,6 +118,53 @@ pub fn open_cwd(
     resolve_user_cwd(base, uid, subpath)
 }
 
+/// One entry to materialize into a box: a file (`dir=false`, with `content`) or
+/// an empty folder (`dir=true`). `path` is relative to `{base}/{user_id}/{app}/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeedEntry {
+    pub path: String,
+    pub dir: bool,
+    pub content: String,
+}
+
+/// Materialize `entries` under the user's confined box `{base}/{user_id}/{app}/`.
+/// Each entry's full box-relative path (`{app}/{path}`) is validated by
+/// `confine_path` (rejects traversal/absolute/illegal chars — fail closed). The
+/// app folder is ensured even when `entries` is empty. Files/dirs are written
+/// ONLY IF ABSENT (never clobber). Returns the count of newly-created entries.
+pub fn provision_entries(
+    base: &Path,
+    user_id: &str,
+    app: &str,
+    entries: &[SeedEntry],
+) -> Result<usize, ResolveError> {
+    // Ensure {base}/{user_id}/{app}/ exists + is confined (canonicalize-proven).
+    resolve_user_cwd(base, user_id, Some(app))?;
+    let mut created = 0usize;
+    for e in entries {
+        let rel = format!("{app}/{}", e.path);
+        let full = confine_path(base, user_id, Some(&rel))?;
+        if e.dir {
+            if !full.exists() {
+                std::fs::create_dir_all(&full)
+                    .map_err(|err| ResolveError::Io(format!("create {}: {err}", full.display())))?;
+                created += 1;
+            }
+        } else {
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|err| ResolveError::Io(format!("create {}: {err}", parent.display())))?;
+            }
+            if !full.exists() {
+                std::fs::write(&full, e.content.as_bytes())
+                    .map_err(|err| ResolveError::Io(format!("write {}: {err}", full.display())))?;
+                created += 1;
+            }
+        }
+    }
+    Ok(created)
+}
+
 /// One entry in a box listing. `path` is RELATIVE to the box root,
 /// '/'-separated. Symlinks are reported (`dir=false`) but never descended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,6 +360,44 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         assert!(matches!(open_cwd(tmp.path(), None, Some("svc")), Err(ResolveError::BadUser(_))));
         assert!(matches!(open_cwd(tmp.path(), Some(""), Some("svc")), Err(ResolveError::BadUser(_))));
+    }
+
+    #[test]
+    fn provision_entries_creates_files_and_dirs_confined() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let entries = vec![
+            SeedEntry { path: "README.md".into(), dir: false, content: "hello".into() },
+            SeedEntry { path: "sub".into(), dir: true, content: String::new() },
+            SeedEntry { path: "sub/config.json".into(), dir: false, content: "{}".into() },
+        ];
+        let n = provision_entries(base, "u1", "kabytech", &entries).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(std::fs::read_to_string(base.join("u1/kabytech/README.md")).unwrap(), "hello");
+        assert!(base.join("u1/kabytech/sub").is_dir());
+        assert_eq!(std::fs::read_to_string(base.join("u1/kabytech/sub/config.json")).unwrap(), "{}");
+    }
+
+    #[test]
+    fn provision_entries_writes_only_if_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let e = vec![SeedEntry { path: "README.md".into(), dir: false, content: "v1".into() }];
+        provision_entries(base, "u1", "kabytech", &e).unwrap();
+        let e2 = vec![SeedEntry { path: "README.md".into(), dir: false, content: "v2".into() }];
+        let n = provision_entries(base, "u1", "kabytech", &e2).unwrap();
+        assert_eq!(n, 0, "nothing newly written");
+        assert_eq!(std::fs::read_to_string(base.join("u1/kabytech/README.md")).unwrap(), "v1");
+    }
+
+    #[test]
+    fn provision_entries_rejects_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let e = vec![SeedEntry { path: "../escape".into(), dir: false, content: "x".into() }];
+        assert!(provision_entries(base, "u1", "kabytech", &e).is_err());
+        let e2 = vec![SeedEntry { path: "ok".into(), dir: false, content: "x".into() }];
+        assert!(provision_entries(base, "u1", "..", &e2).is_err());
     }
 
     #[test]

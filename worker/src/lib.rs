@@ -2709,6 +2709,31 @@ async fn run_ws_server(state: Arc<AppState>, sink: Arc<dyn EventSink>, port: u16
                                     }
                                 }
                             }
+                            "provision-app-box" => {
+                                // Materialize an app's sandbox template into the
+                                // caller's confined box. userId + app validated;
+                                // files written only-if-absent. Fail closed.
+                                let user_id = req.get("userId").and_then(|v| v.as_str()).unwrap_or("");
+                                let app = req.get("app").and_then(|v| v.as_str()).unwrap_or("");
+                                let entries: Vec<crate::user_env::SeedEntry> = req
+                                    .get("files")
+                                    .and_then(|v| v.as_array())
+                                    .map(|arr| arr.iter().map(|f| crate::user_env::SeedEntry {
+                                        path: f.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                        dir: f.get("dir").and_then(|v| v.as_bool()).unwrap_or(false),
+                                        content: f.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                    }).collect())
+                                    .unwrap_or_default();
+                                tracing::info!(target: "backend::provision", user_id, app, n = entries.len(), "provision-app-box received");
+                                let base = USER_ENV_BASE.get().expect("validated at startup");
+                                match crate::user_env::provision_entries(base, user_id, app, &entries) {
+                                    Ok(created) => serde_json::json!({"ok": true, "created": created}),
+                                    Err(e) => {
+                                        tracing::warn!(target: "backend::provision", error = %e, "provision REJECTED (fail closed)");
+                                        serde_json::json!({"ok": false, "error": format!("env: {e}")})
+                                    }
+                                }
+                            }
                             "close" => {
                                 let sid = req
                                     .get("sessionId")
