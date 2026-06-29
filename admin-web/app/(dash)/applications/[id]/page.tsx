@@ -13,6 +13,7 @@ import { RoleCreateDialog } from "@/components/applications/role-create-dialog";
 import { RoleEditDialog } from "@/components/roles/role-edit-dialog";
 import { AppFormDialog } from "@/components/apps/app-form-dialog";
 import { SecretRevealDialog } from "@/components/apps/secret-reveal-dialog";
+import { SandboxTemplateEditor } from "@/components/applications/sandbox-template-editor";
 import { APP_TYPE_CHIP, appTypeLabel, pretty } from "@/components/apps/columns";
 import { avatarGradient, initials } from "@/lib/avatar";
 import { api, ApiError } from "@/lib/api";
@@ -217,6 +218,11 @@ export default function ApplicationDetailPage() {
                 <Button variant="outline" size="sm" className="text-destructive"
                   onClick={() => setDeleteTarget(selectedClient)}>Delete</Button>
               </div>
+              {selectedClient.appCode && (
+                <PanelSection title="Sandbox template">
+                  <SandboxTemplateEditor pid={id} appId={selectedClient.id} />
+                </PanelSection>
+              )}
             </>
           )}
         </DetailPanel>
