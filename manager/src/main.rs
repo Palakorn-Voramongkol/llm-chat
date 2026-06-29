@@ -291,6 +291,28 @@ fn substitute_vars(content: &str, v: &TemplateVars) -> String {
         .replace("{{date}}", &v.date)
 }
 
+/// PURE: decide the stored (version, instructions) for a set-template request.
+/// New app (no current row) → v1 (publish flag irrelevant; nothing to migrate
+/// from). Existing row + content edit (publish=false) → keep the version and
+/// PRESERVE the prior instructions. Existing row + publish=true → version+1 and
+/// REQUIRE non-empty instructions (fail closed). Instructions are trimmed.
+fn resolve_set(
+    current_version: Option<i64>,
+    current_instructions: Option<String>,
+    publish: bool,
+    new_instructions: Option<&str>,
+) -> Result<(i64, Option<String>), String> {
+    if publish {
+        let instr = new_instructions
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "publishing a new version requires migration instructions".to_string())?;
+        Ok((current_version.unwrap_or(0) + 1, Some(instr.to_string())))
+    } else {
+        Ok((current_version.unwrap_or(1), current_instructions))
+    }
+}
+
 /// The default kabytech sandbox template, seeded on startup (Sub-project 1 has
 /// no Console editor yet). README + a starter config.json.
 const KABYTECH_DEFAULT_TEMPLATE: &str = r##"[
@@ -2182,6 +2204,70 @@ async fn handle_control(
                     }
                 }
             }
+            "get-template" => {
+                match req.get("appCode").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                    None => serde_json::json!({"ok": false, "error": "appCode required"}),
+                    Some(code) => {
+                        let db = state.lock().await.chat_db.clone();
+                        match db.get_template(code).await {
+                            Ok(Some(rec)) => {
+                                let template: serde_json::Value =
+                                    serde_json::from_str(&rec.template_json)
+                                        .unwrap_or_else(|_| serde_json::json!([]));
+                                serde_json::json!({
+                                    "ok": true, "appCode": code, "version": rec.version,
+                                    "template": template, "migrateInstructions": rec.migrate_instructions,
+                                    "updatedAt": rec.updated_at,
+                                })
+                            }
+                            Ok(None) => serde_json::json!({
+                                "ok": true, "appCode": code, "version": 0,
+                                "template": [], "migrateInstructions": serde_json::Value::Null,
+                                "updatedAt": serde_json::Value::Null,
+                            }),
+                            Err(e) => serde_json::json!({"ok": false, "error": format!("get-template: {e}")}),
+                        }
+                    }
+                }
+            }
+            "set-template" => {
+                let code = req.get("appCode").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+                let template = req.get("template");
+                match (code, template) {
+                    (None, _) => serde_json::json!({"ok": false, "error": "appCode required"}),
+                    (_, None) => serde_json::json!({"ok": false, "error": "template required"}),
+                    (Some(code), Some(template)) => {
+                        // Validate the entries shape (fail closed on bad template).
+                        let template_json = template.to_string();
+                        if let Err(e) = parse_template(&template_json) {
+                            serde_json::json!({"ok": false, "error": format!("invalid template: {e}")})
+                        } else {
+                            let publish = req.get("publish").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let new_instr = req.get("migrateInstructions").and_then(|v| v.as_str());
+                            let db = state.lock().await.chat_db.clone();
+                            match db.get_template(code).await {
+                                Err(e) => serde_json::json!({"ok": false, "error": format!("set-template load: {e}")}),
+                                Ok(current) => {
+                                    let (cur_v, cur_instr) = match &current {
+                                        Some(r) => (Some(r.version), r.migrate_instructions.clone()),
+                                        None => (None, None),
+                                    };
+                                    match resolve_set(cur_v, cur_instr, publish, new_instr) {
+                                        Err(e) => serde_json::json!({"ok": false, "error": e}),
+                                        Ok((version, instr)) => {
+                                            let now = now_iso();
+                                            match db.upsert_template(code, &template_json, version, instr.as_deref(), &now).await {
+                                                Ok(()) => serde_json::json!({"ok": true, "appCode": code, "version": version, "updatedAt": now}),
+                                                Err(e) => serde_json::json!({"ok": false, "error": format!("set-template save: {e}")}),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             "fifo" => {
                 // Inspect a backend's PTY input FIFO. Target by `port` or
                 // `sessionId`; with neither, aggregate across all backends.
@@ -3875,6 +3961,19 @@ mod identity_tests {
 #[cfg(test)]
 mod template_tests {
     use super::*;
+
+    #[test]
+    fn resolve_set_rules() {
+        // brand-new app: establishes v1 regardless of publish; instructions ignored
+        assert_eq!(resolve_set(None, None, false, None), Ok((1, None)));
+        assert_eq!(resolve_set(None, None, true, Some("x")), Ok((1, Some("x".into()))));
+        // content edit on existing row: keep version, preserve prior instructions
+        assert_eq!(resolve_set(Some(3), Some("old".into()), false, None), Ok((3, Some("old".into()))));
+        // publish on existing row: bump, require non-empty (trimmed) instructions
+        assert_eq!(resolve_set(Some(3), Some("old".into()), true, Some("  do it  ")), Ok((4, Some("do it".into()))));
+        assert!(resolve_set(Some(3), None, true, None).is_err());
+        assert!(resolve_set(Some(3), None, true, Some("   ")).is_err());
+    }
 
     #[test]
     fn parse_template_reads_entries() {
