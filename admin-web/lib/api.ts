@@ -1,3 +1,5 @@
+import type { SandboxTemplate, SaveTemplateInput, SaveTemplateResult } from "./types";
+
 export class ApiError extends Error {
   readonly name = "ApiError";
   constructor(
@@ -54,4 +56,8 @@ export const api = {
   put: <T>(path: string, json?: unknown) =>
     request<T>(path, { method: "PUT", json }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  getSandboxTemplate: (pid: string, appId: string) =>
+    request<SandboxTemplate>(`/api/projects/${pid}/apps/${appId}/sandbox-template`, { method: "GET" }),
+  saveSandboxTemplate: (pid: string, appId: string, body: SaveTemplateInput) =>
+    request<SaveTemplateResult>(`/api/projects/${pid}/apps/${appId}/sandbox-template`, { method: "PUT", json: body }),
 };

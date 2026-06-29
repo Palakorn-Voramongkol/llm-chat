@@ -139,10 +139,37 @@ export interface OidcApp {
   name: string;
   state?: string;
   oidcConfig?: OidcConfig;
+  /** Backend-resolved sandbox-template key (clientId → app_code); null when the
+   * client has no template. The Console uses it only to show/hide the editor. */
+  appCode?: string | null;
 }
 
 export interface OidcAppList {
   result: OidcApp[];
+}
+
+export interface SandboxTemplate {
+  configured: boolean;
+  ok: boolean;
+  appCode: string;
+  version: number;
+  template: { path: string; dir: boolean; content: string }[];
+  migrateInstructions: string | null;
+  updatedAt: string | null;
+  error?: string | null;
+}
+
+export interface SaveTemplateInput {
+  template: { path: string; dir: boolean; content: string }[];
+  publish: boolean;
+  migrateInstructions?: string;
+}
+
+export interface SaveTemplateResult {
+  ok: boolean;
+  version: number;
+  updatedAt: string | null;
+  error?: string | null;
 }
 
 export interface CreateOidcAppInput {
