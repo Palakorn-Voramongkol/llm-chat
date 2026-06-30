@@ -23,10 +23,12 @@ dist/
 # Visual brainstorming companion (mockups + session state) — local only.
 .superpowers/
 /src-tauri/
-# Local verification screenshots at the repo root (not source).
+# Local verification screenshots (not source) — root-level and the grouped
+# evidence/ folder where they're collected.
 /*.png
 /*.jpeg
 /*.jpg
+evidence/
 # pnpm 10/11 drops an allowBuilds-only placeholder; this repo has no pnpm
 # workspace, so never track it (also in admin-web/.dockerignore).
 pnpm-workspace.yaml
